@@ -7,12 +7,14 @@ The real socket never opens here. ``FakeClient`` stands in for
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
 
+from app.config.game_config import save_active_game
 from app.core.config import settings
 from app.services import obs as obs_service
 from tests.asserts import assert_failure, assert_success
@@ -27,6 +29,29 @@ VERSION_DATA = {
 SCENE_DATA = {"sceneName": "Main", "sceneUuid": "abc-123"}
 SCENE_ITEMS_DATA = {"sceneItems": [{"sceneItemId": 7, "sourceName": "Game Window"}]}
 INPUTS_DATA = {"inputs": [{"inputName": "Game Window", "inputKind": "window_capture"}]}
+# OBS enumerates capturable windows as encoded `title:class:executable` values.
+# The disabled entries mirror the real ones: the placeholder for a stored value
+# that matches no window, and the "pick a window" prompt.
+WINDOW_ITEMS_DATA = {
+    "propertyItems": [
+        {
+            "itemEnabled": False,
+            "itemName": "[HuffNPuffLink.exe]: (null)",
+            "itemValue": "::HuffNPuffLink.exe",
+        },
+        {"itemEnabled": False, "itemName": "[Select a window]", "itemValue": ""},
+        {
+            "itemEnabled": True,
+            "itemName": "[chrome.exe]: Dashboard",
+            "itemValue": "Dashboard:Chrome_WidgetWin_1:chrome.exe",
+        },
+        {
+            "itemEnabled": True,
+            "itemName": "[HuffNPuffLink.exe]: Huff N' Puff",
+            "itemValue": "Huff N' Puff:UnityWndClass:HuffNPuffLink.exe",
+        },
+    ]
+}
 IDLE_RECORD_DATA = {
     "outputActive": False,
     "outputPaused": False,
@@ -140,6 +165,25 @@ def install(monkeypatch: pytest.MonkeyPatch, client: FakeClient) -> FakeClient:
     return client
 
 
+@pytest.fixture
+def active_game(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Pin the active game to a config written under ``tmp_path``.
+
+    Without this, the window-selection tests read the developer's own
+    ``active_game.json``, so picking a different game in the dashboard failed the
+    suite.
+    """
+    name = "HuffNPuffLink"
+    directory = tmp_path / "games"
+    directory.mkdir()
+    (directory / f"{name}.json").write_text(
+        json.dumps({"name": name, "process": f"{name}.exe"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(settings, "IDECK_GAME_CONFIG_DIR", directory)
+    save_active_game(settings.ideck_active_game_path, name)
+    return name
+
+
 # --- status ---------------------------------------------------------------
 
 
@@ -218,20 +262,24 @@ async def test_disconnect_closes_a_live_session(
     assert obs_service._client is None
 
 
-async def test_select_game_window_uses_the_active_config_process(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+SELECT_WINDOW_RESPONSES: dict[str, dict[str, Any]] = {
+    **CONNECTED_RESPONSES,
+    "GetSceneItemList": SCENE_ITEMS_DATA,
+    "GetInputList": INPUTS_DATA,
+    "GetInputPropertiesListPropertyItems": WINDOW_ITEMS_DATA,
+    "SetInputSettings": {},
+}
+
+
+async def test_select_game_window_uses_the_window_obs_enumerates(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, active_game: str
 ) -> None:
-    fake = install(
-        monkeypatch,
-        FakeClient(
-            responses={
-                **CONNECTED_RESPONSES,
-                "GetSceneItemList": SCENE_ITEMS_DATA,
-                "GetInputList": INPUTS_DATA,
-                "SetInputSettings": {},
-            }
-        ),
-    )
+    """The identifier comes from OBS's window list, not from the process name.
+
+    A synthesised ``::game.exe`` has no window class, so OBS binds the source to
+    nothing and reports success anyway -- a blank capture rather than an error.
+    """
+    fake = install(monkeypatch, FakeClient(responses=SELECT_WINDOW_RESPONSES))
 
     response = await client.post("/api/obs/select-game-window")
 
@@ -240,11 +288,152 @@ async def test_select_game_window_uses_the_active_config_process(
     assert data["game"] == "HuffNPuffLink"
     assert data["process"] == "HuffNPuffLink.exe"
     assert data["source_name"] == "Game Window"
+    assert data["window_title"] == "Huff N' Puff"
+    assert fake.data_for("GetInputPropertiesListPropertyItems") == {
+        "inputName": "Game Window",
+        "propertyName": "window",
+    }
     assert fake.data_for("SetInputSettings") == {
         "inputName": "Game Window",
-        "inputSettings": {"window": "::HuffNPuffLink.exe", "priority": 2},
+        "inputSettings": {
+            "window": "Huff N' Puff:UnityWndClass:HuffNPuffLink.exe",
+            "priority": 2,
+        },
         "overlay": True,
     }
+
+
+async def test_select_game_window_fails_when_obs_lists_no_window_for_the_game(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, active_game: str
+) -> None:
+    """A game that is not running must be reported, not silently captured blank."""
+    without_the_game = {
+        "propertyItems": [
+            item
+            for item in WINDOW_ITEMS_DATA["propertyItems"]
+            if "HuffNPuffLink" not in item["itemValue"]
+        ]
+    }
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                **SELECT_WINDOW_RESPONSES,
+                "GetInputPropertiesListPropertyItems": without_the_game,
+            }
+        ),
+    )
+
+    response = await client.post("/api/obs/select-game-window")
+
+    assert response.status_code == 502
+    assert_failure(response.json(), code="OBS_REQUEST_FAILED")
+    message = response.json()["message"]
+    # The message names what OBS did see, so the cause is diagnosable from it.
+    assert "HuffNPuffLink.exe" in message
+    assert "chrome.exe" in message
+    # A window that was never found is never written to the source.
+    assert "SetInputSettings" not in fake.request_types()
+
+
+async def test_select_game_window_ignores_the_unmatched_stored_placeholder(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, active_game: str
+) -> None:
+    """OBS lists a stored-but-unmatched value as a disabled item; reusing it loops."""
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                **SELECT_WINDOW_RESPONSES,
+                "GetInputPropertiesListPropertyItems": {
+                    "propertyItems": [
+                        WINDOW_ITEMS_DATA["propertyItems"][0],
+                        WINDOW_ITEMS_DATA["propertyItems"][3],
+                    ]
+                },
+            }
+        ),
+    )
+
+    response = await client.post("/api/obs/select-game-window")
+
+    assert response.status_code == 200
+    settings_sent = fake.data_for("SetInputSettings")
+    assert settings_sent is not None
+    assert (
+        settings_sent["inputSettings"]["window"]
+        == "Huff N' Puff:UnityWndClass:HuffNPuffLink.exe"
+    )
+
+
+async def test_select_game_window_prefers_a_titled_window(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, active_game: str
+) -> None:
+    """A process can own helper windows; the titled one is the game."""
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                **SELECT_WINDOW_RESPONSES,
+                "GetInputPropertiesListPropertyItems": {
+                    "propertyItems": [
+                        {
+                            "itemEnabled": True,
+                            "itemName": "[HuffNPuffLink.exe]: ",
+                            "itemValue": ":UnityWndClass:HuffNPuffLink.exe",
+                        },
+                        WINDOW_ITEMS_DATA["propertyItems"][3],
+                    ]
+                },
+            }
+        ),
+    )
+
+    response = await client.post("/api/obs/select-game-window")
+
+    assert response.status_code == 200
+    assert assert_success(response.json())["window_title"] == "Huff N' Puff"
+    settings_sent = fake.data_for("SetInputSettings")
+    assert settings_sent is not None
+    assert (
+        settings_sent["inputSettings"]["window"]
+        == "Huff N' Puff:UnityWndClass:HuffNPuffLink.exe"
+    )
+
+
+async def test_select_game_window_decodes_escaped_identifier_components(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, active_game: str
+) -> None:
+    """OBS encodes ':' as '#3A' and '#' as '#22' inside a component."""
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                **SELECT_WINDOW_RESPONSES,
+                "GetInputPropertiesListPropertyItems": {
+                    "propertyItems": [
+                        {
+                            "itemEnabled": True,
+                            "itemName": "[HuffNPuffLink.exe]: Huff#3A #221",
+                            "itemValue": "Huff#3A #221:UnityWndClass:HuffNPuffLink.exe",
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+
+    response = await client.post("/api/obs/select-game-window")
+
+    assert response.status_code == 200
+    assert assert_success(response.json())["window_title"] == "Huff: #1"
+    # The encoded form is what OBS stores, so it goes back unchanged.
+    settings_sent = fake.data_for("SetInputSettings")
+    assert settings_sent is not None
+    assert (
+        settings_sent["inputSettings"]["window"]
+        == "Huff#3A #221:UnityWndClass:HuffNPuffLink.exe"
+    )
 
 
 # --- screenshots ----------------------------------------------------------

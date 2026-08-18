@@ -68,6 +68,10 @@ class ObsGameWindowSelection(BaseModel):
     process: str = Field(description="Process name from the active game config.")
     scene: str = Field(description="Program scene containing the selected source.")
     source_name: str = Field(description="OBS window-capture source that was updated.")
+    window_title: str | None = Field(
+        default=None,
+        description="Title of the captured window; null when the window has none.",
+    )
 
 
 class ScreenshotRequest(BaseModel):

@@ -318,6 +318,13 @@ Things worth knowing:
   `app/config/game_config/games/<game>.json`. If a scene has several such
   sources, set its name in that file as
   `{ "obs": { "window_source": "Game Window" } }`.
+- **The game has to be running to be selected.** The window is matched against
+  the list OBS enumerates itself, so the identifier written to the source carries
+  a real window class. An identifier built from the process name alone
+  (`::game.exe`) matches nothing, and OBS reports no error for it -- the source
+  just renders nothing, which shows up much later as a blank screenshot. When OBS
+  lists no window for the configured process, selection fails with 502
+  `OBS_REQUEST_FAILED` and names the executables it did see.
 - **Capture roots are configurable.** `OBS_CAPTURE_DIR` defaults to
   `backend/OBS-capture`. `OBS_SCREENSHOT_DIR` and `OBS_RECORDING_DIR` can
   override the two roots independently; when omitted, both fall back to

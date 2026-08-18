@@ -266,7 +266,8 @@ export function ObsPanel() {
 
             {selectWindow.data ? (
               <p className="text-muted-foreground text-xs">
-                {selectWindow.data.source_name} follows {selectWindow.data.process}
+                {selectWindow.data.source_name} follows{" "}
+                {selectWindow.data.window_title ?? selectWindow.data.process}
               </p>
             ) : null}
 

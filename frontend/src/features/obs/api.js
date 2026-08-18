@@ -37,7 +37,15 @@ export function disconnectObs() {
   return apiRequest({ method: "POST", url: `${OBS_URL}/disconnect` });
 }
 
-/** Point the active OBS window-capture source at the process in the active game config. */
+/**
+ * Point the active OBS window-capture source at the process in the active game config.
+ *
+ * Fails with 502 when OBS lists no window for that process, which is what a game
+ * that is not running looks like.
+ *
+ * @returns {Promise<{game: string, process: string, scene: string,
+ *   source_name: string, window_title: string|null}>}
+ */
 export function selectGameWindow() {
   return apiRequest({ method: "POST", url: `${OBS_URL}/select-game-window` });
 }

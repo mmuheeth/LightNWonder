@@ -153,10 +153,12 @@ recordings default to `backend/OBS-capture/`; each request can use a relative
 use-case subfolder, and screenshot/recording roots can be configured separately.
 
 When OBS connects, the active scene's window-capture source is pointed at the
-`process` from the active game config. The dashboard also exposes a
-“Select game window” action for retrying after changing scenes or starting OBS.
-If a scene contains multiple window-capture sources, the selected game's JSON
-can disambiguate them with `obs.window_source`.
+`process` from the active game config, resolved against the window list OBS
+itself enumerates — so the game must be running with a visible window. The
+dashboard also exposes a “Select game window” action for retrying after
+launching the game, changing scenes, or starting OBS. If a scene contains
+multiple window-capture sources, the selected game's JSON can disambiguate them
+with `obs.window_source`.
 
 It is **optional and off by default** — the app boots and stays healthy with OBS
 closed, and a dropped connection re-establishes itself on the next request. See

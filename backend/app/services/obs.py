@@ -66,10 +66,14 @@ _SETTLE_ATTEMPTS = 30
 _SETTLE_DELAY_SECONDS = 0.1
 
 # OBS's Windows capture plugin stores a window as ``title:class:executable``.
-# An executable-only target therefore has empty title/class components and uses
-# the plugin's executable matching priority.
+# The identifier is never built from the process name alone: an empty class
+# component matches no window, so the source binds to nothing and renders 0x0.
+# That is a blank screenshot rather than a reported failure, which is why the
+# value is read back from OBS's own window list instead.
 _WINDOW_CAPTURE_KIND_PREFIX = "window_capture"
 _WINDOW_PRIORITY_EXE = 2
+_WINDOW_PROPERTY = "window"
+_WINDOW_IDENTIFIER_PARTS = 3
 
 
 # --- internals ------------------------------------------------------------
@@ -277,20 +281,39 @@ def _active_game() -> GameConfig:
         ) from exc
 
 
-def _obs_window_component(value: str) -> str:
-    """Encode one component of OBS's colon-delimited window identifier."""
-    return value.replace("#", "#22").replace(":", "#3A")
+def _decode_obs_window_component(value: str) -> str:
+    """Decode one component of OBS's colon-delimited window identifier.
+
+    ``#3A`` is expanded before ``#22``: the other order would turn an encoded
+    literal ``#3A`` (stored as ``#223A``) into a separator.
+    """
+    return value.replace("#3A", ":").replace("#22", "#")
 
 
-def _process_window_identifier(process: str) -> str:
-    """Build an OBS window identifier that matches by executable name."""
-    process = process.strip()
+def _window_identifier_parts(identifier: str) -> tuple[str, str, str] | None:
+    """Split an OBS ``title:class:executable`` identifier into decoded parts.
+
+    Returns ``None`` for anything that is not a three-component identifier, such
+    as the empty value OBS lists for "Select a window to capture". Splitting on
+    a bare colon is safe because OBS encodes colons inside a component as
+    ``#3A``.
+    """
+    parts = identifier.split(":")
+    if len(parts) != _WINDOW_IDENTIFIER_PARTS:
+        return None
+    title, window_class, executable = (_decode_obs_window_component(p) for p in parts)
+    return title, window_class, executable
+
+
+def _require_process(game: GameConfig) -> str:
+    """Executable name the active game config declares."""
+    process = (game.process or "").strip()
     if not process:
         raise ObsRequestError(
             "The active game config must define a non-empty "
             "'process' for OBS window selection"
         )
-    return f"::{_obs_window_component(process)}"
+    return process
 
 
 def _scene_source_names(data: dict[str, Any]) -> list[str]:
@@ -362,6 +385,73 @@ async def _window_source_for_game(scene: str, configured_source: str | None) -> 
         f"({', '.join(candidates)}); set 'obs.window_source' in the active "
         "game config to choose one"
     )
+
+
+async def _game_window(source_name: str, process: str) -> tuple[str, str]:
+    """Find OBS's own identifier for the window owned by ``process``.
+
+    OBS matches a window-capture source against the window list it enumerates
+    itself, so the identifier is taken from that list rather than assembled from
+    the process name. A synthesised ``::game.exe`` carries no window class and
+    matches nothing, and OBS reports no error for it -- the source simply renders
+    nothing, which surfaces much later as an empty screenshot.
+
+    Returns:
+        The identifier to store on the source, and the window title, which is
+        empty for a window that has none.
+
+    Raises:
+        ObsRequestError: if OBS lists no window for ``process``, which is what a
+            game that is not running (or has no visible window yet) looks like.
+    """
+    data = await _call(
+        "GetInputPropertiesListPropertyItems",
+        {"inputName": source_name, "propertyName": _WINDOW_PROPERTY},
+    )
+    items = data.get("propertyItems")
+    if not isinstance(items, list):
+        raise ObsRequestError(
+            f"OBS returned no capturable-window list for source {source_name!r}"
+        )
+
+    wanted = process.casefold()
+    matches: list[tuple[str, str]] = []
+    seen_executables: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        # A disabled entry is OBS's placeholder for a stored value that matches
+        # no live window -- precisely the broken state this repairs, so it must
+        # never be picked up as a candidate.
+        if item.get("itemEnabled") is False:
+            continue
+        parts = _window_identifier_parts(_as_str(item.get("itemValue")) or "")
+        if parts is None:
+            continue
+        title, _, executable = parts
+        if executable and executable not in seen_executables:
+            seen_executables.append(executable)
+        if executable.casefold() == wanted:
+            matches.append((_as_str(item.get("itemValue")) or "", title))
+
+    if not matches:
+        found = ", ".join(sorted(seen_executables)) or "none"
+        raise ObsRequestError(
+            f"OBS lists no capturable window for {process!r}. Is the game "
+            f"running with a visible window? OBS currently sees: {found}"
+        )
+
+    # A process can own several top-level windows; a titled one is the game
+    # itself rather than a helper window, so it wins.
+    matches.sort(key=lambda match: not match[1])
+    if len(matches) > 1:
+        logger.warning(
+            "OBS lists %d windows for %s; capturing %r",
+            len(matches),
+            process,
+            matches[0][1] or matches[0][0],
+        )
+    return matches[0]
 
 
 async def _set_record_directory(directory: Path, *, required: bool = False) -> None:
@@ -467,21 +557,22 @@ async def select_current_game_window() -> ObsGameWindowSelection:
     """Point the active scene's window-capture source at the active game.
 
     The game is selected through the persistent active-game file. Its JSON
-    config supplies the process name, while the source is discovered from the
-    current OBS program scene (or optionally disambiguated with
-    ``obs.window_source``).
+    config supplies the process name, the source is discovered from the current
+    OBS program scene (or optionally disambiguated with ``obs.window_source``),
+    and the window itself is resolved against the list OBS enumerates.
     Repeating this operation is safe: OBS receives the same settings again.
 
     Raises:
         ObsRequestError: if the active game has no process, the scene has no
-            usable window-capture source, or OBS rejects a request.
+            usable window-capture source, OBS lists no window for the process, or
+            OBS rejects a request.
     """
     await _ensure_connected()
     game = _active_game()
-    process = game.process or ""
-    window = _process_window_identifier(process)
+    process = _require_process(game)
     scene = await _current_scene()
     source_name = await _window_source_for_game(scene, game.obs_window_source)
+    window, window_title = await _game_window(source_name, process)
 
     await _call(
         "SetInputSettings",
@@ -489,6 +580,8 @@ async def select_current_game_window() -> ObsGameWindowSelection:
             "inputName": source_name,
             "inputSettings": {
                 "window": window,
+                # Keep matching by executable so a relaunch under a new window
+                # title still binds without re-running this.
                 "priority": _WINDOW_PRIORITY_EXE,
             },
             "overlay": True,
@@ -498,14 +591,15 @@ async def select_current_game_window() -> ObsGameWindowSelection:
         "OBS window source %r now follows %s (%s) in scene %r",
         source_name,
         game.name,
-        process.strip(),
+        window,
         scene,
     )
     return ObsGameWindowSelection(
         game=game.name,
-        process=process.strip(),
+        process=process,
         scene=scene,
         source_name=source_name,
+        window_title=window_title or None,
     )
 
 
