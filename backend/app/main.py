@@ -1,0 +1,111 @@
+"""Application factory.
+
+``create_app`` builds a fully configured :class:`~fastapi.FastAPI` instance.
+Keeping construction in a function (rather than at import time) lets tests build
+isolated apps with overridden settings.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+
+from app.api.health import HEALTH_PATHS
+from app.api.health import router as health_router
+from app.api.router import api_router
+from app.core.config import Settings, get_settings
+from app.core.logging import configure_logging, get_logger
+from app.exceptions import register_exception_handlers
+from app.middleware import RequestContextMiddleware
+from app.schemas.response import ApiResponse
+from app.schemas.system import ServiceInfo
+
+logger = get_logger("main")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Run startup and shutdown work.
+
+    Acquire shared resources here (database pools, HTTP clients, caches), stash
+    them on ``app.state``, and release them after the ``yield``.
+    """
+    settings: Settings = app.state.settings
+    logger.info(
+        "Starting %s v%s (env=%s, debug=%s)",
+        settings.APP_NAME,
+        settings.APP_VERSION,
+        settings.ENVIRONMENT,
+        settings.DEBUG,
+    )
+    # e.g. app.state.db = await create_pool(settings.DATABASE_URL)
+    #      register_probe(postgres_probe)
+    try:
+        yield
+    finally:
+        # e.g. await app.state.db.close()
+        logger.info("Shutdown complete")
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Build and configure the FastAPI application."""
+    settings = settings or get_settings()
+    configure_logging(settings)
+
+    app = FastAPI(
+        title=settings.APP_NAME,
+        description=settings.APP_DESCRIPTION,
+        version=settings.APP_VERSION,
+        docs_url=settings.docs_url,
+        redoc_url=settings.redoc_url,
+        openapi_url=settings.openapi_url,
+        lifespan=lifespan,
+    )
+    app.state.settings = settings
+
+    # Middleware is applied outermost-first in reverse registration order, so
+    # the last one added sees the request first. Request context goes outermost
+    # so that every log line -- including CORS preflights -- is correlated.
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=[settings.REQUEST_ID_HEADER, "X-Process-Time"],
+    )
+    app.add_middleware(
+        RequestContextMiddleware,
+        header_name=settings.REQUEST_ID_HEADER,
+        quiet_paths=HEALTH_PATHS,
+    )
+
+    register_exception_handlers(app)
+
+    # Health lives at the root, deliberately outside the API prefix.
+    app.include_router(health_router)
+    app.include_router(api_router, prefix=settings.API_PREFIX)
+
+    @app.get("/", response_model=ApiResponse[ServiceInfo], tags=["meta"])
+    async def root() -> ApiResponse[ServiceInfo]:
+        """Identify the service and point at its docs."""
+        return ApiResponse[ServiceInfo].ok(
+            data=ServiceInfo(
+                service=settings.APP_NAME,
+                version=settings.APP_VERSION,
+                environment=settings.ENVIRONMENT,
+                docs_url=settings.docs_url,
+                api_prefix=settings.API_PREFIX,
+            ),
+            message="Service is running",
+        )
+
+    return app
+
+
+app = create_app()

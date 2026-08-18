@@ -7,19 +7,22 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+# These setuptools artifacts only ever appear at the repo root, so they are
+# anchored with a leading slash. Unanchored, `lib/` would also match
+# frontend/src/lib/ and silently exclude the API client from version control.
 .Python
 build/
-develop-eggs/
+/develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -216,3 +219,46 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# Node / frontend
+# ---------------------------------------------------------------------------
+node_modules/
+.npm
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+dist-ssr/
+build/
+*.local
+
+# Vite / bundler caches
+.vite/
+.cache/
+.parcel-cache/
+
+# Test output
+coverage/
+.nyc_output/
+.vitest/
+
+# Env files: keep the checked-in examples, ignore everything real
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+*.swp
+.DS_Store
+Thumbs.db
