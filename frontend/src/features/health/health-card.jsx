@@ -1,6 +1,7 @@
 import { Activity, RefreshCw } from "lucide-react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
+import { StatRow } from "@/components/stat-row";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,15 +30,6 @@ function formatUptime(seconds) {
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m ${total % 60}s`;
   return `${total}s`;
-}
-
-function Row({ label, children }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{children}</span>
-    </div>
-  );
 }
 
 /** Live view of `GET /health`, and the end-to-end check that wiring works. */
@@ -78,15 +70,15 @@ export function HealthCard() {
           <ApiErrorAlert error={error} onRetry={() => refetch()} />
         ) : (
           <>
-            <Row label="Status">
+            <StatRow label="Status">
               <Badge variant={STATUS_VARIANTS[data.status] ?? "outline"}>
                 {data.status}
               </Badge>
-            </Row>
-            <Row label="Service">{data.service}</Row>
-            <Row label="Version">{data.version}</Row>
-            <Row label="Environment">{data.environment}</Row>
-            <Row label="Uptime">{formatUptime(data.uptime_seconds)}</Row>
+            </StatRow>
+            <StatRow label="Service">{data.service}</StatRow>
+            <StatRow label="Version">{data.version}</StatRow>
+            <StatRow label="Environment">{data.environment}</StatRow>
+            <StatRow label="Uptime">{formatUptime(data.uptime_seconds)}</StatRow>
 
             {data.checks.length > 0 ? (
               <div className="space-y-2 border-t pt-3">
@@ -94,7 +86,7 @@ export function HealthCard() {
                   Dependencies
                 </p>
                 {data.checks.map((check) => (
-                  <Row key={check.name} label={check.name}>
+                  <StatRow key={check.name} label={check.name}>
                     <span className="flex items-center gap-2">
                       {check.latency_ms != null ? (
                         <span className="text-muted-foreground font-mono text-xs">
@@ -105,7 +97,7 @@ export function HealthCard() {
                         {check.healthy ? "up" : "down"}
                       </Badge>
                     </span>
-                  </Row>
+                  </StatRow>
                 ))}
               </div>
             ) : (

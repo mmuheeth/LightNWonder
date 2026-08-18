@@ -8,7 +8,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
+from app.services import ideck as ideck_service
 from app.services import item as item_service
+from app.services import obs as obs_service
 
 
 @pytest.fixture
@@ -31,3 +33,19 @@ def _clean_item_store() -> Iterator[None]:
     item_service.reset()
     yield
     item_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_obs_state() -> Iterator[None]:
+    """Drop any faked OBS session, and the lock bound to this test's loop."""
+    obs_service.reset()
+    yield
+    obs_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_ideck_state() -> Iterator[None]:
+    """Drop the cached panel layout, aliases, and this test's lock."""
+    ideck_service.reset()
+    yield
+    ideck_service.reset()

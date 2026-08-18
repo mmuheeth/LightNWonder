@@ -6,7 +6,7 @@ import { AppProviders } from "@/app/providers";
 import "@/index.css";
 
 createRoot(document.getElementById("root")).render(
-    <AppProviders>
-      <App />
-    </AppProviders>
+  <AppProviders>
+    <App />
+  </AppProviders>,
 );

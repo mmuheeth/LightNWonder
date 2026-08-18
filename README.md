@@ -120,9 +120,13 @@ backend/app/
 ├── api/            router.py, health.py, endpoints/   ← routes only, kept thin
 ├── schemas/        response.py holds the envelope     ← the contract
 ├── exceptions/     base.py hierarchy, handlers.py     ← the only error renderer
-├── services/       business logic
+├── services/       business logic (incl. obs.py, ideck.py)
+├── config/         game data that ships with the code, and its reader
+├── utils/          win32 interop, panel layout/log formats, log tail, safe paths
 ├── middleware/     request id, timing, access log
-└── core/           config, logging, request context
+└── core/           settings, logging, request context
+
+backend/OBS-capture/    OBS screenshots and recordings (gitignored)
 
 frontend/src/
 ├── features/       one directory per feature (api + hooks + components)
@@ -135,6 +139,42 @@ Both sides ship a small **`items`** example resource that exercises the whole
 path: list with pagination, create with validation errors, delete with a 404.
 Delete it once you have real endpoints — `backend/app/api/endpoints/items.py`
 (plus its service and schema) and `frontend/src/features/items/`.
+
+## OBS Studio
+
+The dashboard's **OBS Studio** card drives a local OBS instance over
+[obs-websocket](https://github.com/obsproject/obs-websocket) v5 — connect,
+capture a screenshot, and start/stop/pause a recording. OBS Studio 28+ bundles
+the plugin; enable it under *Tools → WebSocket Server Settings*.
+
+The integration is backend-owned: the password lives in `backend/.env` and never
+reaches the browser, which only ever talks to `/api/obs/*`. Screenshots and
+recordings both land in `backend/OBS-capture/`.
+
+It is **optional and off by default** — the app boots and stays healthy with OBS
+closed, and a dropped connection re-establishes itself on the next request. See
+[backend/README.md](backend/README.md#obs-studio) for the endpoints and the
+settings.
+
+## Virtual OLED i-deck
+
+The dashboard's **i-deck** card presses the emulated button deck of a game
+running in a simulator — *Spin*, *Repeat Bet*, *Max Bet* and the rest. The deck
+is an SDL window served by `OledPanelSvc.exe`, which exposes no API, so presses
+are delivered as mouse messages posted straight to that window. **Your cursor
+never moves.**
+
+Key positions are read from the panel's own layout file rather than hardcoded,
+and every press is confirmed against `C:\logs\OledPanelSvc.log` before the
+request succeeds — a press that did not land returns a 502 rather than a
+cheerful lie.
+
+One gotcha worth knowing up front: Windows refuses input sent from a lower
+integrity level to a higher one, so **if the panel was launched elevated, the
+backend must be started elevated too**. The card says `access_denied` when that
+is the case. See
+[backend/README.md](backend/README.md#virtual-oled-i-deck) for the endpoints and
+the settings.
 
 ## Notes
 

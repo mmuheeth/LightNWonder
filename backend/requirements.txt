@@ -9,3 +9,6 @@ fastapi~=0.141.1
 uvicorn[standard]~=0.52.3
 pydantic~=2.13.4
 pydantic-settings~=2.15.0
+
+# OBS Studio control (obs-websocket v5)
+simpleobsws~=1.4.3

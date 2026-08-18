@@ -10,7 +10,7 @@ python -m venv .venv
 source .venv/Scripts/activate      # Windows (Git Bash); .venv\Scripts\Activate.ps1 on PowerShell
 # source .venv/bin/activate        # macOS / Linux
 pip install -r requirements-dev.txt
-c
+cp .env.example .env
 ```
 
 `requirements.txt` holds runtime dependencies; `requirements-dev.txt` pulls those
@@ -55,6 +55,7 @@ backend/
 ├── requirements.txt         runtime dependencies
 ├── requirements-dev.txt     + test and lint tooling
 ├── ruff.toml / pytest.ini / mypy.ini / .coveragerc
+├── OBS-capture/             screenshots and recordings land here (gitignored)
 └── app/
     ├── main.py              create_app() factory, middleware wiring, lifespan
     ├── server.py            uvicorn entrypoint (python -m app)
@@ -62,6 +63,14 @@ backend/
     │   ├── config.py        Settings via pydantic-settings; get_settings()
     │   ├── context.py       request-id ContextVar + ASGI scope key
     │   └── logging.py       dictConfig; console or JSON, request id on every line
+    ├── config/              data that ships with the code, and its readers
+    │   └── game_config/     per-game aliases, ROIs and targets + load_game_config()
+    ├── utils/
+    │   ├── win32.py         the only ctypes: posts messages to another window
+    │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
+    │   ├── panel_log.py     matches the lines that panel service writes
+    │   ├── log_tail.py      rotation-aware cursor over a file being appended to
+    │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
     │   ├── router.py        aggregates endpoint modules  → mounted at /api
     │   ├── deps.py          shared dependencies (pagination)
@@ -71,6 +80,7 @@ backend/
     │   ├── response.py      ApiResponse / PaginatedResponse envelope  ← the contract
     │   ├── health.py        health payloads
     │   ├── system.py        service info payload
+    │   ├── obs.py           OBS status, screenshot and recording payloads
     │   └── item.py          example resource schemas
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
@@ -78,6 +88,7 @@ backend/
     ├── middleware/
     │   └── request_context.py   request id, timing, access log
     └── services/            business logic; endpoints stay thin
+        └── obs.py           the single long-lived obs-websocket session
 ```
 
 Adding a resource is three files plus one line:
@@ -199,6 +210,14 @@ raise ConflictError(
 | `UnprocessableEntityError` |    422 | `UNPROCESSABLE_ENTITY` |
 | `RateLimitError`           |    429 | `RATE_LIMIT_EXCEEDED`  |
 | `ServiceUnavailableError`  |    503 | `SERVICE_UNAVAILABLE`  |
+| `ObsNotConnectedError`     |    409 | `OBS_NOT_CONNECTED`    |
+| `ObsConnectionError`       |    502 | `OBS_CONNECTION_FAILED`|
+| `ObsRequestError`          |    502 | `OBS_REQUEST_FAILED`   |
+| `IDeckWindowNotFoundError` |    409 | `IDECK_WINDOW_NOT_FOUND` |
+| `IDeckAccessDeniedError`   |    409 | `IDECK_ACCESS_DENIED`  |
+| `IDeckButtonNotFoundError` |    404 | `IDECK_BUTTON_NOT_FOUND` |
+| `IDeckPressNotConfirmedError` | 502 | `IDECK_PRESS_NOT_CONFIRMED` |
+| `IDeckConfigError`         |    500 | `IDECK_CONFIG_INVALID` |
 
 Add your own by subclassing:
 
@@ -259,6 +278,94 @@ All settings come from the environment (or `.env` locally) — see
 
 `ENVIRONMENT=production` automatically hides `/docs`, `/redoc` and
 `/openapi.json`, and disables reload.
+
+## OBS Studio
+
+Optional, and off by default. Enable the WebSocket server in OBS under *Tools >
+WebSocket Server Settings*, then set `OBS_PASSWORD` in `.env`. OBS Studio 28+
+bundles the obs-websocket v5 plugin; older versions need it installed.
+
+```
+GET  /api/obs/status             connection state; always 200
+POST /api/obs/connect            open a session (idempotent)
+POST /api/obs/disconnect         close it (idempotent, never fails)
+POST /api/obs/screenshot         base64 data URI, or a file in OBS-capture/
+GET  /api/obs/recording          recording state
+POST /api/obs/recording/start    start / stop / pause / resume
+POST /api/obs/recording/stop
+POST /api/obs/recording/pause
+POST /api/obs/recording/resume
+```
+
+Four things worth knowing:
+
+- **The app boots fine without OBS.** `OBS_AUTO_CONNECT=true` connects at
+  startup, but a failure is logged, not raised. OBS is deliberately *not*
+  registered as a health probe: a closed screen recorder should not make
+  `/health/ready` report the whole service unavailable.
+- **Reconnect is lazy.** A dropped socket is re-identified on the next request,
+  so quitting and reopening OBS needs no explicit `/connect`.
+- **`file_name` must be a bare filename.** It is resolved inside
+  `OBS_CAPTURE_DIR` and rejected if it contains a path separator or `..` —
+  otherwise the endpoint would be an arbitrary-file-write primitive. Omit it to
+  get base64 back instead.
+- **`OBS_SET_RECORD_DIRECTORY=true` points OBS's own recording directory at
+  `OBS_CAPTURE_DIR` on connect**, so recordings land beside screenshots. This
+  change persists in your OBS profile after the app exits; set it to `false` to
+  leave OBS untouched.
+
+Start and stop wait briefly for OBS to actually flip the record output before
+answering — OBS applies it asynchronously, so an immediate read reports the old
+value.
+
+## Virtual OLED i-deck
+
+Presses the emulated button deck of a game running in a simulator. The deck is
+an SDL window (`Virtual OLED`, class `SDL_app`) owned by `OledPanelSvc.exe`,
+which exposes no API — it listens on no port and speaks CORBA internally.
+
+```
+GET  /api/ideck/status           panel state; always 200
+GET  /api/ideck/buttons          every key, in layout order
+POST /api/ideck/press            press one key            {"button": "spin"}
+POST /api/ideck/sequence         press several in order
+POST /api/ideck/probe            capability check, no side effects
+```
+
+Four things worth knowing:
+
+- **Nothing moves your cursor.** A press is `PostMessage`d straight to the
+  window as `WM_MOUSEMOVE` + `WM_LBUTTONDOWN` + `WM_LBUTTONUP`. The move first
+  is not optional: SDL takes a click's position from the last motion event, not
+  from the button message.
+
+- **Geometry is read, not guessed.** `IDECK_PANEL_XML` points at the layout file
+  the panel service itself renders from, so key positions have one source of
+  truth. Only the friendly names come from
+  `app/config/game_config/games/<game>.json`:
+
+  ```json
+  "ideck": { "aliases": { "spin": "Rebet", "max_bet": "Maxbet" } }
+  ```
+
+  On the HuffNPuffLink deck there is no separate spin key — the large top-right
+  `Rebet` key repeats the last bet *and* spins — so `spin` and `repeat_bet` are
+  two names for one switch.
+
+- **Presses are proven, not assumed.** Every press the panel accepts writes
+  `Button Pressed ID=<hex>` to `IDECK_LOG_PATH`. Each press records the log size
+  first and then reads only what was appended, so a press that never landed
+  returns 502 instead of a false success. Set `IDECK_VERIFY_PRESSES=false` to
+  skip this; the result is then honestly marked `confirmed: false`.
+
+- **Integrity levels matter.** Windows (UIPI) drops input sent from a lower
+  integrity level to a higher one. If the panel was launched elevated, this
+  backend must be started elevated too — otherwise every press is refused, and
+  the symptoms look like unrelated bugs. `GET /api/ideck/status` reports
+  `access_denied` in that case rather than leaving you to guess.
+
+Start with `POST /api/ideck/probe`: it posts a mouse move and nothing else, so
+it proves input reaches the panel without touching game state.
 
 ## Logging
 

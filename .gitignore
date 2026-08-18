@@ -262,3 +262,8 @@ coverage/
 *.swp
 .DS_Store
 Thumbs.db
+
+# OBS capture output (screenshots and recordings). The `dir/*` form is
+# required: git cannot re-include a file whose parent directory is excluded.
+backend/OBS-capture/*
+!backend/OBS-capture/.gitkeep

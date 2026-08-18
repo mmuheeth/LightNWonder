@@ -16,4 +16,14 @@ export const queryKeys = Object.freeze({
     list: (params = {}) => [...queryKeys.items.all, "list", params],
     detail: (id) => [...queryKeys.items.all, "detail", id],
   }),
+  obs: Object.freeze({
+    all: ["obs"],
+    status: () => [...queryKeys.obs.all, "status"],
+    recording: () => [...queryKeys.obs.all, "recording"],
+  }),
+  ideck: Object.freeze({
+    all: ["ideck"],
+    status: () => [...queryKeys.ideck.all, "status"],
+    buttons: () => [...queryKeys.ideck.all, "buttons"],
+  }),
 });

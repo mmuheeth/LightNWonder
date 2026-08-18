@@ -58,6 +58,8 @@ src/
 │   └── utils.js            cn() class merger
 ├── features/
 │   ├── health/             api.js · use-health.js · health-card.jsx
+│   ├── ideck/              presses the Virtual OLED button deck
+│   ├── obs/                OBS Studio control: connect, screenshot, record
 │   └── items/              example CRUD resource (delete with the backend's)
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
@@ -74,6 +76,12 @@ src/
 
 Feature-first: each feature owns its API calls, hooks and components, so a
 feature can be deleted in one directory. Shared plumbing lives in `lib/`.
+
+`features/obs/` is the reference for a slice that both polls and mutates: a
+status query on a short `refetchInterval`, mutations that invalidate
+`queryKeys.obs.all`, and one mutation (`useTakeScreenshot`) whose result is read
+straight from `mutation.data` rather than the cache, so the preview needs no
+component state.
 
 ## Talking to the API
 

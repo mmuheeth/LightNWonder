@@ -102,3 +102,64 @@ class ServiceUnavailableError(AppException):
     status_code = HTTPStatus.SERVICE_UNAVAILABLE
     error_code = "SERVICE_UNAVAILABLE"
     message = "The service is temporarily unavailable"
+
+
+# --- OBS Studio -----------------------------------------------------------
+# 409 rather than 503 for "not connected": the client fixes it by connecting,
+# not by retrying. The frontend only offers a Retry button for 5xx, so this
+# split gives each failure the right affordance.
+
+
+class ObsNotConnectedError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "OBS_NOT_CONNECTED"
+    message = "Not connected to OBS Studio"
+
+
+class ObsConnectionError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "OBS_CONNECTION_FAILED"
+    message = "Could not establish a connection to OBS Studio"
+
+
+class ObsRequestError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "OBS_REQUEST_FAILED"
+    message = "OBS Studio rejected the request"
+
+
+# --- Virtual OLED i-deck --------------------------------------------------
+# Same split as OBS above: 409 when the caller has to go do something (launch
+# the panel, name a real button) and 502 when the panel is there but the press
+# could not be proven. Only the 5xx offers a Retry button in the frontend, which
+# is the right affordance for each.
+
+
+class IDeckWindowNotFoundError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "IDECK_WINDOW_NOT_FOUND"
+    message = "The Virtual OLED window is not open"
+
+
+class IDeckAccessDeniedError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "IDECK_ACCESS_DENIED"
+    message = "Windows is blocking input to the Virtual OLED window"
+
+
+class IDeckButtonNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "IDECK_BUTTON_NOT_FOUND"
+    message = "No such i-deck button"
+
+
+class IDeckPressNotConfirmedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "IDECK_PRESS_NOT_CONFIRMED"
+    message = "The i-deck press was sent but the panel never registered it"
+
+
+class IDeckConfigError(AppException):
+    status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+    error_code = "IDECK_CONFIG_INVALID"
+    message = "The i-deck configuration could not be loaded"
