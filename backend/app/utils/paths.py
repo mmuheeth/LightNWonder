@@ -58,3 +58,28 @@ def resolve_within(root: Path, name: str, *, default_suffix: str | None = None) 
     if not target.is_relative_to(root):
         raise UnsafeNameError("the resolved path escapes the target directory")
     return target
+
+
+def resolve_subdirectory(root: Path, name: str) -> Path:
+    """Resolve a caller-supplied relative directory below ``root``.
+
+    A use case may create its own folder such as ``ir-inspection/session-01``
+    without being able to redirect OBS to an arbitrary location on disk.
+    Absolute paths, drive-qualified paths, and paths that resolve above the
+    configured root are rejected.
+    """
+    value = name.strip()
+    if not value:
+        raise UnsafeNameError("the output directory must not be empty")
+
+    candidate = Path(value)
+    if candidate.is_absolute() or candidate.anchor:
+        raise UnsafeNameError(
+            "the output directory must be relative to the configured capture root"
+        )
+
+    resolved_root = root.resolve()
+    target = (resolved_root / candidate).resolve()
+    if not target.is_relative_to(resolved_root):
+        raise UnsafeNameError("the output directory escapes the configured root")
+    return target

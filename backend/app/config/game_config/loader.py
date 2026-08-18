@@ -74,10 +74,16 @@ def load_game_config(path: Path) -> GameConfig:
     if process is not None and not isinstance(process, str):
         raise GameConfigError(f"'process' in {path} must be a string")
 
+    obs = _object(document.get("obs"), where=f"'obs' in {path}")
+    obs_window_source = obs.get("window_source")
+    if obs_window_source is not None and not isinstance(obs_window_source, str):
+        raise GameConfigError(f"'obs.window_source' in {path} must be a string")
+
     return GameConfig(
         name=name,
         path=path,
         process=process,
+        obs_window_source=obs_window_source,
         ideck_aliases=freeze_mapping(
             {alias.casefold(): target for alias, target in aliases.items()}
         ),

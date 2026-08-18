@@ -14,6 +14,7 @@ import {
   getObsStatus,
   pauseRecording,
   resumeRecording,
+  selectGameWindow,
   startRecording,
   stopRecording,
   takeScreenshot,
@@ -51,6 +52,10 @@ export function useConnectObs() {
 
 export function useDisconnectObs() {
   return useObsMutation(disconnectObs);
+}
+
+export function useSelectGameWindow() {
+  return useObsMutation(selectGameWindow);
 }
 
 export function useStartRecording() {

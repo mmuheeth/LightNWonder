@@ -29,10 +29,16 @@ class ObsSettings(BaseSettings):
     OBS_CONNECT_TIMEOUT_SECONDS: float = 5.0
     OBS_REQUEST_TIMEOUT_SECONDS: float = 10.0
 
-    # Screenshots -- and recordings, when OBS_SET_RECORD_DIRECTORY is on --
-    # are written here. Relative paths resolve against the working directory,
-    # which for this project is always `backend/`.
+    # Both screenshot files and recordings default to this directory. Relative
+    # paths resolve against the working directory, which for this project is
+    # always `backend/`.
     OBS_CAPTURE_DIR: Path = Path("OBS-capture")
+    # Set either root independently when screenshots and recordings need
+    # separate deployment-level destinations. If omitted, each falls back to
+    # OBS_CAPTURE_DIR. Per-request output_dir values are safe subdirectories
+    # below the corresponding root.
+    OBS_SCREENSHOT_DIR: Path | None = None
+    OBS_RECORDING_DIR: Path | None = None
     OBS_SET_RECORD_DIRECTORY: bool = True
 
     @property
@@ -44,3 +50,13 @@ class ObsSettings(BaseSettings):
     def obs_capture_dir(self) -> Path:
         """Absolute capture directory; OBS rejects relative output paths."""
         return self.OBS_CAPTURE_DIR.resolve()
+
+    @property
+    def obs_screenshot_dir(self) -> Path:
+        """Absolute default root for screenshots."""
+        return (self.OBS_SCREENSHOT_DIR or self.OBS_CAPTURE_DIR).resolve()
+
+    @property
+    def obs_recording_dir(self) -> Path:
+        """Absolute default root for recordings."""
+        return (self.OBS_RECORDING_DIR or self.OBS_CAPTURE_DIR).resolve()

@@ -25,6 +25,8 @@ VERSION_DATA = {
     "platform": "windows",
 }
 SCENE_DATA = {"sceneName": "Main", "sceneUuid": "abc-123"}
+SCENE_ITEMS_DATA = {"sceneItems": [{"sceneItemId": 7, "sourceName": "Game Window"}]}
+INPUTS_DATA = {"inputs": [{"inputName": "Game Window", "inputKind": "window_capture"}]}
 IDLE_RECORD_DATA = {
     "outputActive": False,
     "outputPaused": False,
@@ -184,6 +186,7 @@ async def test_status_reports_what_obs_says_when_connected(
         ("post", "/api/obs/recording/pause"),
         ("post", "/api/obs/recording/resume"),
         ("post", "/api/obs/screenshot"),
+        ("post", "/api/obs/select-game-window"),
     ],
 )
 async def test_actions_require_a_connection(
@@ -213,6 +216,35 @@ async def test_disconnect_closes_a_live_session(
     assert response.status_code == 200
     assert fake.disconnected is True
     assert obs_service._client is None
+
+
+async def test_select_game_window_uses_the_active_config_process(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                **CONNECTED_RESPONSES,
+                "GetSceneItemList": SCENE_ITEMS_DATA,
+                "GetInputList": INPUTS_DATA,
+                "SetInputSettings": {},
+            }
+        ),
+    )
+
+    response = await client.post("/api/obs/select-game-window")
+
+    assert response.status_code == 200
+    data = assert_success(response.json())
+    assert data["game"] == "HuffNPuffLink"
+    assert data["process"] == "HuffNPuffLink.exe"
+    assert data["source_name"] == "Game Window"
+    assert fake.data_for("SetInputSettings") == {
+        "inputName": "Game Window",
+        "inputSettings": {"window": "::HuffNPuffLink.exe", "priority": 2},
+        "overlay": True,
+    }
 
 
 # --- screenshots ----------------------------------------------------------
@@ -268,7 +300,7 @@ async def test_screenshot_honours_an_explicit_source(
     assert "GetCurrentProgramScene" not in fake.request_types()
 
 
-async def test_screenshot_to_a_file_returns_a_path_inside_the_capture_dir(
+async def test_screenshot_to_a_file_returns_a_path_inside_the_screenshot_root(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = install(monkeypatch, FakeClient(responses={"SaveSourceScreenshot": {}}))
@@ -284,7 +316,7 @@ async def test_screenshot_to_a_file_returns_a_path_inside_the_capture_dir(
 
     saved = Path(data["file_path"])
     assert saved.is_absolute()
-    assert saved.is_relative_to(settings.obs_capture_dir)
+    assert saved.is_relative_to(settings.obs_screenshot_dir)
     # A missing suffix is filled in from image_format.
     assert saved.name == "shot.png"
     assert fake.data_for("SaveSourceScreenshot") == {
@@ -293,6 +325,59 @@ async def test_screenshot_to_a_file_returns_a_path_inside_the_capture_dir(
         "imageCompressionQuality": -1,
         "imageFilePath": str(saved),
     }
+
+
+async def test_screenshot_can_use_a_use_case_subdirectory(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = install(monkeypatch, FakeClient(responses={"SaveSourceScreenshot": {}}))
+
+    response = await client.post(
+        "/api/obs/screenshot",
+        json={
+            "source_name": "Main",
+            "file_name": "frame",
+            "output_dir": "ir-inspection/session-01",
+        },
+    )
+
+    assert response.status_code == 200
+    saved = Path(assert_success(response.json())["file_path"])
+    assert (
+        saved
+        == settings.obs_screenshot_dir / "ir-inspection" / "session-01" / "frame.png"
+    )
+    assert fake.data_for("SaveSourceScreenshot")["imageFilePath"] == str(saved)
+
+
+async def test_screenshot_output_dir_requires_a_file_name(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install(monkeypatch, FakeClient(responses={"SaveSourceScreenshot": {}}))
+
+    response = await client.post(
+        "/api/obs/screenshot", json={"output_dir": "ir-inspection"}
+    )
+
+    assert response.status_code == 422
+    assert_failure(response.json(), code="VALIDATION_ERROR")
+
+
+@pytest.mark.parametrize("output_dir", ["../escape", "..\\escape", "C:/escape"])
+async def test_screenshot_rejects_output_dirs_outside_the_capture_root(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, output_dir: str
+) -> None:
+    fake = install(monkeypatch, FakeClient(responses={"SaveSourceScreenshot": {}}))
+
+    response = await client.post(
+        "/api/obs/screenshot",
+        json={"source_name": "Main", "file_name": "frame", "output_dir": output_dir},
+    )
+
+    assert response.status_code == 400
+    error = assert_failure(response.json(), code="BAD_REQUEST")
+    assert error["details"][0]["field"] == "body.output_dir"
+    assert fake.calls == []
 
 
 @pytest.mark.parametrize(
@@ -374,7 +459,11 @@ async def test_start_recording_reports_the_new_state(
     fake = install(
         monkeypatch,
         FakeClient(
-            responses={"StartRecord": {}, "GetRecordStatus": ACTIVE_RECORD_DATA}
+            responses={
+                "SetRecordDirectory": {},
+                "StartRecord": {},
+                "GetRecordStatus": ACTIVE_RECORD_DATA,
+            }
         ),
     )
 
@@ -383,7 +472,36 @@ async def test_start_recording_reports_the_new_state(
     assert response.status_code == 200
     assert assert_success(response.json())["active"] is True
     # StartRecord returns no data, so the state is re-read afterwards.
-    assert fake.request_types() == ["StartRecord", "GetRecordStatus"]
+    assert fake.request_types() == [
+        "SetRecordDirectory",
+        "StartRecord",
+        "GetRecordStatus",
+    ]
+
+
+async def test_start_recording_can_use_a_use_case_subdirectory(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                "SetRecordDirectory": {},
+                "StartRecord": {},
+                "GetRecordStatus": ACTIVE_RECORD_DATA,
+            }
+        ),
+    )
+
+    response = await client.post(
+        "/api/obs/recording/start", json={"output_dir": "video/session-01"}
+    )
+
+    assert response.status_code == 200
+    assert assert_success(response.json())["active"] is True
+    assert fake.data_for("SetRecordDirectory") == {
+        "recordDirectory": str(settings.obs_recording_dir / "video" / "session-01")
+    }
 
 
 async def test_stop_recording_returns_the_output_path(
@@ -527,9 +645,9 @@ async def test_connect_reuses_a_live_session(
     data = assert_success(response.json())
     assert data["state"] == "connected"
     assert data["obs_version"] == "30.2.3"
-    # The capture directory is handed to OBS so recordings land beside shots.
+    # The default recording root is handed to OBS so recordings land beside shots.
     assert fake.data_for("SetRecordDirectory") == {
-        "recordDirectory": str(settings.obs_capture_dir)
+        "recordDirectory": str(settings.obs_recording_dir)
     }
 
 
@@ -549,7 +667,13 @@ class SettlingClient(FakeClient):
     """Reports the old record state once before flipping, as OBS really does."""
 
     def __init__(self, *, stale: dict[str, Any], fresh: dict[str, Any]):
-        super().__init__(responses={"StartRecord": {}, "StopRecord": {}})
+        super().__init__(
+            responses={
+                "SetRecordDirectory": {},
+                "StartRecord": {},
+                "StopRecord": {},
+            }
+        )
         self._states = [stale, fresh]
 
     async def call(
@@ -603,7 +727,13 @@ async def test_a_stuck_output_is_reported_rather_than_hanging(
     monkeypatch.setattr(obs_service, "_SETTLE_DELAY_SECONDS", 0.0)
     install(
         monkeypatch,
-        FakeClient(responses={"StartRecord": {}, "GetRecordStatus": IDLE_RECORD_DATA}),
+        FakeClient(
+            responses={
+                "SetRecordDirectory": {},
+                "StartRecord": {},
+                "GetRecordStatus": IDLE_RECORD_DATA,
+            }
+        ),
     )
 
     response = await client.post("/api/obs/recording/start")

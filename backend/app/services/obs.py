@@ -26,6 +26,12 @@ from typing import Any
 import simpleobsws
 from websockets.exceptions import WebSocketException
 
+from app.config.game_config import (
+    ActiveGameSelectionError,
+    GameConfig,
+    GameConfigError,
+    load_game_config,
+)
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
@@ -37,13 +43,14 @@ from app.exceptions.base import (
 )
 from app.schemas.obs import (
     ObsConnectionState,
+    ObsGameWindowSelection,
     ObsRecordStatus,
     ObsStatus,
     ScreenshotRequest,
     ScreenshotResult,
 )
 from app.schemas.response import ErrorDetail
-from app.utils.paths import UnsafeNameError, resolve_within
+from app.utils.paths import UnsafeNameError, resolve_subdirectory, resolve_within
 
 logger = get_logger("obs")
 
@@ -57,6 +64,12 @@ _lock: asyncio.Lock | None = None
 # the frontend's 15s request timeout.
 _SETTLE_ATTEMPTS = 30
 _SETTLE_DELAY_SECONDS = 0.1
+
+# OBS's Windows capture plugin stores a window as ``title:class:executable``.
+# An executable-only target therefore has empty title/class components and uses
+# the plugin's executable matching priority.
+_WINDOW_CAPTURE_KIND_PREFIX = "window_capture"
+_WINDOW_PRIORITY_EXE = 2
 
 
 # --- internals ------------------------------------------------------------
@@ -191,8 +204,27 @@ def _record_status(
     )
 
 
-def _resolve_capture_path(file_name: str, image_format: str) -> Path:
-    """Resolve a caller-supplied filename inside the capture directory.
+def _resolve_output_dir(root: Path, output_dir: str | None) -> Path:
+    """Resolve an optional use-case directory below a configured output root."""
+    if output_dir is None:
+        return root.resolve()
+
+    try:
+        return resolve_subdirectory(root, output_dir)
+    except UnsafeNameError as exc:
+        raise BadRequestError(
+            "output_dir must be a relative directory inside the configured "
+            f"capture root: {exc.reason}",
+            details=[
+                ErrorDetail(field="body.output_dir", message=exc.reason, type="value")
+            ],
+        ) from exc
+
+
+def _resolve_capture_path(
+    file_name: str, image_format: str, output_dir: str | None
+) -> Path:
+    """Resolve a caller-supplied filename inside the screenshot output root.
 
     Callers pass a bare filename, never a path. Without this the screenshot
     endpoint would let any client write a file anywhere the OBS process can
@@ -201,15 +233,14 @@ def _resolve_capture_path(file_name: str, image_format: str) -> Path:
 
     Raises:
         BadRequestError: if the name carries a path separator or a parent
-            reference, or would otherwise land outside the capture directory.
+            reference, or the output directory escapes its configured root.
     """
+    root = _resolve_output_dir(settings.obs_screenshot_dir, output_dir)
     try:
-        return resolve_within(
-            settings.obs_capture_dir, file_name, default_suffix=image_format
-        )
+        return resolve_within(root, file_name, default_suffix=image_format)
     except UnsafeNameError as exc:
         raise BadRequestError(
-            "file_name must be a bare filename inside the capture directory: "
+            "file_name must be a bare filename inside the output directory: "
             f"{exc.reason}",
             details=[
                 ErrorDetail(field="body.file_name", message=exc.reason, type="value")
@@ -233,17 +264,130 @@ async def _current_scene() -> str:
     return name
 
 
-async def _set_record_directory() -> None:
-    """Point OBS's recording directory at the capture directory.
+def _active_game() -> GameConfig:
+    """Load the one game config selected in the game-config directory."""
+    try:
+        active_game = settings.ideck_active_game
+        return load_game_config(settings.ideck_game_config_path_for(active_game))
+    except ActiveGameSelectionError as exc:
+        raise ObsRequestError(str(exc)) from exc
+    except GameConfigError as exc:
+        raise ObsRequestError(
+            f"Could not load the active game config {active_game!r}: {exc}"
+        ) from exc
 
-    Best effort: a failure is logged rather than raised, so an older OBS that
-    lacks the request does not block connecting.
+
+def _obs_window_component(value: str) -> str:
+    """Encode one component of OBS's colon-delimited window identifier."""
+    return value.replace("#", "#22").replace(":", "#3A")
+
+
+def _process_window_identifier(process: str) -> str:
+    """Build an OBS window identifier that matches by executable name."""
+    process = process.strip()
+    if not process:
+        raise ObsRequestError(
+            "The active game config must define a non-empty "
+            "'process' for OBS window selection"
+        )
+    return f"::{_obs_window_component(process)}"
+
+
+def _scene_source_names(data: dict[str, Any]) -> list[str]:
+    """Read unique source names from a ``GetSceneItemList`` response."""
+    items = data.get("sceneItems")
+    if not isinstance(items, list):
+        raise ObsRequestError("OBS returned no usable scene-item list")
+
+    names: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = _as_str(item.get("sourceName"))
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _window_source_names(data: dict[str, Any], scene_sources: list[str]) -> list[str]:
+    """Return window-capture inputs that are present in the active scene."""
+    inputs = data.get("inputs")
+    if not isinstance(inputs, list):
+        raise ObsRequestError("OBS returned no usable input list")
+
+    scene_source_set = set(scene_sources)
+    names: list[str] = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            continue
+        name = _as_str(item.get("inputName"))
+        kind = _as_str(item.get("inputKind"))
+        if (
+            name
+            and name in scene_source_set
+            and kind
+            and kind.casefold().startswith(_WINDOW_CAPTURE_KIND_PREFIX)
+            and name not in names
+        ):
+            names.append(name)
+    return names
+
+
+async def _window_source_for_game(scene: str, configured_source: str | None) -> str:
+    """Find the active scene's window-capture input for the selected game."""
+    scene_data = await _call("GetSceneItemList", {"sceneName": scene})
+    scene_sources = _scene_source_names(scene_data)
+    input_data = await _call("GetInputList")
+    candidates = _window_source_names(input_data, scene_sources)
+
+    if configured_source:
+        if configured_source not in candidates:
+            found = ", ".join(candidates) or "none"
+            raise ObsRequestError(
+                f"OBS source {configured_source!r} from the active game config "
+                f"is not a window-capture source in scene {scene!r} "
+                f"(found: {found})"
+            )
+        return configured_source
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ObsRequestError(
+            f"OBS scene {scene!r} has no window-capture source. Add one to the "
+            "active program scene or set 'obs.window_source' in the game config."
+        )
+    raise ObsRequestError(
+        f"OBS scene {scene!r} has multiple window-capture sources "
+        f"({', '.join(candidates)}); set 'obs.window_source' in the active "
+        "game config to choose one"
+    )
+
+
+async def _set_record_directory(directory: Path, *, required: bool = False) -> None:
+    """Point OBS's recording directory at ``directory``.
+
+    Connection setup treats this as best effort for compatibility with older
+    OBS versions. A recording start treats it as required because silently
+    recording into a different use-case directory would be worse than failing.
     """
-    directory = settings.obs_capture_dir
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        if required:
+            raise ObsRequestError(
+                f"Could not create the OBS recording directory {directory}: {exc}"
+            ) from exc
+        logger.warning(
+            "Could not create the OBS recording directory %s: %s", directory, exc
+        )
+        return
+
     try:
         await _call("SetRecordDirectory", {"recordDirectory": str(directory)})
     except AppException as exc:
+        if required:
+            raise
         logger.warning("Could not set the OBS recording directory: %s", exc.message)
     else:
         logger.info("OBS recording directory set to %s", directory)
@@ -287,8 +431,9 @@ async def connect() -> ObsStatus:
 
     Safe to call repeatedly: an already-identified session is reused. When
     ``OBS_SET_RECORD_DIRECTORY`` is on, OBS's own recording directory is pointed
-    at the capture directory -- note that this change persists in the user's OBS
-    profile after the app exits.
+    at the configured recording root -- note that this change persists in the
+    user's OBS profile after the app exits. An explicit recording ``output_dir``
+    is always applied when a recording starts.
 
     Raises:
         ObsConnectionError: if OBS is unreachable or rejects the password.
@@ -306,8 +451,62 @@ async def connect() -> ObsStatus:
     # Both of these go through _call(), which takes the lock, so they stay
     # outside it: asyncio.Lock is not reentrant.
     if settings.OBS_SET_RECORD_DIRECTORY:
-        await _set_record_directory()
+        await _set_record_directory(settings.obs_recording_dir)
+
+    # Selecting the game window is best effort during connection: OBS may be
+    # running with a different scene collection or without a source yet. The
+    # dedicated endpoint below lets the caller retry once the scene is ready.
+    try:
+        await select_current_game_window()
+    except AppException as exc:
+        logger.warning("Could not select the active game's OBS window: %s", exc.message)
     return await status()
+
+
+async def select_current_game_window() -> ObsGameWindowSelection:
+    """Point the active scene's window-capture source at the active game.
+
+    The game is selected through the persistent active-game file. Its JSON
+    config supplies the process name, while the source is discovered from the
+    current OBS program scene (or optionally disambiguated with
+    ``obs.window_source``).
+    Repeating this operation is safe: OBS receives the same settings again.
+
+    Raises:
+        ObsRequestError: if the active game has no process, the scene has no
+            usable window-capture source, or OBS rejects a request.
+    """
+    await _ensure_connected()
+    game = _active_game()
+    process = game.process or ""
+    window = _process_window_identifier(process)
+    scene = await _current_scene()
+    source_name = await _window_source_for_game(scene, game.obs_window_source)
+
+    await _call(
+        "SetInputSettings",
+        {
+            "inputName": source_name,
+            "inputSettings": {
+                "window": window,
+                "priority": _WINDOW_PRIORITY_EXE,
+            },
+            "overlay": True,
+        },
+    )
+    logger.info(
+        "OBS window source %r now follows %s (%s) in scene %r",
+        source_name,
+        game.name,
+        process.strip(),
+        scene,
+    )
+    return ObsGameWindowSelection(
+        game=game.name,
+        process=process.strip(),
+        scene=scene,
+        source_name=source_name,
+    )
 
 
 async def disconnect() -> ObsStatus:
@@ -357,11 +556,12 @@ async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
     """Capture a screenshot of a source or scene.
 
     With no ``file_name`` the image comes back as a base64 data URI, ready for an
-    ``<img>`` tag. With one, OBS writes the file into the capture directory and
-    only the path is returned.
+    ``<img>`` tag. With one, OBS writes the file into the configured screenshot
+    root or its requested use-case subdirectory and only the path is returned.
 
     Raises:
-        BadRequestError: if ``file_name`` is not a bare filename.
+        BadRequestError: if ``file_name`` is not a bare filename or
+            ``output_dir`` is outside the configured screenshot root.
         ObsNotConnectedError: if a connection has never been established.
         ObsConnectionError: if the session is gone and cannot be re-established.
         ObsRequestError: if OBS rejected the request or returned no image.
@@ -389,7 +589,9 @@ async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
         )
 
     # Resolved before the request, so a rejected name never reaches OBS.
-    target = _resolve_capture_path(payload.file_name, payload.image_format)
+    target = _resolve_capture_path(
+        payload.file_name, payload.image_format, payload.output_dir
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     request_data["imageFilePath"] = str(target)
     await _call("SaveSourceScreenshot", request_data)
@@ -406,14 +608,24 @@ async def record_status() -> ObsRecordStatus:
     return _record_status(await _call("GetRecordStatus"))
 
 
-async def start_recording() -> ObsRecordStatus:
-    """Start recording.
+async def start_recording(output_dir: str | None = None) -> ObsRecordStatus:
+    """Start recording in the default or requested use-case directory.
 
     Raises:
+        BadRequestError: if ``output_dir`` escapes the configured recording root.
         ObsRequestError: if a recording is already running.
     """
+    directory: Path | None = None
+    if output_dir is not None or settings.OBS_SET_RECORD_DIRECTORY:
+        directory = _resolve_output_dir(settings.obs_recording_dir, output_dir)
+        await _set_record_directory(directory, required=True)
     await _call("StartRecord")
-    logger.info("OBS recording started")
+    logger.info(
+        "OBS recording started%s",
+        f" in {directory}"
+        if directory is not None
+        else " in OBS's configured directory",
+    )
     return await _settled_record_status(active=True)
 
 

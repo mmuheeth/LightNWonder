@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
+from app.config.game_config import save_active_game
 from app.core.config import settings
 from app.services import ideck as ideck_service
 from app.utils import panel_log as panel_log_format
@@ -289,7 +290,7 @@ def ideck_env(
     monkeypatch.setattr(settings, "IDECK_PANEL_XML", panel_xml)
     monkeypatch.setattr(settings, "IDECK_LOG_PATH", panel_log)
     monkeypatch.setattr(settings, "IDECK_GAME_CONFIG_DIR", games)
-    monkeypatch.setattr(settings, "IDECK_GAME", "HuffNPuffLink")
+    save_active_game(settings.ideck_active_game_path, "HuffNPuffLink")
     monkeypatch.setattr(settings, "IDECK_PRESS_HOLD_SECONDS", 0.0)
     monkeypatch.setattr(settings, "IDECK_VERIFY_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(settings, "IDECK_VERIFY_PRESSES", True)
@@ -832,10 +833,10 @@ def test_the_game_name_cannot_escape_the_config_directory(name: str) -> None:
     """It is interpolated into a path, so a separator would read anything."""
     from pydantic import ValidationError
 
-    from app.core.config import Settings
+    from app.schemas.games import SelectGameRequest
 
     with pytest.raises(ValidationError, match="bare name"):
-        Settings(IDECK_GAME=name)
+        SelectGameRequest(game=name)
 
 
 # --- integrity-level blocking ---------------------------------------------

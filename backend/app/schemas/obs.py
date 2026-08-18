@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ObsConnectionState(StrEnum):
@@ -61,17 +61,33 @@ class ObsStatus(BaseModel):
     )
 
 
+class ObsGameWindowSelection(BaseModel):
+    """The OBS source updated to follow the selected game's process."""
+
+    game: str = Field(description="Name of the active game config.")
+    process: str = Field(description="Process name from the active game config.")
+    scene: str = Field(description="Program scene containing the selected source.")
+    source_name: str = Field(description="OBS window-capture source that was updated.")
+
+
 class ScreenshotRequest(BaseModel):
     """Request body for capturing a screenshot.
 
     Omit ``file_name`` to receive the image inline as a base64 data URI. Provide
-    it to have OBS write the file into the configured capture directory
-    instead.
+    it to have OBS write the file into the configured screenshot directory.
+    ``output_dir`` optionally selects a relative use-case subdirectory below
+    that root.
     """
 
     model_config = ConfigDict(
         json_schema_extra={
-            "examples": [{"image_format": "png", "width": 1280, "quality": -1}]
+            "examples": [
+                {"image_format": "png", "width": 1280, "quality": -1},
+                {
+                    "file_name": "frame",
+                    "output_dir": "ir-inspection/session-01",
+                },
+            ]
         }
     )
 
@@ -102,8 +118,38 @@ class ScreenshotRequest(BaseModel):
         min_length=1,
         max_length=200,
         description=(
-            "Bare filename to write into the capture directory. Must not "
-            "contain a path separator. Omit to receive base64 instead."
+            "Bare filename to write into the output directory. Must not contain "
+            "a path separator. Omit to receive base64 instead."
+        ),
+    )
+    output_dir: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+        description=(
+            "Optional relative use-case directory below the configured screenshot "
+            "root, for example 'ir-inspection/session-01'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _output_dir_requires_file(self) -> ScreenshotRequest:
+        """Do not silently ignore a requested output directory."""
+        if self.output_dir is not None and self.file_name is None:
+            raise ValueError("output_dir requires file_name")
+        return self
+
+
+class RecordStartRequest(BaseModel):
+    """Optional output subdirectory for a new recording."""
+
+    output_dir: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=300,
+        description=(
+            "Optional relative use-case directory below the configured recording "
+            "root, for example 'ir-inspection/session-01'."
         ),
     )
 

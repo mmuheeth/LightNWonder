@@ -1,6 +1,7 @@
 import {
   Camera,
   Circle,
+  Crosshair,
   Pause,
   Play,
   Plug,
@@ -29,6 +30,7 @@ import {
   useObsStatus,
   usePauseRecording,
   useResumeRecording,
+  useSelectGameWindow,
   useStartRecording,
   useStopRecording,
   useTakeScreenshot,
@@ -57,6 +59,7 @@ export function ObsPanel() {
 
   const connect = useConnectObs();
   const disconnect = useDisconnectObs();
+  const selectWindow = useSelectGameWindow();
   const start = useStartRecording();
   const stop = useStopRecording();
   const pause = usePauseRecording();
@@ -78,6 +81,7 @@ export function ObsPanel() {
   const busy =
     connect.isPending ||
     disconnect.isPending ||
+    selectWindow.isPending ||
     start.isPending ||
     stop.isPending ||
     pause.isPending ||
@@ -86,6 +90,7 @@ export function ObsPanel() {
   const actionError =
     connect.error ??
     disconnect.error ??
+    selectWindow.error ??
     start.error ??
     stop.error ??
     pause.error ??
@@ -181,6 +186,18 @@ export function ObsPanel() {
                 </Button>
               )}
 
+              {isConnected ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => selectWindow.mutate()}
+                  disabled={busy}
+                >
+                  <Crosshair />
+                  Select game window
+                </Button>
+              ) : null}
+
               {isRecording ? (
                 <>
                   <Button
@@ -244,6 +261,12 @@ export function ObsPanel() {
             {savedPath ? (
               <p className="text-muted-foreground font-mono text-xs break-all">
                 Saved {savedPath}
+              </p>
+            ) : null}
+
+            {selectWindow.data ? (
+              <p className="text-muted-foreground text-xs">
+                {selectWindow.data.source_name} follows {selectWindow.data.process}
               </p>
             ) : null}
 

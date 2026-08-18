@@ -120,7 +120,7 @@ backend/app/
 ├── api/            router.py, health.py, endpoints/   ← routes only, kept thin
 ├── schemas/        response.py holds the envelope     ← the contract
 ├── exceptions/     base.py hierarchy, handlers.py     ← the only error renderer
-├── services/       business logic (incl. obs.py, ideck.py)
+├── services/       business logic (incl. games.py, obs.py, ideck.py)
 ├── config/         game data that ships with the code, and its reader
 ├── utils/          win32 interop, panel layout/log formats, log tail, safe paths
 ├── middleware/     request id, timing, access log
@@ -149,7 +149,14 @@ the plugin; enable it under *Tools → WebSocket Server Settings*.
 
 The integration is backend-owned: the password lives in `backend/.env` and never
 reaches the browser, which only ever talks to `/api/obs/*`. Screenshots and
-recordings both land in `backend/OBS-capture/`.
+recordings default to `backend/OBS-capture/`; each request can use a relative
+use-case subfolder, and screenshot/recording roots can be configured separately.
+
+When OBS connects, the active scene's window-capture source is pointed at the
+`process` from the active game config. The dashboard also exposes a
+“Select game window” action for retrying after changing scenes or starting OBS.
+If a scene contains multiple window-capture sources, the selected game's JSON
+can disambiguate them with `obs.window_source`.
 
 It is **optional and off by default** — the app boots and stays healthy with OBS
 closed, and a dropped connection re-establishes itself on the next request. See
@@ -159,7 +166,8 @@ settings.
 ## Virtual OLED i-deck
 
 The dashboard's **i-deck** card presses the emulated button deck of the
-currently selected game. The deck is an SDL window served by
+currently selected game. Choose the active game from the dashboard selector;
+the deck is an SDL window served by
 `OledPanelSvc.exe`, which exposes no API, so presses are delivered as mouse
 messages posted straight to that window. **Your cursor never moves.** Button
 names and game-specific details come from the selected file in

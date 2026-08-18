@@ -163,3 +163,18 @@ class IDeckConfigError(AppException):
     status_code = HTTPStatus.INTERNAL_SERVER_ERROR
     error_code = "IDECK_CONFIG_INVALID"
     message = "The i-deck configuration could not be loaded"
+
+
+# --- Game selection ------------------------------------------------------
+
+
+class GameNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "GAME_NOT_FOUND"
+    message = "The requested game configuration was not found"
+
+
+class GameConfigInvalidError(AppException):
+    status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+    error_code = "GAME_CONFIG_INVALID"
+    message = "A game configuration could not be loaded"

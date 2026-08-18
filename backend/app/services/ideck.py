@@ -40,7 +40,12 @@ import re
 import time
 from collections.abc import Mapping
 
-from app.config.game_config import GameConfig, GameConfigError, load_game_config
+from app.config.game_config import (
+    ActiveGameSelectionError,
+    GameConfig,
+    GameConfigError,
+    load_game_config,
+)
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
@@ -123,11 +128,12 @@ def _game_or_raise() -> GameConfig:
     global _game
     if _game is None:
         try:
-            _game = load_game_config(settings.ideck_game_config_path)
+            active_game = settings.ideck_active_game
+            _game = load_game_config(settings.ideck_game_config_path_for(active_game))
+        except ActiveGameSelectionError as exc:
+            raise IDeckConfigError(str(exc)) from exc
         except GameConfigError as exc:
-            raise IDeckConfigError(
-                f"Config for game {settings.IDECK_GAME!r}: {exc}"
-            ) from exc
+            raise IDeckConfigError(f"Config for game {active_game!r}: {exc}") from exc
     return _game
 
 
@@ -317,7 +323,7 @@ async def status() -> IDeckStatus:
     base = {
         "window_title": settings.IDECK_WINDOW_TITLE,
         "window_class": settings.IDECK_WINDOW_CLASS,
-        "game": settings.IDECK_GAME,
+        "game": "unknown",
         "panel_xml": str(settings.ideck_panel_xml),
         "log_path": str(settings.ideck_log_path),
         "verify_presses": settings.IDECK_VERIFY_PRESSES,
@@ -327,10 +333,14 @@ async def status() -> IDeckStatus:
         return IDeckStatus(state=IDeckWindowState.UNSUPPORTED, **base)
 
     try:
+        base["game"] = settings.ideck_active_game
         layout = _layout_or_raise()
         # Loaded but unused here: it surfaces a broken game config as a reported
         # state rather than letting the first press be the thing that finds out.
         _game_or_raise()
+    except ActiveGameSelectionError as exc:
+        logger.warning("i-deck active-game selection is unusable: %s", exc)
+        return IDeckStatus(state=IDeckWindowState.NOT_FOUND, **base)
     except AppException as exc:
         logger.warning("i-deck configuration is unusable: %s", exc.message)
         return IDeckStatus(state=IDeckWindowState.NOT_FOUND, **base)
@@ -596,3 +606,9 @@ def reset() -> None:
     _layout = None
     _game = None
     _lock = None
+
+
+def reset_game_config() -> None:
+    """Drop only the cached per-game metadata after a runtime game switch."""
+    global _game
+    _game = None

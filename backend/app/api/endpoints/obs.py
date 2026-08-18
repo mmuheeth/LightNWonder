@@ -19,8 +19,10 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.schemas.obs import (
+    ObsGameWindowSelection,
     ObsRecordStatus,
     ObsStatus,
+    RecordStartRequest,
     ScreenshotRequest,
     ScreenshotResult,
 )
@@ -81,19 +83,34 @@ async def disconnect() -> ApiResponse[ObsStatus]:
 
 
 @router.post(
+    "/select-game-window",
+    response_model=ApiResponse[ObsGameWindowSelection],
+    summary="Select the active game's OBS window",
+    responses=OBS_ERRORS,
+)
+async def select_game_window() -> ApiResponse[ObsGameWindowSelection]:
+    """Point the active scene's window-capture source at the active game process."""
+    selection = await obs_service.select_current_game_window()
+    return ApiResponse[ObsGameWindowSelection].ok(
+        data=selection, message="OBS window source selected for the active game"
+    )
+
+
+@router.post(
     "/screenshot",
     response_model=ApiResponse[ScreenshotResult],
     summary="Capture a screenshot",
     responses={
         **OBS_ERRORS,
-        400: {"description": "file_name is not a bare filename"},
+        400: {"description": "file_name or output_dir is outside its allowed root"},
     },
 )
 async def take_screenshot(payload: ScreenshotRequest) -> ApiResponse[ScreenshotResult]:
     """Capture a source or scene.
 
     Omit ``file_name`` for a base64 data URI in the response; supply one to have
-    OBS write the file into the configured capture directory instead.
+    OBS write the file into the configured screenshot directory instead. Use
+    ``output_dir`` for a relative use-case subdirectory.
     """
     result = await obs_service.take_screenshot(payload)
     return ApiResponse[ScreenshotResult].ok(
@@ -119,12 +136,20 @@ async def get_recording() -> ApiResponse[ObsRecordStatus]:
     "/recording/start",
     response_model=ApiResponse[ObsRecordStatus],
     summary="Start recording",
-    responses=OBS_ERRORS,
+    responses={
+        **OBS_ERRORS,
+        400: {"description": "output_dir is outside the allowed root"},
+    },
 )
-async def start_recording() -> ApiResponse[ObsRecordStatus]:
-    """Start recording."""
+async def start_recording(
+    payload: RecordStartRequest | None = None,
+) -> ApiResponse[ObsRecordStatus]:
+    """Start recording, optionally in a relative use-case subdirectory."""
     return ApiResponse[ObsRecordStatus].ok(
-        data=await obs_service.start_recording(), message="Recording started"
+        data=await obs_service.start_recording(
+            output_dir=payload.output_dir if payload else None
+        ),
+        message="Recording started",
     )
 
 

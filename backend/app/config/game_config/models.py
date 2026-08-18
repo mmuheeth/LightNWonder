@@ -28,6 +28,14 @@ class GameConfig:
     process: str | None
     """Game process name, when the config declares one."""
 
+    obs_window_source: str | None
+    """Optional OBS window-capture source name for this game.
+
+    When omitted, the OBS service discovers the window-capture source in the
+    active program scene. Set this only when that scene contains more than one
+    window-capture source and the config needs to disambiguate them.
+    """
+
     ideck_aliases: Mapping[str, str]
     """Friendly name -> layout key mapping from the selected game.
 

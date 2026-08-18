@@ -59,6 +59,7 @@ src/
 ├── features/
 │   ├── health/             api.js · use-health.js · health-card.jsx
 │   ├── ideck/              presses the Virtual OLED button deck
+│   ├── games/              active game catalog and selector
 │   ├── obs/                OBS Studio control: connect, screenshot, record
 │   └── items/              example CRUD resource (delete with the backend's)
 ├── components/

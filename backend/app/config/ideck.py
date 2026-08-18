@@ -9,12 +9,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
-__all__ = ["IDeckSettings"]
+__all__ = ["IDeckSettings", "normalize_game_name"]
+
+
+def normalize_game_name(value: str, *, label: str = "game") -> str:
+    """Validate the bare filename stem used to select a game config."""
+    name = value.strip()
+    if not name:
+        raise ValueError(f"{label} must not be empty")
+    if Path(name).name != name or not name.strip("."):
+        raise ValueError(
+            f"{label} must be a bare name: no path separators, drive letters "
+            f"or '..' (got {value!r})"
+        )
+    return name
 
 
 class IDeckSettings(BaseSettings):
@@ -33,11 +45,10 @@ class IDeckSettings(BaseSettings):
     # "Button Pressed ID=<hex>", which is how a press is confirmed.
     IDECK_LOG_PATH: Path = Path(r"C:\logs\OledPanelSvc.log")
 
-    # Selects <IDECK_GAME_CONFIG_DIR>/<IDECK_GAME>.json. Must be a bare name.
-    IDECK_GAME: str = "HuffNPuffLink"
     # Game configs ship with the code, so this is anchored to the package, not
     # to the working directory. An override may be absolute, or relative to
-    # the `app` package.
+    # the `app` package. The selected filename is stored beside this directory
+    # in `game_config/active_game.json`.
     IDECK_GAME_CONFIG_DIR: Path = PACKAGE_ROOT / "config" / "game_config" / "games"
 
     # Hold between button-down and button-up. A real press measures ~200ms in
@@ -53,24 +64,6 @@ class IDeckSettings(BaseSettings):
     # unconfirmed, foreground the panel and try once more. Still no cursor move.
     IDECK_FOCUS_ON_RETRY: bool = True
 
-    @field_validator("IDECK_GAME")
-    @classmethod
-    def _bare_game_name(cls, value: str) -> str:
-        """Keep the game name a bare filename.
-
-        It is interpolated into a path, so a separator or a parent reference
-        here would let the setting read a file anywhere on disk.
-        """
-        name = value.strip()
-        if not name:
-            raise ValueError("IDECK_GAME must not be empty")
-        if Path(name).name != name or not name.strip("."):
-            raise ValueError(
-                "IDECK_GAME must be a bare name: no path separators, drive "
-                f"letters or '..' (got {value!r})"
-            )
-        return name
-
     @property
     def ideck_panel_xml(self) -> Path:
         """Absolute path to the panel layout the OLED service renders from."""
@@ -82,14 +75,33 @@ class IDeckSettings(BaseSettings):
         return self.IDECK_LOG_PATH.resolve()
 
     @property
-    def ideck_game_config_path(self) -> Path:
-        """Absolute path to the selected game's config file.
-
-        A relative ``IDECK_GAME_CONFIG_DIR`` resolves against the ``app``
-        package rather than the working directory, because these files are
-        shipped with the code.
-        """
+    def ideck_game_config_dir(self) -> Path:
+        """Absolute directory containing the shipped game config files."""
         directory = self.IDECK_GAME_CONFIG_DIR
         if not directory.is_absolute():
             directory = PACKAGE_ROOT / directory
-        return (directory / f"{self.IDECK_GAME}.json").resolve()
+        return directory.resolve()
+
+    @property
+    def ideck_active_game_path(self) -> Path:
+        """Absolute path to the persisted active-game selection file."""
+        return (self.ideck_game_config_dir.parent / "active_game.json").resolve()
+
+    @property
+    def ideck_active_game(self) -> str:
+        """Read the manually selected game name from the config directory."""
+        # Imported lazily because the selection helper uses normalize_game_name
+        # from this module, and importing it at module load time would cycle.
+        from app.config.game_config.selection import load_active_game
+
+        return load_active_game(self.ideck_active_game_path)
+
+    def ideck_game_config_path_for(self, game: str) -> Path:
+        """Absolute path to a named game config after validating its name."""
+        name = normalize_game_name(game)
+        return (self.ideck_game_config_dir / f"{name}.json").resolve()
+
+    @property
+    def ideck_game_config_path(self) -> Path:
+        """Absolute path to the currently selected game's config file."""
+        return self.ideck_game_config_path_for(self.ideck_active_game)

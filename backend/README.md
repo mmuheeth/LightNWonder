@@ -55,7 +55,7 @@ backend/
 ├── requirements.txt         runtime dependencies
 ├── requirements-dev.txt     + test and lint tooling
 ├── ruff.toml / pytest.ini / mypy.ini / .coveragerc
-├── OBS-capture/             screenshots and recordings land here (gitignored)
+├── OBS-capture/             default screenshot/recording root (gitignored)
 └── app/
     ├── main.py              create_app() factory, middleware wiring, lifespan
     ├── server.py            uvicorn entrypoint (python -m app)
@@ -67,7 +67,8 @@ backend/
     │   ├── runtime.py       general settings and feature-settings composition
     │   ├── obs.py           OBS runtime settings
     │   ├── ideck.py         i-deck runtime settings and path resolution
-    │   └── game_config/     per-game aliases, process, logs, ROIs and targets
+    │   └── game_config/     active selection plus per-game aliases, process,
+    │                         logs, ROIs and targets
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -83,6 +84,7 @@ backend/
     │   ├── response.py      ApiResponse / PaginatedResponse envelope  ← the contract
     │   ├── health.py        health payloads
     │   ├── system.py        service info payload
+    │   ├── games.py         game catalog and runtime-selection payloads
     │   ├── obs.py           OBS status, screenshot and recording payloads
     │   └── item.py          example resource schemas
     ├── exceptions/
@@ -91,7 +93,8 @@ backend/
     ├── middleware/
     │   └── request_context.py   request id, timing, access log
     └── services/            business logic; endpoints stay thin
-        └── obs.py           the single long-lived obs-websocket session
+        ├── games.py          game catalog and active-game switching
+        └── obs.py            the single long-lived obs-websocket session
 ```
 
 Adding a resource is three files plus one line:
@@ -292,15 +295,16 @@ bundles the obs-websocket v5 plugin; older versions need it installed.
 GET  /api/obs/status             connection state; always 200
 POST /api/obs/connect            open a session (idempotent)
 POST /api/obs/disconnect         close it (idempotent, never fails)
-POST /api/obs/screenshot         base64 data URI, or a file in OBS-capture/
+POST /api/obs/select-game-window point the active scene's source at the active game
+POST /api/obs/screenshot         base64 data URI, or a file in the screenshot root
 GET  /api/obs/recording          recording state
-POST /api/obs/recording/start    start / stop / pause / resume
+POST /api/obs/recording/start    start; accepts optional output_dir
 POST /api/obs/recording/stop
 POST /api/obs/recording/pause
 POST /api/obs/recording/resume
 ```
 
-Four things worth knowing:
+Things worth knowing:
 
 - **The app boots fine without OBS.** `OBS_AUTO_CONNECT=true` connects at
   startup, but a failure is logged, not raised. OBS is deliberately *not*
@@ -308,18 +312,47 @@ Four things worth knowing:
   `/health/ready` report the whole service unavailable.
 - **Reconnect is lazy.** A dropped socket is re-identified on the next request,
   so quitting and reopening OBS needs no explicit `/connect`.
-- **`file_name` must be a bare filename.** It is resolved inside
-  `OBS_CAPTURE_DIR` and rejected if it contains a path separator or `..` —
-  otherwise the endpoint would be an arbitrary-file-write primitive. Omit it to
-  get base64 back instead.
-- **`OBS_SET_RECORD_DIRECTORY=true` points OBS's own recording directory at
-  `OBS_CAPTURE_DIR` on connect**, so recordings land beside screenshots. This
-  change persists in your OBS profile after the app exits; set it to `false` to
-  leave OBS untouched.
+- **The game window is config-driven.** On connect, and through
+  `/api/obs/select-game-window`, the active program scene's window-capture source
+  is pointed at the `process` in the selected
+  `app/config/game_config/games/<game>.json`. If a scene has several such
+  sources, set its name in that file as
+  `{ "obs": { "window_source": "Game Window" } }`.
+- **Capture roots are configurable.** `OBS_CAPTURE_DIR` defaults to
+  `backend/OBS-capture`. `OBS_SCREENSHOT_DIR` and `OBS_RECORDING_DIR` can
+  override the two roots independently; when omitted, both fall back to
+  `OBS_CAPTURE_DIR`.
+- **Use-case folders are request-configurable.** A screenshot request can send
+  `{"file_name": "frame", "output_dir": "ir-inspection/session-01"}`;
+  recording start accepts the same `output_dir` field. The value must be a
+  relative subdirectory below the relevant configured root, so use cases stay
+  separated without turning the API into an arbitrary-file-write primitive.
+- **`file_name` remains a bare filename.** It is resolved inside the selected
+  screenshot directory and rejected if it contains a path separator or `..`.
+  Omit it to get base64 back instead.
+- **`OBS_SET_RECORD_DIRECTORY=true` applies the configured recording root** on
+  connect and on starts without an explicit `output_dir`. OBS persists that
+  profile setting after the app exits. An explicit `output_dir` is always
+  applied; set the option to `false` if starts without a custom directory
+  should leave OBS's existing profile directory untouched.
 
 Start and stop wait briefly for OBS to actually flip the record output before
 answering — OBS applies it asynchronously, so an immediate read reports the old
 value.
+
+## Game selection
+
+```
+GET  /api/games/              list game configs and the active selection
+PUT  /api/games/active        switch the active game for this backend process
+```
+
+The dashboard uses these endpoints to select a game without editing `.env` or
+restarting the backend. The initial selection is stored in
+`app/config/game_config/active_game.json`, and the selection endpoint updates
+that file. The selected config is reloaded for i-deck aliases and OBS retargets
+its window source when OBS is connected; if OBS is closed, it will retarget on
+the next connection.
 
 ## Virtual OLED i-deck
 
@@ -351,10 +384,12 @@ Four things worth knowing:
   "ideck": { "aliases": { "friendly_name": "LayoutKey" } }
   ```
 
-  The active game is selected manually with `IDECK_GAME`; after that, aliases,
-  process metadata, game log path, screen regions and in-game targets all come
-  from `app/config/game_config/games/<game>.json`. The API accepts any alias in
-  that file or any key name from the panel layout.
+  The initial game is selected with
+  `app/config/game_config/active_game.json`, or changed from the dashboard.
+  After that, aliases, process metadata, game log path, screen regions and
+  in-game targets all come from
+  `app/config/game_config/games/<game>.json`. The API accepts any alias in that
+  file or any key name from the panel layout.
 
 - **Presses are proven, not assumed.** Every press the panel accepts writes
   `Button Pressed ID=<hex>` to `IDECK_LOG_PATH`. Each press records the log size

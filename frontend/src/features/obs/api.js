@@ -37,15 +37,22 @@ export function disconnectObs() {
   return apiRequest({ method: "POST", url: `${OBS_URL}/disconnect` });
 }
 
+/** Point the active OBS window-capture source at the process in the active game config. */
+export function selectGameWindow() {
+  return apiRequest({ method: "POST", url: `${OBS_URL}/select-game-window` });
+}
+
 /**
  * Capture a screenshot.
  *
  * Omit `file_name` to get `image_data` as a base64 data URI, ready for an
- * `<img>` src. Pass a bare filename to have OBS write it into the backend's
- * capture directory and return `file_path` instead.
+ * `<img>` src. Pass a bare filename to have OBS write it into the configured
+ * screenshot directory and return `file_path` instead. `output_dir` can select
+ * a relative use-case subdirectory below that root.
  *
  * @param {{source_name?: string, image_format?: string, width?: number,
- *   height?: number, quality?: number, file_name?: string}} [payload]
+ *   height?: number, quality?: number, file_name?: string,
+ *   output_dir?: string}} [payload]
  * @returns {Promise<{source_name: string, image_format: string,
  *   image_data: string|null, file_path: string|null}>}
  */
@@ -62,9 +69,17 @@ export function getRecordStatus({ signal } = {}) {
   return apiRequest({ method: "GET", url: `${OBS_URL}/recording`, signal });
 }
 
-/** Start recording. Resolves once OBS reports the output actually running. */
-export function startRecording() {
-  return apiRequest({ method: "POST", url: `${OBS_URL}/recording/start` });
+/**
+ * Start recording. Resolves once OBS reports the output actually running.
+ *
+ * @param {{output_dir?: string}} [payload] relative use-case subdirectory
+ */
+export function startRecording(payload) {
+  return apiRequest({
+    method: "POST",
+    url: `${OBS_URL}/recording/start`,
+    data: payload,
+  });
 }
 
 /** Stop recording. The resolved value carries `output_path` when OBS reports it. */
