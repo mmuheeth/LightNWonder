@@ -54,16 +54,3 @@ export async function apiRequestPage(config) {
     pagination: meta ?? null,
   };
 }
-
-/**
- * Perform a request and return the whole envelope.
- *
- * Only needed when the caller wants `message` or `meta` alongside the payload.
- *
- * @param {import("axios").AxiosRequestConfig} config
- */
-export async function apiRequestEnvelope(config) {
-  const response = await http.request(config);
-  assertEnvelope(response.data, response.status);
-  return response.data;
-}

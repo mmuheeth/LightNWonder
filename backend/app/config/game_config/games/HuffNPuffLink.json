@@ -1,42 +1,32 @@
 {
-    "name": "HuffNPuffLink",
-    "log": "C:\\logs\\Game\\HuffNPuffLink\\Logs\\HuffNPuffLink_Theme.log",
-    "roi": {
-        "cash_meter": [
-            0.138889,
-            0.755463,
-            0.869281,
-            0.782518
-        ]
-    },
-    "button_targets": {
-        "take_win": [
-            0.124,
-            0.917
-        ],
-        "gamble": [
-            0.124,
-            0.883
-        ]
-    },
-    "ideck": {
-        "panel": "virtual_oled",
-        "aliases": {
-            "spin": "Rebet",
-            "repeat_bet": "Rebet",
-            "max_bet": "Maxbet",
-            "collect": "Collect",
-            "service": "Service",
-            "line1": "Line1",
-            "line2": "Line2",
-            "line3": "Line3",
-            "line4": "Line4",
-            "line5": "Line5",
-            "hold1": "Hold1",
-            "hold2": "Hold2",
-            "hold3": "Hold3",
-            "hold4": "Hold4",
-            "hold5": "Hold5"
-        }
+  "name": "HuffNPuffLink",
+  "process": "HuffNPuffLink.exe",
+  "log": "C:\\logs\\Game\\HuffNPuffLink\\Logs\\HuffNPuffLink_Theme.log",
+  "roi": {
+    "cash_meter": [0.138889, 0.755463, 0.869281, 0.782518]
+  },
+  "button_targets": {
+    "take_win": [0.124, 0.917],
+    "gamble": [0.124, 0.883]
+  },
+  "ideck": {
+    "panel": "virtual_oled",
+    "aliases": {
+      "spin": "Rebet",
+      "repeat_bet": "Rebet",
+      "max_bet": "Maxbet",
+      "collect": "Collect",
+      "service": "Service",
+      "line1": "Line1",
+      "line2": "Line2",
+      "line3": "Line3",
+      "line4": "Line4",
+      "line5": "Line5",
+      "hold1": "Hold1",
+      "hold2": "Hold2",
+      "hold3": "Hold3",
+      "hold4": "Hold4",
+      "hold5": "Hold5"
     }
+  }
 }

@@ -1,5 +1,5 @@
 /**
- * Client-only UI state (theme, sidebar).
+ * Client-only UI state.
  *
  * Zustand holds state the UI owns. Anything that lives on the server belongs in
  * react-query instead — duplicating server data here means two sources of truth
@@ -19,9 +19,6 @@ export const useUiStore = create(
   persist(
     (set, get) => ({
       theme: THEMES.SYSTEM,
-      sidebarOpen: true,
-
-      setTheme: (theme) => set({ theme }),
 
       /** Cycle light → dark → system, so every option is reachable. */
       cycleTheme: () => {
@@ -29,15 +26,15 @@ export const useUiStore = create(
         const next = order[(order.indexOf(get().theme) + 1) % order.length];
         set({ theme: next });
       },
-
-      toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-      setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
     }),
     {
       name: "lnw-ui",
-      version: 1,
-      // Persist only real preferences; transient flags should reset on reload.
-      partialize: (state) => ({ theme: state.theme, sidebarOpen: state.sidebarOpen }),
+      version: 2,
+      // Discard the removed sidebar preference while preserving the theme.
+      migrate: (persistedState) => ({
+        theme: persistedState?.theme ?? THEMES.SYSTEM,
+      }),
+      partialize: (state) => ({ theme: state.theme }),
     },
   ),
 );

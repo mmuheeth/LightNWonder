@@ -70,7 +70,7 @@ src/
 │   └── theme-toggle.jsx
 ├── pages/                  route components
 ├── store/
-│   └── ui-store.js         Zustand: theme + sidebar (persisted)
+│   └── ui-store.js         Zustand: persisted theme preference
 └── test/                   vitest setup + renderWithProviders
 ```
 
@@ -201,7 +201,7 @@ from the `react-refresh/only-export-components` lint rule.
 Two stores, deliberately separate:
 
 - **react-query** owns server data — fetching, caching, invalidation.
-- **Zustand** (`store/ui-store.js`) owns client-only UI state: theme, sidebar.
+- **Zustand** (`store/ui-store.js`) owns the client-only theme preference.
 
 Don't copy server data into Zustand; that creates a second source of truth and
 stale reads.

@@ -6,15 +6,15 @@ where a key currently sits inside the live window, and shift whenever the panel
 is resized. Presses are addressed in client coordinates.
 
 Buttons are named twice, too: ``name`` is the friendly alias from the game
-config (``spin``), while ``xml_id`` is what the panel layout calls the same key
-(``Rebet``). Several aliases may point at one key.
+config, while ``xml_id`` is what the panel layout calls the same key. Several
+aliases may point at one key.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class IDeckWindowState(StrEnum):
@@ -38,8 +38,8 @@ class IDeckWindowState(StrEnum):
 class IDeckButton(BaseModel):
     """One key on the deck, in both coordinate spaces."""
 
-    name: str = Field(description="Friendly alias from the game config, e.g. 'spin'.")
-    xml_id: str = Field(description="Key name in the panel layout, e.g. 'Rebet'.")
+    name: str = Field(description="Friendly alias from the game config.")
+    xml_id: str = Field(description="Key name in the panel layout.")
     button_id: int = Field(
         ge=0, description="Hardware switch number; the panel logs it in hex."
     )
@@ -95,8 +95,6 @@ class IDeckStatus(BaseModel):
 class PressRequest(BaseModel):
     """Request body for a single press."""
 
-    model_config = ConfigDict(json_schema_extra={"examples": [{"button": "spin"}]})
-
     button: str = Field(
         min_length=1,
         max_length=64,
@@ -116,12 +114,6 @@ class PressRequest(BaseModel):
 
 class SequenceRequest(BaseModel):
     """Request body for pressing several keys in order."""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [{"buttons": ["line1", "spin"], "delay_seconds": 0.5}]
-        }
-    )
 
     buttons: list[str] = Field(
         min_length=1,

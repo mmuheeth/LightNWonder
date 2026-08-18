@@ -1,14 +1,13 @@
-"""Configuration *data* that ships with the code, and the readers for it.
+"""Application configuration.
 
-Not to be confused with :mod:`app.core.config`, which is runtime settings read
-from the environment. The split is deliberate:
+The package keeps two kinds of configuration together but separate:
 
-- :mod:`app.core.config` answers "how is this deployment configured?" -- hosts,
-  timeouts, feature switches. It changes per machine and lives in ``.env``.
-- This package answers "what does this game look like?" -- the per-game names,
-  regions and targets that are the same everywhere the app runs. It is versioned
-  with the source because it describes the games, not the deployment.
+- :mod:`app.config.runtime` answers "how is this deployment configured?" --
+  hosts, timeouts and feature switches loaded from the environment.
+- :mod:`app.config.game_config` answers "what does this game look like?" --
+  versioned names, regions and targets loaded from the shipped JSON files.
 
-Data files sit beside the module that reads them, so a new game is one JSON file
-in :mod:`app.config.game_config` and no code change at all.
+:mod:`app.core.config` remains as a compatibility import for the runtime
+settings. Data files sit beside the module that reads them, so a new game is
+one JSON file and no code change at all.
 """

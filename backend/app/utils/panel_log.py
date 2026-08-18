@@ -28,8 +28,8 @@ def press_pattern(button_id: int) -> re.Pattern[str]:
     low byte is the layout's ``button_id`` and bit 0x100 marks the press; the
     release repeats the value with that bit cleared::
 
-        evt=1,ard=00000105   Hold1 (button_id 5) pressed
-        evt=1,ard=00000005   Hold1 released
+        evt=1,ard=00000105   <layout-key> (button_id 5) pressed
+        evt=1,ard=00000005   <layout-key> released
 
     Anchoring on the whole eight-digit value pins a match to one switch *and* one
     direction. That precision is not academic: a person at the machine can be

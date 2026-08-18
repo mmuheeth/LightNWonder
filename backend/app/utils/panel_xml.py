@@ -37,7 +37,7 @@ class PanelButton:
     """One key, positioned in the panel's own coordinate space."""
 
     xml_id: str
-    """Name from the layout, e.g. ``Rebet``. Case is preserved."""
+    """Name from the layout. Case is preserved."""
 
     button_id: int
     """Hardware switch number. The panel service logs this in *hex*."""

@@ -46,10 +46,8 @@ const STATE_HINTS = {
     "level than the backend. Restart the backend elevated (Run as administrator).",
 };
 
-/** Short legend for a key, e.g. `line1` -> L1, `max_bet` -> MAX BET. */
+/** Turn a configured alias into a compact, readable button label. */
 function keyLabel({ name, xml_id }) {
-  const numbered = /^(line|hold)(\d+)$/i.exec(name ?? "");
-  if (numbered) return `${numbered[1][0].toUpperCase()}${numbered[2]}`;
   return (name || xml_id).replace(/_/g, " ").toUpperCase();
 }
 
@@ -57,8 +55,8 @@ function keyLabel({ name, xml_id }) {
  * Live control panel for the Virtual OLED i-deck, backed by `/api/ideck/*`.
  *
  * The keys are laid out from the panel's own layout file rather than hardcoded,
- * so the grid on screen matches the deck being driven — including the wide
- * spin and max-bet keys, whose flex weight is their real pixel width.
+ * so the grid on screen matches the deck being driven, including differently
+ * sized keys whose flex weight is their real pixel width.
  */
 export function IDeckPanel() {
   const { data, error, isPending, isFetching, refetch } = useIDeckStatus();
@@ -149,10 +147,10 @@ export function IDeckPanel() {
                     {row.map((key) => (
                       <Button
                         key={key.xml_id}
-                        variant={key.name === "spin" ? "default" : "outline"}
+                        variant="outline"
                         size="sm"
-                        // Weighted by the key's real width, so the wide spin and
-                        // max-bet keys stay wide.
+                        // Weighted by the key's real width, so differently sized
+                        // keys stay proportional.
                         style={{ flexGrow: key.width, flexBasis: 0 }}
                         className="min-w-0 px-1 text-[0.65rem] font-semibold"
                         disabled={busy || !canPress}

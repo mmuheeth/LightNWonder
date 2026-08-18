@@ -158,11 +158,12 @@ settings.
 
 ## Virtual OLED i-deck
 
-The dashboard's **i-deck** card presses the emulated button deck of a game
-running in a simulator — *Spin*, *Repeat Bet*, *Max Bet* and the rest. The deck
-is an SDL window served by `OledPanelSvc.exe`, which exposes no API, so presses
-are delivered as mouse messages posted straight to that window. **Your cursor
-never moves.**
+The dashboard's **i-deck** card presses the emulated button deck of the
+currently selected game. The deck is an SDL window served by
+`OledPanelSvc.exe`, which exposes no API, so presses are delivered as mouse
+messages posted straight to that window. **Your cursor never moves.** Button
+names and game-specific details come from the selected file in
+`backend/app/config/game_config/games/`.
 
 Key positions are read from the panel's own layout file rather than hardcoded,
 and every press is confirmed against `C:\logs\OledPanelSvc.log` before the

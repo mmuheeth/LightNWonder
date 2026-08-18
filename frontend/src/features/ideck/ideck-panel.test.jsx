@@ -24,7 +24,7 @@ function status(state = "ready") {
       panel_id: "Virtual OLED",
       panel_width: 849,
       panel_height: 183,
-      game: "HuffNPuffLink",
+      game: "ExampleGame",
       button_count: 14,
       panel_xml: "C:\\cfg\\virtual_oled.xml",
       log_path: "C:\\logs\\OledPanelSvc.log",
@@ -34,13 +34,13 @@ function status(state = "ready") {
   );
 }
 
-/** Three keys is enough to cover both rows and the wide spin key. */
+/** Three keys is enough to cover both rows and a wide configured key. */
 const BUTTONS = envelope([
   {
-    name: "line1",
+    name: "first_action",
     xml_id: "Line1",
     button_id: 0,
-    aliases: ["line1"],
+    aliases: ["first_action"],
     panel_x: 136,
     panel_y: 15,
     width: 106,
@@ -49,10 +49,10 @@ const BUTTONS = envelope([
     client_y: 52,
   },
   {
-    name: "spin",
+    name: "primary_action",
     xml_id: "Rebet",
     button_id: 10,
-    aliases: ["repeat_bet", "spin"],
+    aliases: ["alternate_action", "primary_action"],
     panel_x: 701,
     panel_y: 15,
     width: 138,
@@ -61,10 +61,10 @@ const BUTTONS = envelope([
     client_y: 52,
   },
   {
-    name: "collect",
+    name: "secondary_action",
     xml_id: "Collect",
     button_id: 12,
-    aliases: ["collect"],
+    aliases: ["secondary_action"],
     panel_x: 10,
     panel_y: 94,
     width: 106,
@@ -75,7 +75,7 @@ const BUTTONS = envelope([
 ]);
 
 const PRESSED = envelope({
-  button: "spin",
+  button: "primary_action",
   xml_id: "Rebet",
   button_id: 10,
   client_x: 770,
@@ -111,11 +111,14 @@ describe("IDeckPanel", () => {
     renderWithProviders(<IDeckPanel />);
 
     expect(await screen.findByText("ready")).toBeInTheDocument();
-    // `line1` shortens to L1; `spin` keeps its own name.
-    expect(await screen.findByRole("button", { name: /^L1$/ })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /^SPIN$/ })).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /^COLLECT$/ }),
+      await screen.findByRole("button", { name: /^FIRST ACTION$/ }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /^SECONDARY ACTION$/ }),
     ).toBeInTheDocument();
   });
 
@@ -123,14 +126,16 @@ describe("IDeckPanel", () => {
     const request = mockApi();
     renderWithProviders(<IDeckPanel />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /^SPIN$/ }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+    );
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith(
         expect.objectContaining({
           method: "POST",
           url: "/api/ideck/press",
-          data: { button: "spin" },
+          data: { button: "primary_action" },
         }),
       );
     });
@@ -145,7 +150,9 @@ describe("IDeckPanel", () => {
 
     expect(await screen.findByText("access_denied")).toBeInTheDocument();
     expect(await screen.findByText(/Run as administrator/i)).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /^SPIN$/ })).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+    ).toBeDisabled();
   });
 
   it("still offers the keys while the panel is only minimized", async () => {
@@ -154,7 +161,9 @@ describe("IDeckPanel", () => {
     renderWithProviders(<IDeckPanel />);
 
     expect(await screen.findByText("minimized")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /^SPIN$/ })).toBeEnabled();
+    expect(
+      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+    ).toBeEnabled();
   });
 
   it("reports a failed press rather than looking successful", async () => {
@@ -180,7 +189,9 @@ describe("IDeckPanel", () => {
     });
 
     renderWithProviders(<IDeckPanel />);
-    await userEvent.click(await screen.findByRole("button", { name: /^SPIN$/ }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /the panel logged nothing/i,

@@ -3,7 +3,7 @@
  *
  * Keeping them here (rather than inline strings) means invalidation can target a
  * whole subtree: `invalidateQueries({ queryKey: queryKeys.items.all })` clears
- * every item list and detail entry at once.
+ * every item list at once.
  */
 
 export const queryKeys = Object.freeze({
@@ -14,12 +14,10 @@ export const queryKeys = Object.freeze({
   items: Object.freeze({
     all: ["items"],
     list: (params = {}) => [...queryKeys.items.all, "list", params],
-    detail: (id) => [...queryKeys.items.all, "detail", id],
   }),
   obs: Object.freeze({
     all: ["obs"],
     status: () => [...queryKeys.obs.all, "status"],
-    recording: () => [...queryKeys.obs.all, "recording"],
   }),
   ideck: Object.freeze({
     all: ["ideck"],

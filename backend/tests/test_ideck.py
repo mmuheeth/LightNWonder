@@ -838,17 +838,6 @@ def test_the_game_name_cannot_escape_the_config_directory(name: str) -> None:
         Settings(IDECK_GAME=name)
 
 
-async def test_named_helpers_press_the_keys_they_say(
-    ideck_env: None, panel: FakePanel
-) -> None:
-    """`spin()` and `repeat_bet()` are the same switch on this deck."""
-    assert (await ideck_service.spin()).button_id == 10
-    assert (await ideck_service.repeat_bet()).button_id == 10
-    assert (await ideck_service.max_bet()).button_id == 13
-    assert (await ideck_service.hold(2)).button_id == 6
-    assert (await ideck_service.line(5)).button_id == 4
-
-
 # --- integrity-level blocking ---------------------------------------------
 
 

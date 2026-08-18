@@ -11,9 +11,9 @@ Two facts make this reliable rather than hopeful:
 
 **Geometry is not guessed.** The panel service renders from a layout file and
 logs which one it chose. :mod:`app.utils.panel_xml` reads that same file, so key
-positions have one source of truth and a re-layout needs no edit here. Only the
-friendly names (``spin`` for the key the layout calls ``Rebet``) come from the
-per-game config in :mod:`app.config.game_config`.
+positions have one source of truth and a re-layout needs no edit here. The
+friendly names that map onto those layout keys come from the per-game config in
+:mod:`app.config.game_config`.
 
 **Presses are proven, not assumed.** Every press the panel accepts writes a
 switch transition to its log within milliseconds. Each press captures the log's
@@ -30,7 +30,7 @@ State is module-level, like the other services here, and callers use the
 namespace rather than the functions::
 
     from app.services import ideck as ideck_service
-    await ideck_service.spin()
+    await ideck_service.press("configured_alias")
 """
 
 from __future__ import annotations
@@ -155,8 +155,8 @@ def _log() -> LogTail:
 def _resolve_button(name: str) -> PanelButton:
     """Map a caller-supplied name onto a key in the layout.
 
-    Accepts either a configured alias (``spin``) or a layout key name
-    (``Rebet``), both case-insensitively.
+    Accepts either a configured alias or a layout key name, both
+    case-insensitively.
 
     Raises:
         IDeckButtonNotFoundError: if the name matches neither.
@@ -583,59 +583,6 @@ async def probe() -> ProbeResult:
         evidence=evidence,
         detail=detail,
     )
-
-
-# --- named keys -----------------------------------------------------------
-# Thin, readable wrappers over press(). The alias each one uses is defined in
-# the game config, so these stay correct across games that lay the deck out
-# differently.
-
-
-async def spin() -> PressResult:
-    """Press the spin key.
-
-    On this layout that is the large ``Rebet`` key: it repeats the last bet and
-    spins, which is why :func:`repeat_bet` presses the same switch.
-    """
-    return await press("spin")
-
-
-async def repeat_bet() -> PressResult:
-    """Press repeat-bet. The same physical key as :func:`spin` on this deck."""
-    return await press("repeat_bet")
-
-
-async def max_bet() -> PressResult:
-    """Press max-bet, which bets the maximum and spins."""
-    return await press("max_bet")
-
-
-async def collect() -> PressResult:
-    """Press collect."""
-    return await press("collect")
-
-
-async def service_key() -> PressResult:
-    """Press the service/attendant key."""
-    return await press("service")
-
-
-async def line(number: int) -> PressResult:
-    """Press one of the five line-bet keys.
-
-    Raises:
-        IDeckButtonNotFoundError: if ``number`` is outside 1-5.
-    """
-    return await press(f"line{number}")
-
-
-async def hold(number: int) -> PressResult:
-    """Press one of the five hold keys.
-
-    Raises:
-        IDeckButtonNotFoundError: if ``number`` is outside 1-5.
-    """
-    return await press(f"hold{number}")
 
 
 def reset() -> None:

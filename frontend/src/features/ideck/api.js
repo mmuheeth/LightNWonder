@@ -48,7 +48,7 @@ export function getIDeckButtons({ signal } = {}) {
 }
 
 /**
- * Press one key, by alias (`spin`) or layout name (`Rebet`).
+ * Press one key, by configured alias or layout name.
  *
  * Unless verification is off, this resolves only once the panel's own log shows
  * the press landing.

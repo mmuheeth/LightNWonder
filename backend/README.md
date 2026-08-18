@@ -60,11 +60,14 @@ backend/
     ├── main.py              create_app() factory, middleware wiring, lifespan
     ├── server.py            uvicorn entrypoint (python -m app)
     ├── core/
-    │   ├── config.py        Settings via pydantic-settings; get_settings()
+    │   ├── config.py        compatibility import for runtime settings
     │   ├── context.py       request-id ContextVar + ASGI scope key
     │   └── logging.py       dictConfig; console or JSON, request id on every line
-    ├── config/              data that ships with the code, and its readers
-    │   └── game_config/     per-game aliases, ROIs and targets + load_game_config()
+    ├── config/              runtime settings plus shipped game data/readers
+    │   ├── runtime.py       general settings and feature-settings composition
+    │   ├── obs.py           OBS runtime settings
+    │   ├── ideck.py         i-deck runtime settings and path resolution
+    │   └── game_config/     per-game aliases, process, logs, ROIs and targets
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -327,7 +330,7 @@ which exposes no API — it listens on no port and speaks CORBA internally.
 ```
 GET  /api/ideck/status           panel state; always 200
 GET  /api/ideck/buttons          every key, in layout order
-POST /api/ideck/press            press one key            {"button": "spin"}
+POST /api/ideck/press            press one configured key {"button": "<alias>"}
 POST /api/ideck/sequence         press several in order
 POST /api/ideck/probe            capability check, no side effects
 ```
@@ -345,12 +348,13 @@ Four things worth knowing:
   `app/config/game_config/games/<game>.json`:
 
   ```json
-  "ideck": { "aliases": { "spin": "Rebet", "max_bet": "Maxbet" } }
+  "ideck": { "aliases": { "friendly_name": "LayoutKey" } }
   ```
 
-  On the HuffNPuffLink deck there is no separate spin key — the large top-right
-  `Rebet` key repeats the last bet *and* spins — so `spin` and `repeat_bet` are
-  two names for one switch.
+  The active game is selected manually with `IDECK_GAME`; after that, aliases,
+  process metadata, game log path, screen regions and in-game targets all come
+  from `app/config/game_config/games/<game>.json`. The API accepts any alias in
+  that file or any key name from the panel layout.
 
 - **Presses are proven, not assumed.** Every press the panel accepts writes
   `Button Pressed ID=<hex>` to `IDECK_LOG_PATH`. Each press records the log size

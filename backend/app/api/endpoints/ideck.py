@@ -87,7 +87,7 @@ async def get_buttons() -> ApiResponse[list[IDeckButton]]:
     responses=PRESS_ERRORS,
 )
 async def press(payload: PressRequest) -> ApiResponse[PressResult]:
-    """Press a key by alias (``spin``) or by layout name (``Rebet``).
+    """Press a key by configured alias or by layout name.
 
     Unless verification is turned off, this only succeeds once the panel's own
     log shows the press landing.

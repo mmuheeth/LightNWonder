@@ -22,9 +22,6 @@ export const env = Object.freeze({
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL ?? "",
   apiTimeoutMs: toPositiveInt(import.meta.env.VITE_API_TIMEOUT_MS, 15_000),
   apiWithCredentials: toBoolean(import.meta.env.VITE_API_WITH_CREDENTIALS, false),
-  isDevelopment: import.meta.env.DEV,
-  isProduction: import.meta.env.PROD,
-  mode: import.meta.env.MODE,
 });
 
 /**
