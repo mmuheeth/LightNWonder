@@ -34,8 +34,8 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3001**. The dashboard shows live backend health, which
-is the fastest confirmation that both halves are wired together.
+Open **http://localhost:3001**. The dashboard lets you choose the active game
+and control the OBS and Virtual OLED integrations.
 
 > Use `localhost`, not `127.0.0.1`, for the frontend: Vite binds the hostname
 > `localhost`, which resolves to IPv6 `[::1]` on Windows.
@@ -48,8 +48,8 @@ is the fastest confirmation that both halves are wired together.
 | `http://localhost:8001/api/…`  | API endpoints               |
 
 In development the frontend makes **relative** requests and Vite proxies `/api`
-and `/health` to the backend. Dev is therefore same-origin: cookies work and
-CORS never applies.
+to the backend. Dev is therefore same-origin: cookies work and CORS never
+applies.
 
 ## Checks
 
@@ -66,8 +66,8 @@ response — success or failure — has the same five top-level keys:
 ```json
 {
   "success": true,
-  "message": "Item retrieved successfully",
-  "data": { "id": 1, "name": "Table lamp" },
+  "message": "Game selected successfully",
+  "data": { "game": "FortuneOx" },
   "error": null,
   "meta": { "request_id": "3f9a1c8e…", "timestamp": "2026-08-18T09:12:44.512Z" }
 }
@@ -96,12 +96,12 @@ add pagination to `meta`.
 exceptions; handlers render every error:
 
 ```python
-@router.get("/{item_id}", response_model=ApiResponse[ItemOut])
-async def get_item(item_id: int) -> ApiResponse[ItemOut]:
-    return ApiResponse[ItemOut].ok(data=service.get_item(item_id))
+@router.get("/status", response_model=ApiResponse[StatusOut])
+async def get_status() -> ApiResponse[StatusOut]:
+    return ApiResponse[StatusOut].ok(data=service.get_status())
 
 # elsewhere — never build an error response by hand
-raise NotFoundError(f"Item {item_id} was not found")
+raise NotFoundError("The requested resource was not found")
 ```
 
 **Frontend** — `lib/api.js` unwraps the envelope and `lib/api-error.js`
@@ -134,11 +134,6 @@ frontend/src/
 ├── components/     ui/ (shadcn), layout/, shared pieces
 └── store/          Zustand UI state
 ```
-
-Both sides ship a small **`items`** example resource that exercises the whole
-path: list with pagination, create with validation errors, delete with a 404.
-Delete it once you have real endpoints — `backend/app/api/endpoints/items.py`
-(plus its service and schema) and `frontend/src/features/items/`.
 
 ## OBS Studio
 

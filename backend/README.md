@@ -77,7 +77,6 @@ backend/
     │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
     │   ├── router.py        aggregates endpoint modules  → mounted at /api
-    │   ├── deps.py          shared dependencies (pagination)
     │   ├── health.py        /health, /health/live, /health/ready  ← root, not /api
     │   └── endpoints/       one module per resource
     ├── schemas/
@@ -86,7 +85,6 @@ backend/
     │   ├── system.py        service info payload
     │   ├── games.py         game catalog and runtime-selection payloads
     │   ├── obs.py           OBS status, screenshot and recording payloads
-    │   └── item.py          example resource schemas
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -115,8 +113,8 @@ key existence.
 ```json
 {
   "success": true,
-  "message": "Item retrieved successfully",
-  "data": { "id": 1, "name": "Table lamp", "quantity": 12 },
+  "message": "Game selected successfully",
+  "data": { "game": "FortuneOx" },
   "error": null,
   "meta": {
     "request_id": "3f9a1c8e4b7d4f0e9a2c5b8d1e4f7a0c",
@@ -135,7 +133,7 @@ key existence.
   "error": {
     "code": "VALIDATION_ERROR",
     "details": [
-      { "field": "body.name", "message": "Field required", "type": "missing" }
+      { "field": "body.game", "message": "Field required", "type": "missing" }
     ]
   },
   "meta": {
@@ -164,25 +162,9 @@ Declare the envelope as the `response_model` so OpenAPI advertises the real
 shape, and return `ApiResponse.ok(...)`:
 
 ```python
-@router.get("/{item_id}", response_model=ApiResponse[ItemOut])
-async def get_item(item_id: int) -> ApiResponse[ItemOut]:
-    return ApiResponse[ItemOut].ok(
-        data=item_service.get_item(item_id),
-        message="Item retrieved successfully",
-    )
-```
-
-For a list:
-
-```python
-@router.get("", response_model=PaginatedResponse[ItemOut])
-async def list_items(pagination: PaginationDep) -> PaginatedResponse[ItemOut]:
-    items, total = item_service.list_items(
-        offset=pagination.offset, limit=pagination.limit
-    )
-    return PaginatedResponse[ItemOut].paginate(
-        items, page=pagination.page, page_size=pagination.page_size, total_items=total
-    )
+@router.get("/", response_model=ApiResponse[GameCatalog])
+async def list_games() -> ApiResponse[GameCatalog]:
+    return ApiResponse[GameCatalog].ok(data=games_service.catalog())
 ```
 
 Wrapping is explicit rather than done by a catch-all middleware. A middleware
@@ -197,11 +179,11 @@ handlers render it.
 ```python
 from app.exceptions import ConflictError, NotFoundError
 
-raise NotFoundError(f"Item {item_id} was not found")
+raise NotFoundError("The requested resource was not found")
 
 raise ConflictError(
     "Editing is restricted to owners",
-    error_code="NOT_ITEM_OWNER",  # override the default code
+    error_code="NOT_RESOURCE_OWNER",  # override the default code
     details=[ErrorDetail(field="owner_id", message="Must match the caller")],
 )
 ```
@@ -418,7 +400,7 @@ it proves input reaches the panel without touching game state.
 One line per request, correlated by request id:
 
 ```
-2026-08-18 09:12:44 | INFO     | app.access | 3f9a1c8e… | GET /api/items -> 200 (4.12ms)
+2026-08-18 09:12:44 | INFO     | app.access | 3f9a1c8e… | GET /api/games/ -> 200 (4.12ms)
 ```
 
 An inbound `X-Request-ID` is reused so a trace can span services; otherwise one

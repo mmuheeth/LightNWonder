@@ -769,9 +769,8 @@ async def resume_recording() -> ObsRecordStatus:
 def reset() -> None:
     """Drop the client and the lock without touching the network.
 
-    Mirrors ``item_service.reset()``: tests call it between cases. Clearing the
-    lock matters as much as clearing the client -- the next test builds one bound
-    to its own event loop.
+    Tests call it between cases. Clearing the lock matters as much as clearing
+    the client -- the next test builds one bound to its own event loop.
     """
     global _client, _lock
     _client = None

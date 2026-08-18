@@ -9,7 +9,6 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
 from app.services import ideck as ideck_service
-from app.services import item as item_service
 from app.services import obs as obs_service
 
 
@@ -25,14 +24,6 @@ async def client(app) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client
-
-
-@pytest.fixture(autouse=True)
-def _clean_item_store() -> Iterator[None]:
-    """Keep the in-memory example store from leaking between tests."""
-    item_service.reset()
-    yield
-    item_service.reset()
 
 
 @pytest.fixture(autouse=True)

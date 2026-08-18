@@ -12,13 +12,9 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const backend = env.BACKEND_PROXY_TARGET || "http://127.0.0.1:8001";
 
-  // Both prefixes are proxied: /api/v1/* for versioned endpoints and /health
-  // because health deliberately sits outside the version prefix. Going through
-  // the proxy keeps dev same-origin, so cookies work and CORS never applies.
-  const proxy = {
-    "/api": { target: backend, changeOrigin: true },
-    "/health": { target: backend, changeOrigin: true },
-  };
+  // Going through the proxy keeps API requests same-origin in development, so
+  // cookies work and CORS never applies.
+  const proxy = { "/api": { target: backend, changeOrigin: true } };
 
   return {
     plugins: [react(), tailwindcss()],

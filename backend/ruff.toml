@@ -19,10 +19,9 @@ select = [
     "RUF",  # ruff-specific
 ]
 # Deliberately NOT enabled: "TCH" (flake8-type-checking). It cannot tell that
-# Pydantic and FastAPI resolve annotations at runtime, so it suggests moving
-# imports such as `datetime` in schemas/item.py or `Depends`-backed aliases in
-# api/deps.py into TYPE_CHECKING blocks -- which breaks model and route
-# construction at import time.
+# Pydantic and FastAPI resolve annotations at runtime, so it can suggest moving
+# imports into TYPE_CHECKING blocks -- which breaks model and route construction
+# at import time.
 ignore = [
     "E501",  # line length is enforced by the formatter
     "B008",  # FastAPI's Depends()/Query() defaults are the documented idiom

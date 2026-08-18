@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
 from app.config.ideck import PACKAGE_ROOT, IDeckSettings
@@ -65,6 +65,15 @@ class Settings(ObsSettings, IDeckSettings):
     DOCS_URL: str | None = "/docs"
     REDOC_URL: str | None = "/redoc"
     OPENAPI_URL: str | None = "/openapi.json"
+
+    # --- Database ---------------------------------------------------------
+    # Keep the actual credential in the ignored .env file or deployment secret
+    # store. The application only opens a connection pool; schema management
+    # and migrations are intentionally outside this configuration layer.
+    DATABASE_URL: SecretStr | None = Field(
+        default=None,
+        description="PostgreSQL connection URL used by the application pool.",
+    )
 
     # --- CORS -------------------------------------------------------------
     CORS_ORIGINS: CsvList = Field(

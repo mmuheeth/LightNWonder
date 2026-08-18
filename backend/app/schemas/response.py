@@ -4,8 +4,8 @@ Success::
 
     {
       "success": true,
-      "message": "Item retrieved successfully",
-      "data":    {"id": 1, "name": "Lamp"},
+      "message": "Game selected successfully",
+      "data":    {"game": "FortuneOx"},
       "error":   null,
       "meta":    {"request_id": "8f3c...", "timestamp": "2026-08-18T09:12:44Z"}
     }
@@ -14,7 +14,7 @@ Failure::
 
     {
       "success": false,
-      "message": "Item 42 was not found",
+      "message": "The requested game was not found",
       "data":    null,
       "error":   {"code": "NOT_FOUND", "details": []},
       "meta":    {"request_id": "8f3c...", "timestamp": "2026-08-18T09:12:44Z"}
@@ -42,7 +42,7 @@ def _utc_now() -> datetime:
 
 
 class ErrorDetail(BaseModel):
-    """A single field-level or item-level problem."""
+    """A single field-level or resource-level problem."""
 
     model_config = ConfigDict(populate_by_name=True)
 

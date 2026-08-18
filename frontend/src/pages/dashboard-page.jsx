@@ -1,6 +1,4 @@
-import { HealthCard } from "@/features/health/health-card";
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
-import { ItemsPanel } from "@/features/items/items-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
 import { GameSelector } from "@/features/games/game-selector";
 
@@ -18,8 +16,6 @@ export function DashboardPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        <HealthCard />
-        <ItemsPanel />
         <ObsPanel />
         <IDeckPanel />
       </div>

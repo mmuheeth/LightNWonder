@@ -36,21 +36,3 @@ export async function apiRequest(config) {
   assertEnvelope(response.data, response.status);
   return response.data.data ?? null;
 }
-
-/**
- * Perform a request against a paginated endpoint.
- *
- * List endpoints put pagination in `meta`, so both parts are returned.
- *
- * @param {import("axios").AxiosRequestConfig} config
- * @returns {Promise<{items: unknown[], pagination: object|null}>}
- */
-export async function apiRequestPage(config) {
-  const response = await http.request(config);
-  assertEnvelope(response.data, response.status);
-  const { data, meta } = response.data;
-  return {
-    items: Array.isArray(data) ? data : [],
-    pagination: meta ?? null,
-  };
-}

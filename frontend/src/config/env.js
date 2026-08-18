@@ -24,13 +24,5 @@ export const env = Object.freeze({
   apiWithCredentials: toBoolean(import.meta.env.VITE_API_WITH_CREDENTIALS, false),
 });
 
-/**
- * Backend route prefixes.
- *
- * `HEALTH` is not under `API`: the backend mounts health at its root on
- * purpose, so probes never depend on the API's base path.
- */
-export const routes = Object.freeze({
-  API: "/api",
-  HEALTH: "/health",
-});
+/** Backend route prefixes. */
+export const routes = Object.freeze({ API: "/api" });

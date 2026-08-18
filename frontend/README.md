@@ -20,7 +20,7 @@ npm run dev        # http://localhost:3001
 ```
 
 Start the backend too (`cd backend && python -m app`) — the dashboard reads
-`GET /health` from it.
+the game catalog and controls the OBS and Virtual OLED integrations through it.
 
 > Use **`http://localhost:3001`**, not `http://127.0.0.1:3001`. Vite binds the
 > hostname `localhost`, which resolves to IPv6 `[::1]` on Windows, so the IPv4
@@ -57,11 +57,9 @@ src/
 │   ├── query-keys.js       cache key registry
 │   └── utils.js            cn() class merger
 ├── features/
-│   ├── health/             api.js · use-health.js · health-card.jsx
 │   ├── ideck/              presses the Virtual OLED button deck
 │   ├── games/              active game catalog and selector
-│   ├── obs/                OBS Studio control: connect, screenshot, record
-│   └── items/              example CRUD resource (delete with the backend's)
+│   └── obs/                OBS Studio control: connect, screenshot, record
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -92,19 +90,13 @@ feature code deals in plain domain objects:
 
 ```js
 import { routes } from "@/config/env";
-import { apiRequest, apiRequestPage } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 
 // returns envelope.data
-export function getItem(id, { signal } = {}) {
-  return apiRequest({ method: "GET", url: `${routes.API}/items/${id}`, signal });
-}
-
-// returns { items, pagination } — list endpoints put pagination in meta
-export function listItems({ page = 1, pageSize = 20, signal } = {}) {
-  return apiRequestPage({
+export function getGameCatalog({ signal } = {}) {
+  return apiRequest({
     method: "GET",
-    url: `${routes.API}/items`,
-    params: { page, page_size: pageSize },
+    url: `${routes.API}/games/`,
     signal,
   });
 }
@@ -113,17 +105,13 @@ export function listItems({ page = 1, pageSize = 20, signal } = {}) {
 Then wrap it in a hook, keying the cache through `queryKeys`:
 
 ```js
-export function useItems({ page = 1 } = {}) {
+export function useGameCatalog() {
   return useQuery({
-    queryKey: queryKeys.items.list({ page }),
-    queryFn: ({ signal }) => listItems({ page, signal }),
-    placeholderData: (previous) => previous,
+    queryKey: queryKeys.games.catalog(),
+    queryFn: ({ signal }) => getGameCatalog({ signal }),
   });
 }
 ```
-
-Note `routes.HEALTH` is separate from `routes.API`: the backend mounts health at
-its root on purpose, so probes don't depend on the API's base path.
 
 ## Error handling
 
@@ -147,8 +135,7 @@ response from a proxy — is normalised to a single `ApiError`:
 keys line up with input names:
 
 ```jsx
-function ItemForm() {
-  const { error } = useCreateItem();
+function ResourceForm({ error }) {
   const nameError = error?.fieldErrors.name;
 
   return (
@@ -172,8 +159,8 @@ See [.env.example](.env.example). Only `VITE_`-prefixed variables reach the
 browser bundle — never put secrets in them.
 
 In development leave `VITE_API_BASE_URL` empty: requests stay relative and Vite
-proxies `/api` and `/health` to `http://127.0.0.1:8001`. That keeps dev
-same-origin, so cookies work and CORS never applies. Point
+proxies `/api` to `http://127.0.0.1:8001`. That keeps dev same-origin, so
+cookies work and CORS never applies. Point
 `BACKEND_PROXY_TARGET` elsewhere to develop against a deployed backend.
 
 For production, set `VITE_API_BASE_URL` to the API origin at build time.

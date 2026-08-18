@@ -31,26 +31,32 @@ export function GameSelector() {
           >
             Active game
           </label>
-          <div className="relative mt-0.5">
+          <div className="relative mt-1 min-w-0">
             <select
               id="active-game"
               aria-label="Active game"
               value={selectedGame}
               onChange={(event) => select.mutate(event.target.value)}
               disabled={select.isPending}
-              className="text-foreground w-full appearance-none bg-transparent pr-6 text-sm font-medium outline-none disabled:opacity-60"
+              className="border-input bg-background text-foreground hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full min-w-0 cursor-pointer appearance-none rounded-md border px-3 pr-9 text-sm font-medium shadow-xs transition-[color,box-shadow,background-color] outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
             >
               {data.games.map((option) => (
-                <option key={option.game} value={option.game}>
+                <option
+                  key={option.game}
+                  value={option.game}
+                  className="bg-background text-foreground"
+                >
                   {option.label}
                 </option>
               ))}
             </select>
-            {select.isPending ? (
-              <LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 right-0 size-4 -translate-y-1/2 animate-spin" />
-            ) : (
-              <ChevronDown className="text-muted-foreground pointer-events-none absolute top-1/2 right-0 size-4 -translate-y-1/2" />
-            )}
+            <span className="text-muted-foreground pointer-events-none absolute inset-y-0 right-3 flex items-center">
+              {select.isPending ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : (
+                <ChevronDown className="size-4" />
+              )}
+            </span>
           </div>
         </div>
         {select.data?.obs_window_selected === false ? (

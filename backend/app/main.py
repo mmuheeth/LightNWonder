@@ -24,6 +24,7 @@ from app.exceptions.base import AppException
 from app.middleware import RequestContextMiddleware
 from app.schemas.response import ApiResponse
 from app.schemas.system import ServiceInfo
+from app.services import database as database_service
 from app.services import obs as obs_service
 
 logger = get_logger("main")
@@ -44,8 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.ENVIRONMENT,
         settings.DEBUG,
     )
-    # e.g. app.state.db = await create_pool(settings.DATABASE_URL)
-    #      register_probe(postgres_probe)
+    app.state.db = await database_service.connect(settings)
 
     # OBS is optional, so a missing one must never stop the app booting. It is
     # also deliberately not a health probe: a closed screen recorder should not
@@ -59,7 +59,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # e.g. await app.state.db.close()
+        await database_service.disconnect(app.state.db)
+        app.state.db = None
         await obs_service.disconnect()
         logger.info("Shutdown complete")
 

@@ -24,14 +24,14 @@ describe("ApiError.from", () => {
     const error = ApiError.from(
       axiosErrorWithEnvelope({
         status: 404,
-        message: "Item 999 was not found",
+        message: "Game configuration was not found",
         code: "NOT_FOUND",
         requestId: "abc123",
       }),
     );
 
     expect(error).toBeInstanceOf(ApiError);
-    expect(error.message).toBe("Item 999 was not found");
+    expect(error.message).toBe("Game configuration was not found");
     expect(error.code).toBe("NOT_FOUND");
     expect(error.status).toBe(404);
     expect(error.requestId).toBe("abc123");
