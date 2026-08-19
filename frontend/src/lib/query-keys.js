@@ -14,4 +14,10 @@ export const queryKeys = Object.freeze({
     all: ["games"],
     catalog: () => [...queryKeys.games.all, "catalog"],
   }),
+  eventCapture: Object.freeze({
+    all: ["event-capture"],
+    status: () => [...queryKeys.eventCapture.all, "status"],
+    runs: () => [...queryKeys.eventCapture.all, "runs"],
+    run: (runId) => [...queryKeys.eventCapture.all, "run", runId],
+  }),
 });

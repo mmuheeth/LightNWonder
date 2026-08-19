@@ -59,6 +59,7 @@ src/
 ├── features/
 │   ├── ideck/              presses the Virtual OLED button deck
 │   ├── games/              active game catalog and selector
+│   ├── event-capture/      start/stop log-driven capture, and read runs back
 │   └── obs/                OBS Studio control: connect, screenshot, record
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
@@ -75,6 +76,13 @@ src/
 
 Feature-first: each feature owns its API calls, hooks and components, so a
 feature can be deleted in one directory. Shared plumbing lives in `lib/`.
+
+`features/event-capture/` is the same shape with one twist worth copying: its
+status poll uses a functional `refetchInterval`, so a live run refreshes every
+two seconds while an idle dashboard asks every ten. Its screenshots are the one
+thing fetched outside `apiRequest` -- `captureImageUrl()` builds a URL for an
+`<img>` src, because the backend serves those as files rather than as the
+envelope.
 
 `features/obs/` is the reference for a slice that both polls and mutates: a
 status query on a short `refetchInterval`, mutations that invalidate

@@ -29,6 +29,10 @@ FULL = {
     "roi": {"cash_meter": [0.13, 0.75, 0.86, 0.78]},
     "button_targets": {"take_win": [0.124, 0.917]},
     "ideck": {"panel": "virtual_oled", "aliases": {"Primary": "ButtonA"}},
+    "events": {
+        "rules": [{"event": "jackpot-hit", "pattern": "MoneyLinkOutroSM"}],
+        "disable": ["win-collected"],
+    },
 }
 
 
@@ -103,6 +107,17 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         ({"name": 7}, "'name'.*must be a string"),
         ({"roi": "everything"}, "'roi'.*must be a JSON object"),
         ({"button_targets": 1}, "'button_targets'.*must be a JSON object"),
+        ({"events": []}, "'events'.*must be a JSON object"),
+        (
+            {"events": {"disable": "credit-meter-set"}},
+            "'events.disable'.*array of strings",
+        ),
+        (
+            {
+                "events": {"rules": [{"event": "ok", "pattern": "("}]},
+            },
+            "not a valid regex",
+        ),
     ],
     ids=[
         "malformed-json",
@@ -118,6 +133,9 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         "name-not-a-string",
         "roi-not-an-object",
         "button-targets-not-an-object",
+        "events-not-an-object",
+        "events-disable-not-an-array",
+        "events-rule-regex-invalid",
     ],
 )
 def test_a_malformed_config_says_what_is_wrong(
@@ -148,3 +166,74 @@ def test_active_game_selection_round_trips(tmp_path: Path) -> None:
 def test_active_game_selection_rejects_paths(tmp_path: Path) -> None:
     with pytest.raises(ActiveGameSelectionError, match="bare name"):
         save_active_game(tmp_path / "active_game.json", "../escape")
+
+
+# --- the configs that actually ship ---------------------------------------
+
+GAMES_DIR = (
+    Path(__file__).resolve().parents[1] / "app" / "config" / "game_config" / "games"
+)
+
+
+def shipped_configs() -> list[Path]:
+    return sorted(GAMES_DIR.glob("*.json"))
+
+
+def test_there_are_shipped_configs_to_check() -> None:
+    """Guards the two tests below from passing by finding nothing."""
+    assert shipped_configs()
+
+
+@pytest.mark.parametrize("path", shipped_configs(), ids=lambda path: path.stem)
+def test_a_shipped_config_loads(path: Path) -> None:
+    """A typo in one of these breaks the dashboard, not just one game."""
+    game = load_game_config(path)
+
+    assert game.name
+    assert game.log_path is not None, "event capture needs a log to follow"
+
+
+@pytest.mark.parametrize("path", shipped_configs(), ids=lambda path: path.stem)
+def test_a_shipped_config_drops_no_default_rule(path: Path) -> None:
+    """No shipped game needs to turn a default rule off.
+
+    Pinned so that if one starts to, it is a deliberate choice rather than
+    something left behind from an earlier trim.
+    """
+    game = load_game_config(path)
+
+    assert game.disabled_events == ()
+
+
+def test_huffnpufflink_declares_its_own_bet_rule() -> None:
+    """Its theme log records a bet in a shape no other game's log uses.
+
+    FortuneOx's client log publishes ``BetChangeMsg`` with the whole bet in it,
+    which is what the shipped rule matches. The HuffNPuffLink theme log never
+    logs that message at all -- the only record of a bet is
+    ``[BetManager.UpdateCurrentBet]``, which it also re-logs unchanged several
+    times a round. So the game declares a rule of its own, and marks it as one
+    that fires only when a value moved.
+    """
+    game = load_game_config(GAMES_DIR / "HuffNPuffLink.json")
+
+    rules = {rule.event: rule for rule in game.event_rules}
+    assert "bet-changed" in rules
+    assert rules["bet-changed"].only_on_change is True
+
+    real = (
+        "[BetManager.UpdateCurrentBet][CurrentBet {{ BetsPerUnit:125.000, "
+        "UnitData:[ units: 243, cost: 60 ], TotalBetCost:7500.000, "
+        "TotalBetValue:7500.000, DirectPlayData:{{ "
+        "DirectPlayType:NotDirectPlay, BonusID:, BonusIndex:0, BonusOption:0 }} }}]"
+    )
+    found = rules["bet-changed"].pattern.search(real)
+    assert found is not None
+    assert found.group("total_bet") == "7500.000"
+
+
+def test_fortuneox_needs_no_rules_of_its_own() -> None:
+    """The shipped defaults were read off its log, so they should cover it."""
+    game = load_game_config(GAMES_DIR / "FortuneOx.json")
+
+    assert game.event_rules == ()

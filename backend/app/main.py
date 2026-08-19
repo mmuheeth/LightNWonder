@@ -25,6 +25,7 @@ from app.middleware import RequestContextMiddleware
 from app.schemas.response import ApiResponse
 from app.schemas.system import ServiceInfo
 from app.services import database as database_service
+from app.services import event_capture as event_capture_service
 from app.services import obs as obs_service
 
 logger = get_logger("main")
@@ -59,6 +60,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Before OBS goes: a run still going needs its manifest sealed, and
+        # sealing it takes one last screenshot-free read, not a live socket.
+        await event_capture_service.abort()
         await database_service.disconnect(app.state.db)
         app.state.db = None
         await obs_service.disconnect()

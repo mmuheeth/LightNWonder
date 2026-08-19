@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
+from app.services import event_capture as event_capture_service
 from app.services import ideck as ideck_service
 from app.services import obs as obs_service
 
@@ -40,3 +41,16 @@ def _clean_ideck_state() -> Iterator[None]:
     ideck_service.reset()
     yield
     ideck_service.reset()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_event_capture_state() -> AsyncIterator[None]:
+    """Cancel any watcher a test left running, and drop this test's lock.
+
+    Async, unlike its OBS and i-deck siblings, because cancelling the watcher
+    task means awaiting it -- and a task cancelled but never awaited is the
+    pending-task warning that ``filterwarnings = error`` turns into a failure.
+    """
+    await event_capture_service.reset()
+    yield
+    await event_capture_service.reset()

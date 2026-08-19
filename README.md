@@ -120,13 +120,14 @@ backend/app/
 ├── api/            router.py, health.py, endpoints/   ← routes only, kept thin
 ├── schemas/        response.py holds the envelope     ← the contract
 ├── exceptions/     base.py hierarchy, handlers.py     ← the only error renderer
-├── services/       business logic (incl. games.py, obs.py, ideck.py)
+├── services/       business logic (games.py, obs.py, ideck.py, event_capture.py)
 ├── config/         game data that ships with the code, and its reader
-├── utils/          win32 interop, panel layout/log formats, log tail, safe paths
+├── utils/          win32 interop, panel/game log formats, log tail, safe paths
 ├── middleware/     request id, timing, access log
 └── core/           settings, logging, request context
 
-backend/OBS-capture/    OBS screenshots and recordings (gitignored)
+backend/obs-captured-files/    OBS screenshots and recordings (gitignored)
+└── event-capture/      one folder per capture run: images + run.json
 
 frontend/src/
 ├── features/       one directory per feature (api + hooks + components)
@@ -144,7 +145,7 @@ the plugin; enable it under *Tools → WebSocket Server Settings*.
 
 The integration is backend-owned: the password lives in `backend/.env` and never
 reaches the browser, which only ever talks to `/api/obs/*`. Screenshots and
-recordings default to `backend/OBS-capture/`; each request can use a relative
+recordings default to `backend/obs-captured-files/`; each request can use a relative
 use-case subfolder, and screenshot/recording roots can be configured separately.
 
 When OBS connects, the active scene's window-capture source is pointed at the
@@ -159,6 +160,51 @@ It is **optional and off by default** — the app boots and stays healthy with O
 closed, and a dropped connection re-establishes itself on the next request. See
 [backend/README.md](backend/README.md#obs-studio) for the endpoints and the
 settings.
+
+## Event Based Capture
+
+The dashboard's **Event Based Capture** card watches the active game's own log
+and takes an OBS screenshot the moment something happens -- a spin, the reels
+landing, a bet or denomination change, a win, a gamble offer. Press *Start
+tracking*, play, press *Stop tracking*; everything in between becomes one record
+under `backend/obs-captured-files/event-capture/<date>_<time>/`: the screenshots plus a
+`run.json` naming each event, the values pulled out of its log line, and the
+image taken for it. The **Captures** page replays a run as screenshots paired
+with their event details.
+
+The log-reading half is deliberately generic. `app/utils/game_log.py` turns log
+lines into named events and knows nothing about OBS or capture runs, so anything
+else that wants to react to gameplay can reuse it.
+
+The shipped rules cover the visual events both games log -- the spin cycle,
+bets and denominations, gamble from offer to result, free spins, bonuses and
+progressives, help and attract, service and lockups -- but not every message
+the log names: the internal bookkeeping between one visible change and the next
+gets no rule at all.
+
+Being a visual event is not the same as being worth a screenshot, so each rule
+also says whether to capture it. A run is made of the moments somebody opens it
+for -- `spin-started`, `reels-stopped`, `bet-changed`, `denomination-changed`,
+`win-collected`, the gamble and feature events -- while the ones that happen
+constantly or land on a frame another event already took, such as the credit
+meter ticking or attract cycling to its next scene, are recognised and skipped.
+Anything game-specific is declared in that game's JSON:
+
+```json
+"events": {
+  "rules": [
+    { "event": "jackpot-hit", "pattern": "MoneyLinkOutroSM.*stateStarted",
+      "capture": true, "only_on_change": false }
+  ],
+  "disable": ["win-collected"]
+}
+```
+
+Starting **requires OBS**, and says so rather than quietly producing a run with
+no images. A screenshot that fails once the run is going is recorded against
+that event and the run carries on. See
+[backend/README.md](backend/README.md#event-based-capture) for the endpoints,
+the rule format and the settings.
 
 ## Virtual OLED i-deck
 

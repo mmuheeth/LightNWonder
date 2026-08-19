@@ -4,9 +4,10 @@ Values are read from the environment (and from a local ``.env`` file during
 development). Access them through :func:`get_settings`, which is cached so the
 environment is parsed exactly once per process.
 
-Integration-specific settings are defined in :mod:`app.config.obs` and
-:mod:`app.config.ideck`, then composed here. Their environment names stay
-flat for backwards compatibility with existing ``.env`` files.
+Integration-specific settings are defined in :mod:`app.config.obs`,
+:mod:`app.config.ideck` and :mod:`app.config.event_capture`, then composed
+here. Their environment names stay flat for backwards compatibility with
+existing ``.env`` files.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Annotated, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
+from app.config.event_capture import EventCaptureSettings
 from app.config.ideck import PACKAGE_ROOT, IDeckSettings
 from app.config.obs import ObsSettings
 
@@ -36,7 +38,7 @@ __all__ = [
 ]
 
 
-class Settings(ObsSettings, IDeckSettings):
+class Settings(ObsSettings, IDeckSettings, EventCaptureSettings):
     """Complete runtime configuration for the API."""
 
     model_config = SettingsConfigDict(

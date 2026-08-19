@@ -55,7 +55,7 @@ backend/
 ├── requirements.txt         runtime dependencies
 ├── requirements-dev.txt     + test and lint tooling
 ├── ruff.toml / pytest.ini / mypy.ini / .coveragerc
-├── OBS-capture/             default screenshot/recording root (gitignored)
+├── obs-captured-files/             default screenshot/recording root (gitignored)
 └── app/
     ├── main.py              create_app() factory, middleware wiring, lifespan
     ├── server.py            uvicorn entrypoint (python -m app)
@@ -67,12 +67,14 @@ backend/
     │   ├── runtime.py       general settings and feature-settings composition
     │   ├── obs.py           OBS runtime settings
     │   ├── ideck.py         i-deck runtime settings and path resolution
+    │   ├── event_capture.py Event Based Capture runtime settings
     │   └── game_config/     active selection plus per-game aliases, process,
     │                         logs, ROIs and targets
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
     │   ├── panel_log.py     matches the lines that panel service writes
+    │   ├── game_log.py      parses the game's log and names its events
     │   ├── log_tail.py      rotation-aware cursor over a file being appended to
     │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
@@ -85,6 +87,7 @@ backend/
     │   ├── system.py        service info payload
     │   ├── games.py         game catalog and runtime-selection payloads
     │   ├── obs.py           OBS status, screenshot and recording payloads
+    │   └── event_capture.py capture runs and the events inside them
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -92,7 +95,8 @@ backend/
     │   └── request_context.py   request id, timing, access log
     └── services/            business logic; endpoints stay thin
         ├── games.py          game catalog and active-game switching
-        └── obs.py            the single long-lived obs-websocket session
+        ├── obs.py            the single long-lived obs-websocket session
+        └── event_capture.py  follows the game log and screenshots its events
 ```
 
 Adding a resource is three files plus one line:
@@ -206,6 +210,10 @@ raise ConflictError(
 | `IDeckButtonNotFoundError` |    404 | `IDECK_BUTTON_NOT_FOUND` |
 | `IDeckPressNotConfirmedError` | 502 | `IDECK_PRESS_NOT_CONFIRMED` |
 | `IDeckConfigError`         |    500 | `IDECK_CONFIG_INVALID` |
+| `EventCaptureAlreadyRunningError` | 409 | `EVENT_CAPTURE_ALREADY_RUNNING` |
+| `EventCaptureNotRunningError` | 409 | `EVENT_CAPTURE_NOT_RUNNING` |
+| `EventCaptureLogUnavailableError` | 409 | `EVENT_CAPTURE_LOG_UNAVAILABLE` |
+| `EventCaptureRunNotFoundError` | 404 | `EVENT_CAPTURE_RUN_NOT_FOUND` |
 
 Add your own by subclassing:
 
@@ -308,7 +316,7 @@ Things worth knowing:
   lists no window for the configured process, selection fails with 502
   `OBS_REQUEST_FAILED` and names the executables it did see.
 - **Capture roots are configurable.** `OBS_CAPTURE_DIR` defaults to
-  `backend/OBS-capture`. `OBS_SCREENSHOT_DIR` and `OBS_RECORDING_DIR` can
+  `backend/obs-captured-files`. `OBS_SCREENSHOT_DIR` and `OBS_RECORDING_DIR` can
   override the two roots independently; when omitted, both fall back to
   `OBS_CAPTURE_DIR`.
 - **Use-case folders are request-configurable.** A screenshot request can send
@@ -328,6 +336,123 @@ Things worth knowing:
 Start and stop wait briefly for OBS to actually flip the record output before
 answering — OBS applies it asynchronously, so an immediate read reports the old
 value.
+
+## Event Based Capture
+
+Follows the active game's own log and takes an OBS screenshot the moment it
+recognises a gameplay event -- a spin, the reels landing, a bet or denomination
+change, a win, a gamble offer. One Start/Stop is one run.
+
+```
+GET  /api/event-capture/status                                run in progress; always 200
+POST /api/event-capture/start                                 begin a run
+POST /api/event-capture/stop                                  end it and seal the record
+GET  /api/event-capture/runs                                  every run, newest first
+GET  /api/event-capture/runs/{run_id}                         one run and its events
+GET  /api/event-capture/runs/{run_id}/screenshots/{file_name} one image
+```
+
+A run is a folder under the OBS screenshot root, named for when it started:
+
+```
+obs-captured-files/event-capture/2026-08-19_14-32-07/
+├── run.json                            the record: every captured event, in order
+├── 001_spin-started_14-32-11.png
+├── 002_reels-stopped_14-32-14.png
+└── 003_bet-changed_14-32-30.png
+```
+
+Things worth knowing:
+
+- **The log reader is separate from the capture.** `app/utils/game_log.py` turns
+  log lines into named events and knows nothing about OBS or runs, so anything
+  else that wants to react to gameplay can use it. It is the sibling of
+  `panel_log.py`: one module per foreign log format.
+- **Only visually distinct events are shipped rules.** The game logs plenty of
+  internal bookkeeping between one visible change and the next -- the server
+  round trip behind a spin, the raw reel-stop data before the animation plays,
+  a bet confirmation a few hundred milliseconds after the bet that caused it,
+  the engine settling back to idle after a round that already showed everything
+  worth seeing. None of that gets a rule. `DEFAULT_RULES` in
+  `app/utils/game_log.py` is the list of things a person watching the screen
+  would see change: the spin cycle (`spin-started`, `reels-stopped`,
+  `free-spin-reels-stopped`, `win-collected`), what the player set
+  (`bet-changed`, `denomination-changed`, `paytable-changed`), gamble
+  (`gamble-offered`, `gamble-accepted`, `gamble-declined`, `gamble-picked`,
+  `gamble-result`, `gamble-ended`), features (`bonus-triggered`,
+  `free-spins-entered`, `free-spins-ended`, `progressive-awarded`,
+  `feature-scene-shown`, `mystery-symbols-revealed`, `help-opened`,
+  `help-closed`) and the machine around the game (`attract-started`,
+  `attract-ended`, `attract-looped`, `service-requested`, `service-cleared`,
+  `locked-up`, `lockup-cleared`, `credits-changed`, `screen-covered`,
+  `game-suspended`, `game-resumed`, `demo-menu-shown`, `demo-menu-hidden`,
+  `game-started`).
+- **Being visual is not the same as being worth a screenshot.** Every rule
+  carries `capture`, and a run is made only of the ones set to true. The rest
+  happen constantly (the credit meter after every win, mystery symbols on most
+  spins, attract cycling to its next scene) or land on a frame another event
+  already captured (`gamble-ended` shows the result `gamble-result` took), so
+  they stay recognised for anything else reading the log while the run stays a
+  strip of the moments it was opened for. Replayed over the real logs this is
+  the difference between 247 recognised events and 131 screenshots on one
+  FortuneOx session, and 1,729 against 802 on a long HuffNPuffLink one.
+- **`only_on_change` is for lines a game re-logs unchanged.** HuffNPuffLink
+  writes `[BetManager.UpdateCurrentBet]` several times a round with the bet it
+  already had -- 154 lines for 17 real changes on one session. The debounce
+  cannot help, because those lines are seconds apart and genuinely separate;
+  what makes them a non-event is that none of the values moved. A rule with
+  `only_on_change` fires only when the values it extracted differ from the last
+  time it fired.
+- **Rules anchor on the publish line, not the message name.** Every published
+  message is echoed by a `StateMachine[...] [Non-queued] [<Msg>] not handled by
+  state [...]` line per state machine that ignored it. Matching the bare name
+  turns one spin into five screenshots. Client logs publish through
+  `MessageQueue`, theme logs through `SyncMessagePublisher` and sometimes only as
+  the state transition, so the shipped rules match all three shapes and let the
+  debounce collapse the duplicates.
+- **A game can add or drop rules.** The shipped set covers both games; anything
+  game-specific goes in `app/config/game_config/games/<game>.json`:
+
+  ```json
+  "events": {
+    "rules": [
+      { "event": "jackpot-hit", "pattern": "MoneyLinkOutroSM.*stateStarted",
+        "summary": "Jackpot sequence started", "delay_ms": 1200 }
+    ],
+    "disable": ["win-collected"]
+  }
+  ```
+
+  Named groups in `pattern` become the event's `fields` and can be referenced
+  from `summary` as `{name}`. `capture` (default true) and `only_on_change`
+  (default false) are available on a declared rule too. A game's rules are tried
+  before the shipped ones, so declaring one with an existing name overrides it.
+  Patterns are compiled when the config is read, so a bad regex fails then
+  rather than mid-run. FortuneOx needs no rules of its own; HuffNPuffLink
+  declares one, because its theme log never publishes `BetChangeMsg` and the
+  only record of a bet there is the `[BetManager.UpdateCurrentBet]` line
+  described above.
+- **`delay_ms` exists because the screen lags the log.** `SpinDoneMsg` is written
+  when the server result arrives, a beat before the reels visibly settle, so
+  `reels-stopped` waits 800ms and the screenshot shows the finished frame.
+- **Starting requires OBS.** `/start` connects first and fails with a 409/502 if
+  it cannot, because a run that takes no screenshots is a folder of text. A
+  screenshot that fails *during* a run is recorded on the event as
+  `capture_error` and the run carries on -- a dropped socket re-identifies on the
+  next request.
+- **The record is written as the run goes**, atomically, after every event. A run
+  can last hours; losing all of it to a crash at minute 58 would be worse than
+  rewriting a small JSON file. A backend shut down mid-run seals the record as
+  `interrupted` rather than `completed`.
+- **Only lines written after Start count.** The cursor begins at the log's
+  current end, so a run covers this session and not the game's whole history. A
+  rotation mid-run is followed into the new file.
+- **The image route is the one endpoint that does not return the envelope.** An
+  `<img>` src cannot unwrap JSON. Both path segments come off the wire, so both
+  go through `app/utils/paths.py` before anything is opened.
+- **One run at a time, for the whole process.** Two browsers pointed at the same
+  backend share it. A run keeps the game and rules it started with, so switching
+  the active game mid-run does not repoint it.
 
 ## Game selection
 

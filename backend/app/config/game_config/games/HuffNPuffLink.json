@@ -3,11 +3,22 @@
   "process": "HuffNPuffLink.exe",
   "log": "C:\\logs\\Game\\HuffNPuffLink\\Logs\\HuffNPuffLink_Theme.log",
   "roi": {
-    "cash_meter": [0.138889, 0.755463, 0.869281, 0.782518]
+    "cash_meter": [
+      0.138889,
+      0.755463,
+      0.869281,
+      0.782518
+    ]
   },
   "button_targets": {
-    "take_win": [0.124, 0.917],
-    "gamble": [0.124, 0.883]
+    "take_win": [
+      0.124,
+      0.917
+    ],
+    "gamble": [
+      0.124,
+      0.883
+    ]
   },
   "ideck": {
     "panel": "virtual_oled",
@@ -28,5 +39,15 @@
       "hold4": "Hold4",
       "hold5": "Hold5"
     }
+  },
+  "events": {
+    "rules": [
+      {
+        "event": "bet-changed",
+        "pattern": "\\[BetManager\\.UpdateCurrentBet\\].*BetsPerUnit:(?P<bets_per_unit>[\\d.]+).*TotalBetValue:(?P<total_bet>[\\d.]+)",
+        "summary": "Bet changed to {total_bet} ({bets_per_unit} per unit)",
+        "only_on_change": true
+      }
+    ]
   }
 }

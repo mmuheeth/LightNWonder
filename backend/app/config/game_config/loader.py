@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config.game_config.models import GameConfig, GameConfigError, freeze_mapping
+from app.utils.game_log import EventRule, LogRuleError, compile_rules
 
 __all__ = ["load_game_config"]
 
@@ -28,6 +29,31 @@ def _string_map(raw: Any, *, where: str) -> dict[str, str]:
         if not isinstance(key, str) or not isinstance(value, str):
             raise GameConfigError(f"{where} must map strings to strings")
     return dict(mapping)
+
+
+def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
+    """Read the optional ``events`` block: extra rules, and defaults to drop.
+
+    Rule compilation happens here rather than at capture time so a typo in a
+    pattern is reported when the config is read, not once a run is already
+    underway.
+    """
+    block = _object(raw, where=f"'events' in {path}")
+
+    disable = block.get("disable")
+    if disable is None:
+        disabled: tuple[str, ...] = ()
+    elif isinstance(disable, list) and all(isinstance(item, str) for item in disable):
+        disabled = tuple(disable)
+    else:
+        raise GameConfigError(f"'events.disable' in {path} must be an array of strings")
+
+    try:
+        rules = compile_rules(block.get("rules"), where=f"'events.rules' in {path}")
+    except LogRuleError as exc:
+        raise GameConfigError(str(exc)) from exc
+
+    return rules, disabled
 
 
 def load_game_config(path: Path) -> GameConfig:
@@ -74,6 +100,8 @@ def load_game_config(path: Path) -> GameConfig:
     if process is not None and not isinstance(process, str):
         raise GameConfigError(f"'process' in {path} must be a string")
 
+    event_rules, disabled_events = _events(document.get("events"), path=path)
+
     obs = _object(document.get("obs"), where=f"'obs' in {path}")
     obs_window_source = obs.get("window_source")
     if obs_window_source is not None and not isinstance(obs_window_source, str):
@@ -93,4 +121,6 @@ def load_game_config(path: Path) -> GameConfig:
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")
         ),
+        event_rules=event_rules,
+        disabled_events=disabled_events,
     )

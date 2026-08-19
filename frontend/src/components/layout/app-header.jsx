@@ -4,7 +4,13 @@ import { NavLink } from "react-router-dom";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [{ to: "/", label: "Dashboard" }];
+const NAV_ITEMS = [
+  // `end` only for "/", which would otherwise match every route. The others
+  // want their child routes to keep them highlighted -- /captures/:runId is
+  // still the Captures page.
+  { to: "/", label: "Dashboard", end: true },
+  { to: "/captures", label: "Captures" },
+];
 
 export function AppHeader() {
   return (
@@ -20,7 +26,7 @@ export function AppHeader() {
             <NavLink
               key={item.to}
               to={item.to}
-              end
+              end={item.end ?? false}
               className={({ isActive }) =>
                 cn(
                   "rounded-md px-3 py-1.5 text-sm transition-colors",

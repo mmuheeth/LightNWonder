@@ -178,3 +178,33 @@ class GameConfigInvalidError(AppException):
     status_code = HTTPStatus.INTERNAL_SERVER_ERROR
     error_code = "GAME_CONFIG_INVALID"
     message = "A game configuration could not be loaded"
+
+
+# --- Event Based Capture --------------------------------------------------
+# Same 409-vs-404 split as above: a 409 means the caller has to go do something
+# (stop the run that is already going, pick a game whose config names a log,
+# open OBS), while a 404 means they asked for a run that is not there.
+
+
+class EventCaptureAlreadyRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "EVENT_CAPTURE_ALREADY_RUNNING"
+    message = "An event capture run is already in progress"
+
+
+class EventCaptureNotRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "EVENT_CAPTURE_NOT_RUNNING"
+    message = "No event capture run is in progress"
+
+
+class EventCaptureLogUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "EVENT_CAPTURE_LOG_UNAVAILABLE"
+    message = "The active game's log is not available to follow"
+
+
+class EventCaptureRunNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "EVENT_CAPTURE_RUN_NOT_FOUND"
+    message = "The requested capture run was not found"

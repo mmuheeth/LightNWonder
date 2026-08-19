@@ -32,7 +32,7 @@ class ObsSettings(BaseSettings):
     # Both screenshot files and recordings default to this directory. Relative
     # paths resolve against the working directory, which for this project is
     # always `backend/`.
-    OBS_CAPTURE_DIR: Path = Path("OBS-capture")
+    OBS_CAPTURE_DIR: Path = Path("obs-captured-files")
     # Set either root independently when screenshots and recordings need
     # separate deployment-level destinations. If omitted, each falls back to
     # OBS_CAPTURE_DIR. Per-request output_dir values are safe subdirectories

@@ -1,3 +1,4 @@
+import { EventCapturePanel } from "@/features/event-capture/event-capture-panel";
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
 import { GameSelector } from "@/features/games/game-selector";
@@ -18,6 +19,7 @@ export function DashboardPage() {
       <div className="grid gap-6 md:grid-cols-2">
         <ObsPanel />
         <IDeckPanel />
+        <EventCapturePanel />
       </div>
     </div>
   );
