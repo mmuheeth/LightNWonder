@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -46,10 +46,33 @@ function connected({ active = false, paused = false } = {}) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("ObsPanel", () => {
+  it("does not poll the status endpoint automatically", async () => {
+    vi.useFakeTimers();
+    const request = vi.spyOn(http, "request").mockResolvedValue({
+      status: 200,
+      data: DISCONNECTED,
+    });
+
+    renderWithProviders(<ObsPanel />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("disconnected")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(
+      request.mock.calls.filter(([config]) => config.url.endsWith("/status")),
+    ).toHaveLength(1);
+  });
+
   it("offers Connect while OBS is closed", async () => {
     vi.spyOn(http, "request").mockResolvedValue({
       status: 200,

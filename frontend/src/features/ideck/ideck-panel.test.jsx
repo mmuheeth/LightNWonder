@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -102,10 +102,30 @@ function mockApi({ state = "ready", pressed = PRESSED } = {}) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("IDeckPanel", () => {
+  it("does not poll the status endpoint automatically", async () => {
+    vi.useFakeTimers();
+    const request = mockApi();
+
+    renderWithProviders(<IDeckPanel />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("ready")).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(
+      request.mock.calls.filter(([config]) => config.url.endsWith("/status")),
+    ).toHaveLength(1);
+  });
+
   it("lays the deck out from the panel layout", async () => {
     mockApi();
     renderWithProviders(<IDeckPanel />);

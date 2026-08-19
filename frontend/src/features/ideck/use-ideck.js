@@ -3,7 +3,7 @@
  *
  * Panel state is server state, so it lives here rather than in the Zustand
  * store. Every mutation invalidates the whole `ideck` subtree, which refreshes
- * both the status poll and the button list straight after an action — a press
+ * both the status and the button list straight after an action — a press
  * can restore the window, which changes the client coordinates of every key.
  */
 
@@ -19,17 +19,20 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 
 /**
- * Poll the panel status.
+ * Fetch the panel status.
+ *
+ * Background polling is opt-in so the dashboard does not continuously hit the
+ * status endpoint. The panel's Refresh button and mutations still refresh it
+ * immediately when the user needs current state.
  *
  * @param {{refetchInterval?: number|false}} [options]
  */
-export function useIDeckStatus({ refetchInterval = 5_000 } = {}) {
+export function useIDeckStatus({ refetchInterval = false } = {}) {
   return useQuery({
     queryKey: queryKeys.ideck.status(),
     queryFn: ({ signal }) => getIDeckStatus({ signal }),
     refetchInterval,
-    // Whether the panel is pressable is a live signal; never serve it stale.
-    staleTime: 0,
+    staleTime: 30_000,
   });
 }
 

@@ -4,6 +4,8 @@ The package keeps two kinds of configuration together but separate:
 
 - :mod:`app.config.runtime` answers "how is this deployment configured?" --
   hosts, timeouts and feature switches loaded from the environment.
+- :mod:`app.config.agents` answers "how should agentic workflows run?" --
+  provider/model selection, safety limits, tracing, and checkpointing.
 - :mod:`app.config.game_config` answers "what does this game look like, and
   which game is active?" -- versioned names, regions, targets, and the
   persisted selection loaded from the shipped config files.

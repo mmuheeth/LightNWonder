@@ -65,6 +65,7 @@ backend/
     │   └── logging.py       dictConfig; console or JSON, request id on every line
     ├── config/              runtime settings plus shipped game data/readers
     │   ├── runtime.py       general settings and feature-settings composition
+    │   ├── agents.py        provider-neutral agent/workflow settings
     │   ├── obs.py           OBS runtime settings
     │   ├── ideck.py         i-deck runtime settings and path resolution
     │   ├── event_capture.py Event Based Capture runtime settings
@@ -102,6 +103,7 @@ backend/
     │   └── handlers.py      the only place error responses are built
     ├── middleware/
     │   └── request_context.py   request id, timing, access log
+    ├── agents/               LangChain model, agent, workflow, and checkpoint factories
     └── services/            business logic; endpoints stay thin
         ├── games.py          game catalog and active-game switching
         ├── obs.py            the single long-lived obs-websocket session
@@ -285,6 +287,54 @@ All settings come from the environment (or `.env` locally) — see
 
 `ENVIRONMENT=production` automatically hides `/docs`, `/redoc` and
 `/openapi.json`, and disables reload.
+
+## Agentic workflows (LangChain + LangGraph)
+
+The backend includes LangChain v1 and LangGraph v1 as a provider-neutral agent
+runtime. Set `AGENT_MODEL` with LangChain's `provider:model` notation, such as
+`openai:gpt-4o-mini` or `anthropic:claude-sonnet-4-6`. The OpenAI and Anthropic
+adapters are installed; add the corresponding `langchain-<provider>` package
+for another provider. `AGENT_API_KEY` is the generic credential override, and
+`AGENT_API_KEY_PARAM` supports providers whose constructor uses a different
+keyword.
+
+Agent execution is disabled by default. The checked-in `.env.example` contains
+obvious dummy values so the variable names are present without looking like
+usable credentials. Replace the selected provider key and set
+`AGENT_ENABLED=true` before invoking a model. Model construction itself never
+makes a network request.
+
+The reusable factories keep request code small while leaving graph topology in
+your feature/service layer:
+
+```python
+from langchain.tools import tool
+
+from app.agents import build_agent, checkpoint_context, default_run_config
+from app.config.runtime import settings
+
+
+@tool
+def describe_game(game: str) -> str:
+    """Return a short description of a configured game."""
+    return f"Configured game: {game}"
+
+
+with checkpoint_context(settings, database_url=settings.DATABASE_URL) as saver:
+    agent = build_agent(settings, tools=[describe_game], checkpointer=saver)
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": "Describe FortuneOx."}]},
+        default_run_config(settings, thread_id="demo-thread"),
+    )
+```
+
+`AGENT_CHECKPOINT_BACKEND=memory` is the safe local default. Select `postgres`
+to use `AGENT_CHECKPOINT_URL` (or `DATABASE_URL`) with the included Postgres
+checkpointer package; set `AGENT_CHECKPOINT_SETUP=true` for the one-time table
+initialisation. `new_workflow()` and `compile_workflow()` expose the lower-level
+LangGraph `StateGraph` path for routers, human-in-the-loop steps, and
+multi-agent compositions. `LANGCHAIN_TRACING_V2=true` enables optional
+LangSmith tracing after a real `LANGCHAIN_API_KEY` is supplied.
 
 ## OBS Studio
 

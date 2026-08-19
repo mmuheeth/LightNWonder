@@ -4,7 +4,7 @@ Monorepo scaffold: FastAPI backend, React + Vite frontend.
 
 | Part                     | Stack                                                                      | Port |
 | ------------------------ | -------------------------------------------------------------------------- | ---- |
-| [backend/](backend/)     | Python, FastAPI, uvicorn, pydantic v2                                      | 8001 |
+| [backend/](backend/)     | Python, FastAPI, LangChain, LangGraph, uvicorn, pydantic v2                 | 8001 |
 | [frontend/](frontend/)   | React 19, Vite, Tailwind v4, shadcn/ui, react-query, Zustand (plain JS)     | 3001 |
 
 Each side has its own README with the detail:

@@ -3,7 +3,7 @@
  *
  * Connection state is server state, so it lives here rather than in the Zustand
  * store. Every mutation invalidates the whole `obs` subtree, which refreshes the
- * status poll straight after an action.
+ * status straight after an action.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,17 +22,20 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 
 /**
- * Poll the OBS connection and recording status.
+ * Fetch the OBS connection and recording status.
+ *
+ * Background polling is opt-in so the dashboard does not continuously hit the
+ * status endpoint. The panel's Refresh button and mutations still refresh it
+ * immediately when the user needs current state.
  *
  * @param {{refetchInterval?: number|false}} [options]
  */
-export function useObsStatus({ refetchInterval = 5_000 } = {}) {
+export function useObsStatus({ refetchInterval = false } = {}) {
   return useQuery({
     queryKey: queryKeys.obs.status(),
     queryFn: ({ signal }) => getObsStatus({ signal }),
     refetchInterval,
-    // Connection state is a live signal; never serve it from a stale cache.
-    staleTime: 0,
+    staleTime: 30_000,
   });
 }
 

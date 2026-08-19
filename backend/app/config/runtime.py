@@ -6,9 +6,9 @@ environment is parsed exactly once per process.
 
 Integration-specific settings are defined in :mod:`app.config.obs`,
 :mod:`app.config.ideck`, :mod:`app.config.event_capture`,
-:mod:`app.config.game_input` and :mod:`app.config.ocr`, then composed here. Their
-environment names stay flat for backwards compatibility with existing ``.env``
-files.
+:mod:`app.config.game_input`, :mod:`app.config.ocr` and
+:mod:`app.config.agents`, then composed here. Their environment names stay flat
+for backwards compatibility with existing ``.env`` files.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Annotated, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
+from app.config.agents import AgentSettings
 from app.config.event_capture import EventCaptureSettings
 from app.config.game_input import GameInputSettings
 from app.config.ideck import PACKAGE_ROOT, IDeckSettings
@@ -42,6 +43,7 @@ __all__ = [
 
 
 class Settings(
+    AgentSettings,
     ObsSettings,
     IDeckSettings,
     EventCaptureSettings,
