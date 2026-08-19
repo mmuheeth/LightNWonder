@@ -9,8 +9,10 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
 from app.services import event_capture as event_capture_service
+from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
 from app.services import obs as obs_service
+from app.services import ocr as ocr_service
 
 
 @pytest.fixture
@@ -41,6 +43,22 @@ def _clean_ideck_state() -> Iterator[None]:
     ideck_service.reset()
     yield
     ideck_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_game_input_state() -> Iterator[None]:
+    """Drop the cached game config, and this test's lock."""
+    game_input_service.reset()
+    yield
+    game_input_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_ocr_state() -> Iterator[None]:
+    """Drop the cached OCR engine, so one test's fake is not another's answer."""
+    ocr_service.reset()
+    yield
+    ocr_service.reset()
 
 
 @pytest.fixture(autouse=True)

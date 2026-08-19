@@ -9,6 +9,8 @@ from typing import Any
 
 from app.config.game_config.models import GameConfig, GameConfigError, freeze_mapping
 from app.utils.game_log import EventRule, LogRuleError, compile_rules
+from app.utils.ocr import OcrOptionsError
+from app.utils.ocr import parse_overrides as parse_ocr_overrides
 
 __all__ = ["load_game_config"]
 
@@ -29,6 +31,24 @@ def _string_map(raw: Any, *, where: str) -> dict[str, str]:
         if not isinstance(key, str) or not isinstance(value, str):
             raise GameConfigError(f"{where} must map strings to strings")
     return dict(mapping)
+
+
+def _ocr(raw: Any, *, path: Path) -> dict[str, Mapping[str, Any]]:
+    """Read the optional ``ocr`` block: option overrides per named region.
+
+    Validated here, next to the regions the keys name, so a misspelled option or
+    a page-segmentation mode Tesseract would refuse is reported when the config
+    is read rather than the first time someone reads that meter.
+    """
+    block = _object(raw, where=f"'ocr' in {path}")
+    overrides: dict[str, Mapping[str, Any]] = {}
+    for region, values in block.items():
+        where = f"'ocr.{region}' in {path}"
+        try:
+            overrides[region] = parse_ocr_overrides(values, where=where)
+        except OcrOptionsError as exc:
+            raise GameConfigError(str(exc)) from exc
+    return overrides
 
 
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
@@ -118,6 +138,7 @@ def load_game_config(path: Path) -> GameConfig:
         ideck_panel=panel,
         log_path=Path(log) if log else None,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
+        ocr=freeze_mapping(_ocr(document.get("ocr"), path=path)),
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")
         ),

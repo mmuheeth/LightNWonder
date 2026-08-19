@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.exceptions.base import GameConfigInvalidError, GameNotFoundError
 from app.schemas.games import ActiveGame, GameCatalog, GameOption
+from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
 
 logger = get_logger("games")
@@ -74,7 +75,7 @@ def catalog() -> GameCatalog:
 
 
 def select(game: str) -> ActiveGame:
-    """Persist the active game and reload i-deck game metadata."""
+    """Persist the active game and drop every cached per-game metadata."""
     name, path = _config_path(game)
     config = _load(path)
 
@@ -83,9 +84,11 @@ def select(game: str) -> ActiveGame:
     except ActiveGameSelectionError as exc:
         raise GameConfigInvalidError(str(exc)) from exc
 
-    # The layout is deployment-level data; only the cached per-game aliases
-    # need to be dropped when the selector changes.
+    # Layouts and window settings are deployment-level data; only the cached
+    # per-game metadata needs dropping when the selector changes. Every service
+    # that caches a GameConfig has to be told, or it keeps serving the old game.
     ideck_service.reset_game_config()
+    game_input_service.reset_game_config()
     logger.info("Active game changed to %s", name)
 
     return ActiveGame(game=name, label=config.name, process=config.process)

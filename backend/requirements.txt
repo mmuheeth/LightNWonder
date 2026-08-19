@@ -13,3 +13,18 @@ asyncpg~=0.31.0
 
 # OBS Studio control (obs-websocket v5)
 simpleobsws~=1.4.3
+
+# Reading and cropping the frames OBS writes (app/utils/image_roi.py)
+pillow~=12.3.0
+
+# Frame analysis -- thresholding, template and contour matching on what OBS
+# wrote (app/utils/image_roi.py hands out Pillow images; wrap one with
+# `numpy.asarray` to hand it to cv2, remembering cv2 is BGR and Pillow is RGB).
+# Pulls in numpy, whose stubs are why mypy.ini asks for Python 3.12.
+opencv-python~=5.0.0.93
+
+# OCR (app/utils/ocr.py) needs the Tesseract *program*, which is not a Python
+# package and so cannot be pinned here:
+#   winget install --id UB-Mannheim.TesseractOCR
+# The backend finds it without PATH; see the OCR section of README.md. Reading is
+# optional -- an install without it starts and runs, and only OCR requests fail.

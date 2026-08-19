@@ -165,6 +165,44 @@ class IDeckConfigError(AppException):
     message = "The i-deck configuration could not be loaded"
 
 
+# --- Game window input ----------------------------------------------------
+# Kept apart from the i-deck errors above rather than reusing them: those name
+# the Virtual OLED panel in both their code and their message, and the frontend
+# branches on the code. The same 409/404/502 split applies -- 409 when the caller
+# has to go do something (launch the game), 404 when they named a target that is
+# not configured, 502 when the window is there but the click could not be proven.
+
+
+class GameWindowNotFoundError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "GAME_WINDOW_NOT_FOUND"
+    message = "The game window is not open"
+
+
+class GameInputAccessDeniedError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "GAME_INPUT_ACCESS_DENIED"
+    message = "Windows is blocking input to the game window"
+
+
+class GameTargetNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "GAME_TARGET_NOT_FOUND"
+    message = "No such button target in the active game's config"
+
+
+class GameClickNotConfirmedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "GAME_CLICK_NOT_CONFIRMED"
+    message = "The click was sent but the game never registered it"
+
+
+class GameInputConfigError(AppException):
+    status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+    error_code = "GAME_INPUT_CONFIG_INVALID"
+    message = "The game input configuration could not be loaded"
+
+
 # --- Game selection ------------------------------------------------------
 
 
@@ -208,3 +246,31 @@ class EventCaptureRunNotFoundError(AppException):
     status_code = HTTPStatus.NOT_FOUND
     error_code = "EVENT_CAPTURE_RUN_NOT_FOUND"
     message = "The requested capture run was not found"
+
+
+# --- OCR ------------------------------------------------------------------
+# The same split once more. A missing Tesseract install is a 409: the caller fixes
+# it by installing the engine or pointing OCR_TESSERACT_CMD at it, and a Retry
+# button would be a lie. A 404 is a region the active game does not declare, which
+# is a typo rather than an unreadable meter -- a region that is configured but
+# could not be read comes back as a reading with an error on it, not as a failed
+# request. A 502 is for the frame: the engine is there, and there was nothing to
+# give it.
+
+
+class OcrEngineUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "OCR_ENGINE_UNAVAILABLE"
+    message = "No usable Tesseract OCR engine is available"
+
+
+class OcrRegionNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "OCR_REGION_NOT_FOUND"
+    message = "No such region in the active game's config"
+
+
+class OcrReadFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "OCR_READ_FAILED"
+    message = "The frame to read could not be obtained"

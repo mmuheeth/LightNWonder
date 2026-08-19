@@ -11,6 +11,31 @@
   },
   "ideck": {
     "panel": "virtual_oled",
-    "aliases": {}
+    "aliases": {
+      "spin": "Rebet",
+      "play": "Rebet",
+      "repeat_bet": "Rebet",
+      "stop": "Rebet",
+
+      "bet_per_unit_1": "Hold1",
+      "bet_per_unit_2": "Hold2",
+      "bet_per_unit_3": "Hold3",
+      "bet_per_unit_4": "Hold4",
+      "bet_per_unit_5": "Hold5",
+      "min_bet": "Hold1",
+      "max_bet_per_unit": "Hold5",
+
+      "collect": "Collect",
+      "cash_out": "Collect",
+      "service": "Service",
+      "attendant": "Service",
+
+      "max_bet": "Maxbet",
+      "line1": "Line1",
+      "line2": "Line2",
+      "line3": "Line3",
+      "line4": "Line4",
+      "line5": "Line5"
+    }
   }
 }

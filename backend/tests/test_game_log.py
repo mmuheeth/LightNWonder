@@ -420,7 +420,6 @@ def test_the_events_worth_a_screenshot_include_the_ones_a_run_is_opened_for() ->
         "bet-changed",
         "denomination-changed",
         "win-collected",
-        "gamble-offered",
         "gamble-accepted",
         "gamble-result",
         "free-spins-entered",
@@ -428,9 +427,33 @@ def test_the_events_worth_a_screenshot_include_the_ones_a_run_is_opened_for() ->
     } <= captured
 
 
-def test_default_rules_all_capture_unless_manually_turned_off() -> None:
-    """Every default rule captures until someone flips its flag by hand."""
-    assert all(rule.capture for rule in DEFAULT_RULES)
+def test_the_events_left_out_are_the_machine_around_the_game() -> None:
+    """The other half of the same decision, pinned the same way.
+
+    Every one of these is recognised, and none of them gets a frame: the attract
+    loop cycles all night, help and the demo menu are the tester's own doing
+    rather than the game's, and a lockup holds one screen until it clears. A run
+    that screenshotted them would bury the spins it was opened to look at.
+    """
+    assert {rule.event for rule in DEFAULT_RULES if not rule.capture} == {
+        "gamble-offered",
+        "gamble-declined",
+        "help-opened",
+        "help-closed",
+        "feature-scene-shown",
+        "attract-started",
+        "attract-ended",
+        "attract-looped",
+        "service-requested",
+        "service-cleared",
+        "locked-up",
+        "lockup-cleared",
+        "screen-covered",
+        "game-suspended",
+        "game-resumed",
+        "demo-menu-shown",
+        "demo-menu-hidden",
+    }
 
 
 def test_a_detected_event_carries_the_rules_decisions() -> None:

@@ -93,6 +93,7 @@ JSON file.
 who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
 log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
 `log_tail.py` (rotation-aware cursor), `win32.py` (the only ctypes),
+`ocr.py` (runs the Tesseract program and reads its TSV back),
 `paths.py` (resolves untrusted filenames inside a root — use it for anything
 that came off the wire).
 
@@ -167,5 +168,9 @@ one directory. Shared plumbing is in `src/lib/`.
   blank screenshot much later.
 - **OBS state settles asynchronously.** Recording start/stop polls for the real
   state before answering rather than reading it immediately.
+- **Tesseract is not on `PATH`.** Its Windows installer does not add it, so
+  `app/config/ocr.py` discovers the binary where the installers put it and
+  `OCR_TESSERACT_CMD` overrides that. OCR is optional like OBS: no engine means
+  `GET /api/ocr/status` says `not_installed` and only reads fail.
 - `obs-captured-files/` (screenshots, recordings, `event-capture/<run>/`) is
   gitignored output, not source.

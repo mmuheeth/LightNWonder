@@ -68,6 +68,7 @@ backend/
     │   ├── obs.py           OBS runtime settings
     │   ├── ideck.py         i-deck runtime settings and path resolution
     │   ├── event_capture.py Event Based Capture runtime settings
+    │   ├── ocr.py           Tesseract OCR settings, and finding the engine
     │   └── game_config/     active selection plus per-game aliases, process,
     │                         logs, ROIs and targets
     ├── utils/
@@ -75,7 +76,13 @@ backend/
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
     │   ├── panel_log.py     matches the lines that panel service writes
     │   ├── game_log.py      parses the game's log and names its events
-    │   ├── log_tail.py      rotation-aware cursor over a file being appended to
+    │   ├── log_tail.py      rotation-aware cursor over a growing file, and the
+    │                         follower that polls one for new lines
+    │   ├── image_roi.py     crops a config's named region out of a frame, by
+    │                         fractions, so it survives a resolution change
+    │   ├── click_target.py   reads a config's named click targets, by fractions,
+    │                         so they survive a window resize
+    │   ├── ocr.py           runs Tesseract over an image and reads its answer
     │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
     │   ├── router.py        aggregates endpoint modules  → mounted at /api
@@ -87,7 +94,9 @@ backend/
     │   ├── system.py        service info payload
     │   ├── games.py         game catalog and runtime-selection payloads
     │   ├── obs.py           OBS status, screenshot and recording payloads
-    │   └── event_capture.py capture runs and the events inside them
+    │   ├── event_capture.py capture runs and the events inside them
+    │   ├── game_input.py     game window state, click targets and click results
+    │   └── ocr.py           engine status, options and what was read
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -96,7 +105,9 @@ backend/
     └── services/            business logic; endpoints stay thin
         ├── games.py          game catalog and active-game switching
         ├── obs.py            the single long-lived obs-websocket session
-        └── event_capture.py  follows the game log and screenshots its events
+        ├── event_capture.py  follows the game log and screenshots its events
+        ├── game_input.py     clicks the game's own window, proven by its log
+        └── ocr.py            reads the game's meters off a frame
 ```
 
 Adding a resource is three files plus one line:
@@ -364,10 +375,15 @@ obs-captured-files/event-capture/2026-08-19_14-32-07/
 
 Things worth knowing:
 
-- **The log reader is separate from the capture.** `app/utils/game_log.py` turns
-  log lines into named events and knows nothing about OBS or runs, so anything
-  else that wants to react to gameplay can use it. It is the sibling of
-  `panel_log.py`: one module per foreign log format.
+- **Following a log is not part of this feature.** Two reusable pieces sit under
+  it, and neither knows about OBS or runs. `app/utils/log_tail.py` does the
+  reading: `LogTail` is one read from a cursor you hold (which is how an i-deck
+  press is confirmed), and `LogFollower` holds the cursor itself and polls for
+  new lines, which is what a run does. `app/utils/game_log.py` does the meaning,
+  turning those lines into named events -- the sibling of `panel_log.py`, one
+  module per foreign log format. What is left in
+  `app/services/event_capture.py` is only which recognised events are worth a
+  frame, and how a run is recorded.
 - **Only visually distinct events are shipped rules.** The game logs plenty of
   internal bookkeeping between one visible change and the next -- the server
   round trip behind a spin, the raw reel-stop data before the animation plays,
@@ -454,6 +470,156 @@ Things worth knowing:
   backend share it. A run keeps the game and rules it started with, so switching
   the active game mid-run does not repoint it.
 
+## Regions of interest
+
+A game config names the parts of the screen worth reading, as fractions of the
+frame:
+
+```json
+"roi": { "cash_meter": [0.229264, 0.844468, 0.762349, 0.884554] }
+```
+
+Left, top, right, bottom, each `0.0..1.0`. `app/utils/image_roi.py` turns those
+into pixels for whatever size the frame turned out to be:
+
+```python
+from app.utils.image_roi import crop_file, named_roi
+
+region = named_roi(game.roi, "cash_meter")
+meter = crop_file(screenshot, region, destination=out / "cash_meter.png")
+```
+
+- **Fractions, so a resolution change costs nothing.** The same four numbers
+  crop the same part of the picture at 854x480 and at 3840x2160; each edge is
+  rounded to the nearest pixel rather than truncated, so the region scales
+  instead of creeping inwards. `tests/test_image_roi.py` checks this against the
+  event-capture screenshots themselves, rescaled up and down.
+- **Fractions of the whole frame, letterboxing included.** A portrait game
+  inside a landscape canvas has black down both sides, and the region is
+  measured against the picture OBS wrote. That is the rectangle both the person
+  measuring the region and the code cropping it can see — but it does mean a
+  region follows a *resolution* change, not a change in how much of the canvas
+  the game window fills. Resize the game window without re-measuring and the
+  region drifts.
+- **Measured in pixels, stored as fractions.** `Roi.from_pixels(box,
+  width=..., height=...)` converts a reading taken off one screenshot in an
+  image editor, so the conversion happens once rather than at every use.
+- **A bad region is rejected where it is read.** A missing name, a wrong count,
+  a fraction outside `0..1` or edges the wrong way round all raise `RoiError`
+  naming the region — instead of surfacing later as a blank crop.
+
+## Reading text (OCR)
+
+Turns a region into the number on it. Tesseract does the recognition; everything
+here is about giving it something it can read and saying how sure it was.
+
+```
+GET  /api/ocr/status          engine, version, languages, and the default options
+GET  /api/ocr/regions         the active game's readable regions and their options
+POST /api/ocr/read            read regions off a live OBS frame, or off a capture
+```
+
+```bash
+curl -s localhost:8001/api/ocr/status
+# read every region the active game declares, off the screen right now
+curl -s -X POST localhost:8001/api/ocr/read -H 'content-type: application/json' -d '{}'
+# read one region off a frame a capture run already took, and see what the engine saw
+curl -s -X POST localhost:8001/api/ocr/read -H 'content-type: application/json' -d '{
+  "run_id": "2026-08-19_04-01-02",
+  "file_name": "041_spin-result-received_04-01-24.png",
+  "regions": ["cash_meter"],
+  "options": {"psm": 11},
+  "include_crop": true
+}'
+```
+
+### Installing the engine
+
+Tesseract is an external program, not a pip package — `requirements.txt` does not
+and cannot carry it. Install it once per machine:
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR
+# or the installer from https://github.com/UB-Mannheim/tesseract/wiki
+```
+
+**The installer does not put it on `PATH`**, so the backend looks where the
+installers actually put it: `%LOCALAPPDATA%\Tesseract-OCR`,
+`%LOCALAPPDATA%\Programs\Tesseract-OCR`, `%PROGRAMFILES%\Tesseract-OCR` and the
+x86 form, after checking `PATH` first. Set `OCR_TESSERACT_CMD` only for an install
+somewhere else; it accepts the folder as well as the `.exe`, because the folder is
+the form the installer shows. `GET /api/ocr/status` reports which one it found, its
+version and its languages — or, when there is none, every path it looked in.
+
+Nothing fails without an engine. OCR is optional in the same way OBS is: the
+service starts, `/health/ready` stays green, `status` answers `not_installed`, and
+only a read is refused (409 `OCR_ENGINE_UNAVAILABLE`).
+
+### Options come from three places
+
+Later wins, and every reading reports what it ended up with:
+
+1. **The environment** (`OCR_*` in `.env`) — the defaults for every region.
+2. **The game config's `ocr` block** — per region, because the right
+   page-segmentation mode is a property of the region, not of the machine.
+3. **The request's `options`** — for one read, which is how a region gets tuned.
+
+```json
+"roi": { "cash_meter": [0.229264, 0.844468, 0.762349, 0.884554] },
+"ocr": { "cash_meter": { "psm": 11, "char_whitelist": "0123456789.,$" } }
+```
+
+The keys are `language`, `psm`, `oem`, `char_whitelist`, `upscale`, `grayscale`,
+`autocontrast`, `invert`, `threshold` and `dpi`. They are validated when the config
+is read, so a misspelled option or a `psm` Tesseract would refuse is an error at
+load time naming the file and the region — not a silent misread months later.
+
+### The defaults are aimed at a meter, not a document
+
+A region cut out of a game frame is one short line of large glyphs, a few hundred
+pixels wide, drawn over artwork and usually light on dark. So `OCR_PSM` defaults to
+7 (*a single text line*) rather than Tesseract's own 3 (*a whole page*), the crop is
+greyscaled, contrast-stretched and enlarged 3x before it is handed over, and the
+engine is told the image is 300 DPI instead of being left to guess from a small
+picture. Measured on this project's own captures: at native size the cash meter
+reads as nothing at all, and at 3x it reads `$842.94 $1.20 176`.
+
+Two things worth knowing when a reading is wrong:
+
+- **`char_whitelist` is a hint, not a rule.** Under the LSTM engine (`oem` 3)
+  Tesseract may still return a character outside it, and on this project's meters a
+  digits-only whitelist sometimes joins two values into one. Try it, keep it if it
+  helps that region.
+- **`include_crop` returns what the engine actually saw**, preprocessing and all,
+  as a data URI. That picture answers "is this a bad region or a bad option" in one
+  look, which reading the text again never does.
+
+### Tuning a region
+
+Read the same frame from a capture run over and over, changing one option per
+request, then write the winner into the game config:
+
+```
+POST /api/ocr/read  {"run_id": ..., "file_name": ..., "options": {"psm": 6}}
+POST /api/ocr/read  {"run_id": ..., "file_name": ..., "options": {"psm": 11}}
+```
+
+A live read cannot be repeated — the screen has moved on — which is exactly why a
+run's screenshots are the frames to tune against.
+
+### What a reading says
+
+`text` is what was recognised; `value` is the first number in it and `values` is
+all of them, because a meter panel often holds credit, bet and win in one region.
+`confidence` is the engine's own mean, 0–100, and is the difference between *the
+meter says 842.94* and *the engine produced 842.94 out of a crop of noise*. `words`
+carries each word's box in crop pixels, for drawing an overlay.
+
+One region failing does not fail the read: ask for four and the broken one comes
+back with `error` set beside the three that worked. A region name the game does not
+declare is different — that is a 404, because a typo and an unreadable meter should
+not arrive looking the same.
+
 ## Game selection
 
 ```
@@ -482,7 +648,7 @@ POST /api/ideck/sequence         press several in order
 POST /api/ideck/probe            capability check, no side effects
 ```
 
-Four things worth knowing:
+Five things worth knowing:
 
 - **Nothing moves your cursor.** A press is `PostMessage`d straight to the
   window as `WM_MOUSEMOVE` + `WM_LBUTTONDOWN` + `WM_LBUTTONUP`. The move first
@@ -505,6 +671,16 @@ Four things worth knowing:
   `app/config/game_config/games/<game>.json`. The API accepts any alias in that
   file or any key name from the panel layout.
 
+- **A key on the deck is not always a key the game uses.** The layout belongs to
+  the cabinet, not the theme, so an alias can name a key the running game binds
+  nothing to: the press lands, the panel confirms it, and the game does nothing.
+  FortuneOx binds only its bottom row — `bet_per_unit_1`..`bet_per_unit_5`,
+  which publish `BetsPerUnitSelectButtonMsg` — and the large key, `spin`, which
+  publishes `SpinButtonMsg`. Its top row (`line1`..`line5`) and `max_bet` stay
+  inert even in `PanelStateIdleWithCredits` with the bet below maximum. Only the
+  game's own log separates the two cases, because a confirmed press proves the
+  panel saw it, not that the game acted on it.
+
 - **Presses are proven, not assumed.** Every press the panel accepts writes
   `Button Pressed ID=<hex>` to `IDECK_LOG_PATH`. Each press records the log size
   first and then reads only what was appended, so a press that never landed
@@ -519,6 +695,94 @@ Four things worth knowing:
 
 Start with `POST /api/ideck/probe`: it posts a mouse move and nothing else, so
 it proves input reaches the panel without touching game state.
+
+## Game window input
+
+Clicks the on-screen buttons the button deck does not carry. Take win and gamble
+are the reason this exists: they are touched on the glass, not pressed on the
+i-deck, so `/api/ideck/press` cannot reach them however it is configured. The
+target is the simulator's own Unity window (title = the active game's name,
+class `UnityWndClass`).
+
+```
+GET  /api/game-input/status      game window state; always 200
+GET  /api/game-input/targets     every configured target, in both coordinate spaces
+POST /api/game-input/click       click one target {"target": "take_win"}
+```
+
+Only names the active game declares are clickable — there is no endpoint that
+takes a raw pixel, so a caller can reach the buttons a game configures and no
+other point on the screen.
+
+### Why coordinates, and what makes them safe
+
+There is no API to ask instead, and not for want of looking:
+
+- Unity implements neither UI Automation nor Microsoft Active Accessibility, so
+  the window exposes no tree of controls to address by name.
+- The deck cannot do it. `virtual_oled.xml` declares fourteen keys — Service,
+  Line1‑5, Rebet, Collect, Hold1‑5, Maxbet — and gamble is not among them. The
+  games' own logs settle it: every gamble decision arrives as a `TouchMsg` from
+  the glass, never as an OLED button id.
+- The game's CUDLR console (an HTTP server it really does run) exposes only
+  gaffing commands — `gaff`, `gaffq`, `gaffinfo`, `RepeatGame`, `weights` — and
+  nothing that presses a button.
+- The game *does* ship a proper automation service: GDK's **GAF**, a Thrift
+  server whose documented surface includes `SimulateTouch(gameObject)`,
+  `GetSelectableObjects`, `GetCurrentState` and `GetMeterInfo`, with wrappers
+  literally named `PressTakeWin` and `PressGamble`
+  (`<game>/TestCode/GAF.XML`, handlers present in the game's own
+  `Assembly-CSharp.dll`). It is **not started by a normal simulator launch** —
+  nothing listens on the ports its client defaults to. If it is ever switched
+  on, it belongs here as a second way to deliver a click and would make this
+  section obsolete.
+
+So the coordinate stays, and two things keep it honest:
+
+- **Geometry is not hardcoded.** Aim points live in the active game's config as
+  fractions of the window, the same convention `image_roi.py` crops regions
+  with, so a resized simulator needs no re-measurement:
+
+  ```json
+  "button_targets": {
+    "take_win": [0.0713, 0.9724],
+    "gamble":   [0.0694, 0.9383]
+  }
+  ```
+
+  A target may also declare how a click on it is proven. Omit it and `take_win`
+  and `gamble` pick up their defaults:
+
+  ```json
+  "button_targets": {
+    "gamble_red": { "point": [0.30, 0.50], "confirm": "gamble-picked" }
+  }
+  ```
+
+  `confirm` names an event from `app/utils/game_log.py`, resolved through the
+  active game's own rules — so a game that overrides `gamble-accepted` gets its
+  own pattern here too.
+
+- **Clicks are proven, not assumed.** This is what earns the coordinate its
+  keep: a click that misses is *silent*, so silence has to be a failure. Each
+  click records the game log's size first and then reads only what was appended.
+  `data.confirmed_by` says how strong the proof was:
+
+  | value | meaning |
+  | --- | --- |
+  | `target-event` | the game published this target's own event (`double_up_offer_accept` for gamble, `double_up_offer_decline` for take win) — it names the button that was hit, so the coordinate was right |
+  | `touch` | the game registered a touch but nothing said which button — all that is available for a target declaring no event |
+
+  A 502 distinguishes the two causes rather than blaming the window for a
+  coordinate: a touch with no target event means the click reached the game and
+  missed, so re-measure against `GET /api/game-input/targets`; no touch at all
+  means the input never arrived. Set `GAME_INPUT_VERIFY_CLICKS=false` to skip
+  this; the result is then honestly marked `confirmed: false`.
+
+Nothing moves your cursor, and the same **integrity level** rule as the i-deck
+applies — the game runs elevated on these machines, so the backend must be too.
+`GET /api/game-input/status` reports `access_denied` rather than leaving you to
+guess.
 
 ## Logging
 

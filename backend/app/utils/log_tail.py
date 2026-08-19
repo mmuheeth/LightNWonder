@@ -1,14 +1,25 @@
 """Follow a file another process is appending to.
 
-Written for the OLED panel service's log, which is how a button press is proven
-to have landed, but there is nothing panel-specific here: it is a read cursor
-over a growing file, plus a poll-until-it-appears wait.
+Two layers, so a caller takes only what it needs:
+
+:class:`LogTail` is a single read -- hand it a cursor, get back what arrived
+after it. That suits proving one thing happened: a button press captures the
+size first and reads only the delta, so an identical line already in the log
+cannot confirm the next press.
+
+:class:`LogFollower` is "keep reading" -- it holds the cursor itself, and
+:meth:`LogFollower.follow` is the poll loop around it. That suits reacting to a
+log as it is written, which is what event capture does.
+
+Written for the OLED panel service's log and for the games' own logs, but there
+is nothing specific to either here: this is a byte cursor over a growing file.
+What the lines *mean* belongs to :mod:`app.utils.panel_log` and
+:mod:`app.utils.game_log`.
 
 Two properties matter to callers:
 
-**Only what arrived after the cursor is read.** A press captures the size first
-and reads the delta, so an identical line already in the log cannot confirm the
-next press.
+**Only what arrived after the cursor is read.** Nothing re-reads what it has
+already seen, so no line is ever handled twice.
 
 **A shrinking file is a rotation, not an error.** The panel service caps its logs
 around 20 MB and starts over; the cursor restarts from the beginning of the new
@@ -24,7 +35,15 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+
+__all__ = [
+    "DEFAULT_MAX_BYTES",
+    "DEFAULT_POLL_SECONDS",
+    "LogFollower",
+    "LogTail",
+]
 
 # A single read is capped in case something else wrote a burst in between. The
 # whole file is several megabytes; the delta being watched for is one line.
@@ -100,4 +119,48 @@ class LogTail:
                     return line.strip()
             if time.monotonic() >= deadline:
                 return None
+            await asyncio.sleep(self.poll_seconds)
+
+
+class LogFollower:
+    """A cursor that remembers where it got to, for following a live log.
+
+    :class:`LogTail` is one read; this is the "keep reading" on top of it, which
+    is what anything reacting to a log as it is written actually wants. It holds
+    the cursor, so :meth:`new_lines` hands back only what is new and
+    :meth:`follow` is the poll loop around that.
+
+    Following starts at the *end* of the file. A follower cares about what
+    happens next, not about the history it was started after -- a run should not
+    open with a screenshot of every spin since the game launched. Set
+    :attr:`cursor` to 0 before the first read to take the file from its start.
+    """
+
+    def __init__(
+        self, path: Path, *, poll_seconds: float = DEFAULT_POLL_SECONDS
+    ) -> None:
+        self.path = path
+        self.poll_seconds = poll_seconds
+        self._tail = LogTail(path)
+        self.cursor = self._tail.offset()
+
+    def new_lines(self) -> list[str]:
+        """Every line appended since the last call, and advance the cursor.
+
+        Never raises, for the reason the module docstring gives: an unreadable
+        log is simply nothing new.
+        """
+        chunk, self.cursor = self._tail.read_since(self.cursor)
+        return chunk.splitlines()
+
+    async def follow(self, handle: Callable[[str], Awaitable[None]]) -> None:
+        """Hand every appended line to ``handle`` until cancelled.
+
+        Never returns on its own -- the caller owns the task and ends it by
+        cancelling. ``handle`` owns its own failures: an exception raised out of
+        it ends the loop, so a caller that must survive one catches it there.
+        """
+        while True:
+            for line in self.new_lines():
+                await handle(line)
             await asyncio.sleep(self.poll_seconds)

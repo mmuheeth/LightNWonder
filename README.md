@@ -228,6 +228,34 @@ is the case. See
 [backend/README.md](backend/README.md#virtual-oled-i-deck) for the endpoints and
 the settings.
 
+## Reading text (OCR)
+
+Reads the game's meters off a frame — the regions the selected game declares in
+its `roi` block, turned into text and numbers by
+[Tesseract](https://github.com/UB-Mannheim/tesseract/wiki):
+
+```
+GET  /api/ocr/status     the engine, its version and languages
+GET  /api/ocr/regions    what can be read, and the options each is read with
+POST /api/ocr/read       read regions off the screen now, or off a capture run
+```
+
+Tesseract is an external program, so it is installed per machine
+(`winget install --id UB-Mannheim.TesseractOCR`) rather than pinned in
+`requirements.txt`. **Its installer does not put it on `PATH`**, so the backend
+looks where the installers actually put it and reports what it found; set
+`OCR_TESSERACT_CMD` only for an install somewhere else. Nothing fails without an
+engine — the service starts, health stays green, and only a read is refused.
+
+Every reading carries the engine's confidence and the exact options that produced
+it, because the same crop can read perfectly at one page-segmentation mode and
+come back as punctuation at another. Options layer: `OCR_*` in `.env`, then the
+game config's per-region `ocr` block, then a request's own overrides for one read
+— which, pointed at a screenshot a capture run already took, is how a region gets
+tuned against a frame that does not move. See
+[backend/README.md](backend/README.md#reading-text-ocr) for the options, the
+tuning loop and the failure codes.
+
 ## Notes
 
 - Health is mounted at the backend **root** (`/health`, `/health/live`,

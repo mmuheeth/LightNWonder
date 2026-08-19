@@ -6,6 +6,11 @@ watching it. Every line that a rule recognises *and marks worth capturing* gets
 a screenshot and a row in that run's ``run.json``. ``stop`` ends the task and
 finalises the manifest.
 
+The reading itself is not here: :class:`app.utils.log_tail.LogFollower` owns the
+cursor and the poll loop, and :mod:`app.utils.game_log` owns what a line means.
+What is left in this module is the part that is actually about capture -- which
+recognised events are worth a frame, and how a run is recorded.
+
 Four decisions are worth knowing before changing anything here.
 
 **A run is not every event the rules know.** :mod:`app.utils.game_log` lists
@@ -29,7 +34,7 @@ teardown into a failure. So the task is created by :func:`start` and always
 cancelled *and awaited* -- by :func:`stop`, by :func:`abort` at shutdown, and by
 :func:`reset` in tests. There is no path that leaves it running.
 
-**Debounce compares the game's timestamps, not the wall clock.** The watcher
+**Debounce compares the game's timestamps, not the wall clock.** The follower
 reads whatever was appended since it last looked, so a single read can hand it a
 hundred lines at once and processing them takes no measurable time. Debouncing
 on the wall clock would collapse them all into one event; debouncing on the
@@ -69,7 +74,7 @@ from app.schemas.event_capture import (
 from app.schemas.obs import ScreenshotRequest
 from app.services import obs as obs_service
 from app.utils import game_log
-from app.utils.log_tail import LogTail
+from app.utils.log_tail import LogFollower
 from app.utils.paths import UnsafeNameError, resolve_subdirectory, resolve_within
 
 logger = get_logger("event_capture")
@@ -91,11 +96,11 @@ class _ActiveRun:
     output_dir: str
     """Run directory relative to the screenshot root, as OBS wants it."""
 
-    log: LogTail
-    log_path: Path
+    log: LogFollower
+    """Cursor over the game's log, positioned at its end when the run started."""
+
     rules: tuple[game_log.EventRule, ...]
     started_at: datetime
-    cursor: int = 0
     events: list[CapturedEvent] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     last_seen: dict[str, datetime] = field(default_factory=dict)
@@ -177,7 +182,7 @@ def _detail(
         started_at=run.started_at,
         stopped_at=stopped,
         event_count=len(run.events),
-        log_path=str(run.log_path),
+        log_path=str(run.log.path),
         events=list(run.events),
         errors=list(run.errors),
     )
@@ -324,56 +329,56 @@ def _is_unchanged(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
     return unchanged
 
 
-async def _drain(run: _ActiveRun) -> None:
-    """Process everything the game appended since the last look."""
-    chunk, run.cursor = run.log.read_since(run.cursor)
-    if not chunk:
-        return
-    for raw in chunk.splitlines():
+async def _handle(run: _ActiveRun, raw: str) -> None:
+    """Capture one appended line, if a rule claims it as something to see.
+
+    Never raises: a live run outranks any one line, so a failure is recorded on
+    the run and the next line is still read. Cancellation is a ``BaseException``
+    and so passes straight through, which is how the watcher is stopped.
+    """
+    try:
         line = game_log.parse_line(raw)
         if line is None:
-            continue
+            return
         detected = game_log.match(line, run.rules)
         if detected is None or not detected.capture:
-            continue
+            return
         if _is_repeat(run, detected) or _is_unchanged(run, detected):
-            continue
+            return
         await _capture(run, detected)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        if message not in run.errors:
+            run.errors.append(message)
+        logger.exception("Event capture %s hit an error", run.run_id)
 
 
 async def _watch(run: _ActiveRun) -> None:
     """Follow the log until cancelled."""
-    logger.info("Event capture %s following %s", run.run_id, run.log_path)
-    try:
-        while True:
-            try:
-                await _drain(run)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # a live run outranks any one event
-                message = f"{type(exc).__name__}: {exc}"
-                if message not in run.errors:
-                    run.errors.append(message)
-                logger.exception("Event capture %s hit an error", run.run_id)
-            await asyncio.sleep(settings.EVENT_CAPTURE_POLL_SECONDS)
-    except asyncio.CancelledError:
-        # Expected: stop() and abort() both end the run this way.
-        raise
+    logger.info("Event capture %s following %s", run.run_id, run.log.path)
+    await run.log.follow(lambda raw: _handle(run, raw))
 
 
-async def _finish(run: _ActiveRun, *, status: CaptureRunState) -> CaptureRunDetail:
-    """Cancel the watcher, take one last look, and seal the manifest."""
+async def _stop_watching(run: _ActiveRun) -> None:
+    """End the watcher task.
+
+    Awaiting the cancellation is not optional: a cancelled-but-unawaited task is
+    exactly the pending-task warning that fails the test suite.
+    """
     task = run.task
     if task is not None and not task.done():
         task.cancel()
-        # Awaiting is not optional: a cancelled-but-unawaited task is exactly
-        # the pending-task warning that fails the test suite.
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def _finish(run: _ActiveRun, *, status: CaptureRunState) -> CaptureRunDetail:
+    """Stop the watcher, take one last look, and seal the manifest."""
+    await _stop_watching(run)
 
     # Events logged between the last poll and the stop request are still part of
     # this session, so read once more before sealing.
-    with contextlib.suppress(Exception):  # best effort by definition
-        await _drain(run)
+    for raw in run.log.new_lines():
+        await _handle(run, raw)
 
     detail = _detail(run, status=status, stopped=datetime.now())
     _write_manifest(run, detail)
@@ -415,21 +420,19 @@ async def start() -> CaptureStatus:
         directory = resolve_subdirectory(settings.obs_screenshot_dir, output_dir)
         directory.mkdir(parents=True, exist_ok=True)
 
-        log = LogTail(log_path)
         run = _ActiveRun(
             run_id=run_id,
             game=name,
             directory=directory,
             output_dir=output_dir,
-            log=log,
-            log_path=log_path,
+            # Opening the follower here is what makes the run start from the
+            # end of the log: what the game did before the button was pressed is
+            # not part of it.
+            log=LogFollower(log_path, poll_seconds=settings.EVENT_CAPTURE_POLL_SECONDS),
             rules=game_log.resolve_rules(
                 extra=config.event_rules, disabled=config.disabled_events
             ),
             started_at=started,
-            # Start at the end of the log: what the game did before the button
-            # was pressed is not part of this run.
-            cursor=log.offset(),
         )
         _write_manifest(run, _detail(run, status=CaptureRunState.RUNNING, stopped=None))
         run.task = asyncio.create_task(_watch(run), name=f"event-capture-{run_id}")
@@ -552,7 +555,6 @@ async def reset() -> None:
     """Drop all state, including the lock bound to this loop. Tests only."""
     global _run, _lock
     run, _run = _run, None
-    if run is not None and run.task is not None and not run.task.done():
-        run.task.cancel()
-        await asyncio.gather(run.task, return_exceptions=True)
+    if run is not None:
+        await _stop_watching(run)
     _lock = None

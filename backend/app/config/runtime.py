@@ -5,9 +5,10 @@ development). Access them through :func:`get_settings`, which is cached so the
 environment is parsed exactly once per process.
 
 Integration-specific settings are defined in :mod:`app.config.obs`,
-:mod:`app.config.ideck` and :mod:`app.config.event_capture`, then composed
-here. Their environment names stay flat for backwards compatibility with
-existing ``.env`` files.
+:mod:`app.config.ideck`, :mod:`app.config.event_capture`,
+:mod:`app.config.game_input` and :mod:`app.config.ocr`, then composed here. Their
+environment names stay flat for backwards compatibility with existing ``.env``
+files.
 """
 
 from __future__ import annotations
@@ -19,8 +20,10 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
 from app.config.event_capture import EventCaptureSettings
+from app.config.game_input import GameInputSettings
 from app.config.ideck import PACKAGE_ROOT, IDeckSettings
 from app.config.obs import ObsSettings
+from app.config.ocr import OcrSettings
 
 Environment = Literal["local", "development", "staging", "production"]
 
@@ -38,7 +41,13 @@ __all__ = [
 ]
 
 
-class Settings(ObsSettings, IDeckSettings, EventCaptureSettings):
+class Settings(
+    ObsSettings,
+    IDeckSettings,
+    EventCaptureSettings,
+    GameInputSettings,
+    OcrSettings,
+):
     """Complete runtime configuration for the API."""
 
     model_config = SettingsConfigDict(

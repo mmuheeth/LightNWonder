@@ -52,6 +52,7 @@ from typing import Any
 
 __all__ = [
     "DEFAULT_RULES",
+    "TOUCH_REGISTERED",
     "DetectedEvent",
     "EventRule",
     "LogLine",
@@ -123,8 +124,9 @@ class EventRule:
     capture: bool = True
     """Whether this event gets a screenshot and shows up in a run.
 
-    Manually toggled per rule. ``True`` for every default rule; set to
-    ``False`` on specific rules below to exclude that event from capture.
+    Set per rule by hand. ``False`` keeps an event in the recognised vocabulary
+    while leaving it out of capture -- which is what the machine's own chrome
+    gets: attract, help, service, lockups, the demo menu.
     """
 
     only_on_change: bool = False
@@ -351,6 +353,26 @@ def _on(message_name: str) -> str:
     return rf" on event \[{_QUALIFIER}{message_name}\]"
 
 
+# Proof that the game registered a touch on its glass, whatever that touch hit.
+#
+# Deliberately *not* a rule in DEFAULT_RULES: a touch is an input, not something
+# a person watching the screen would see change, and every rule below earns its
+# place by being visible. It is here because a click posted into the game window
+# needs a weaker fallback proof than a named button press does -- a target whose
+# own event is unknown can still be shown to have reached the game at all.
+#
+# Both games log it, each in the shape its own log uses::
+#
+#     ServerProxy.ClientToServerRequest: GDK.Common.ServerAPI.TouchMsg
+#     MsgFromClient sessionID[<game>-GAME] msg[GDK.Common.ServerAPI.TouchMsg]
+#     InputManager - dispatchMessage: ...ClientMessaging.TouchEventNotificationMsg
+#
+# The leading word boundary is doing real work: it keeps ``ForceTouchMsg`` out.
+# That one travels *to* the client -- the platform injecting a touch of its own
+# -- so counting it would let someone else's synthetic input confirm our click.
+TOUCH_REGISTERED = re.compile(r"\b(?:TouchMsg|TouchEventNotificationMsg)\b")
+
+
 # Ordered: the first match wins, so anything narrow goes before anything broad.
 #
 # Deliberately a *visual* list, not everything the log names. The game logs
@@ -463,7 +485,6 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         ),
         summary="Gamble declined",
         capture=False,
-
     ),
     EventRule(
         event="gamble-picked",
@@ -539,7 +560,6 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         ),
         summary="Help and paytable screens opened",
         capture=False,
-
     ),
     EventRule(
         event="help-closed",
@@ -552,7 +572,6 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         ),
         summary="Help and paytable screens closed",
         capture=False,
-
     ),
     EventRule(
         event="feature-scene-shown",
@@ -569,7 +588,6 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         summary="{feature} scene shown",
         delay_ms=800,
         capture=False,
-
     ),
     # --- the machine around the game --------------------------------------
     EventRule(
@@ -582,7 +600,6 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         # The first attract scene takes a moment to come up.
         delay_ms=1000,
         capture=False,
-
     ),
     EventRule(
         event="attract-ended",
@@ -591,7 +608,6 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         ),
         summary="Attract mode ended",
         capture=False,
-
     ),
     EventRule(
         event="attract-looped",
@@ -604,28 +620,24 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         ),
         summary="Attract sequence looped",
         capture=False,
-
     ),
     EventRule(
         event="service-requested",
         pattern=re.compile(_message("ServiceRequestedMsg")),
         summary="Service requested",
         capture=False,
-
     ),
     EventRule(
         event="service-cleared",
         pattern=re.compile(_message("ServiceNoLongerRequestedMsg")),
         summary="Service no longer requested",
         capture=False,
-        
     ),
     EventRule(
         event="locked-up",
         pattern=re.compile(_message("LockUpMsg")),
         summary="Machine locked up",
         capture=False,
-
     ),
     EventRule(
         event="lockup-cleared",
@@ -644,27 +656,23 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         pattern=re.compile(_message("SuspendMsg")),
         summary="Game suspended",
         capture=False,
-
     ),
     EventRule(
         event="game-resumed",
         pattern=re.compile(_message("ResumeMsg")),
         summary="Game resumed",
         capture=False,
-
     ),
     EventRule(
         event="demo-menu-shown",
         pattern=re.compile(_message("DEMO_MENU_SHOWING")),
         summary="Demo menu shown",
         capture=False,
-
     ),
     EventRule(
         event="demo-menu-hidden",
         pattern=re.compile(_message("DEMO_MENU_HIDING")),
         summary="Demo menu hidden",
         capture=False,
-
     ),
 )

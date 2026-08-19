@@ -59,6 +59,15 @@ class GameConfig:
     observed.
     """
 
+    ocr: Mapping[str, Mapping[str, Any]]
+    """Per-region OCR option overrides, keyed by the region name in :attr:`roi`.
+
+    Validated at load time by :func:`app.utils.ocr.parse_overrides` but not
+    applied here: the values they override come from the environment, which is
+    read when a region is actually read rather than when the config is parsed.
+    A region with nothing to override needs no entry.
+    """
+
     button_targets: Mapping[str, Any]
     """Named in-game click targets, as fractions of the frame."""
 
