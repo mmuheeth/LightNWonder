@@ -649,9 +649,10 @@ async def status() -> ObsStatus:
 async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
     """Capture a screenshot of a source or scene.
 
-    With no ``file_name`` the image comes back as a base64 data URI, ready for an
-    ``<img>`` tag. With one, OBS writes the file into the configured screenshot
-    root or its requested use-case subdirectory and only the path is returned.
+    The image always comes back as a base64 data URI, ready for an ``<img>``
+    tag. Supplying ``file_name`` additionally has OBS write the file into the
+    configured screenshot root or its requested use-case subdirectory, with the
+    path returned alongside the preview.
 
     Raises:
         BadRequestError: if ``file_name`` is not a bare filename or
@@ -671,21 +672,29 @@ async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
     if payload.height is not None:
         request_data["imageHeight"] = payload.height
 
-    if payload.file_name is None:
-        data = await _call("GetSourceScreenshot", request_data)
-        image_data = _as_str(data.get("imageData"))
-        if not image_data:
-            raise ObsRequestError("OBS returned a screenshot with no image data")
+    # Resolved before any OBS call, so a rejected name never reaches OBS.
+    target = (
+        _resolve_capture_path(
+            payload.file_name, payload.image_format, payload.output_dir
+        )
+        if payload.file_name is not None
+        else None
+    )
+
+    # Always fetched, so the caller gets an inline preview whether or not the
+    # shot is also being saved to disk.
+    data = await _call("GetSourceScreenshot", request_data)
+    image_data = _as_str(data.get("imageData"))
+    if not image_data:
+        raise ObsRequestError("OBS returned a screenshot with no image data")
+
+    if target is None:
         return ScreenshotResult(
             source_name=source_name,
             image_format=payload.image_format,
             image_data=image_data,
         )
 
-    # Resolved before the request, so a rejected name never reaches OBS.
-    target = _resolve_capture_path(
-        payload.file_name, payload.image_format, payload.output_dir
-    )
     target.parent.mkdir(parents=True, exist_ok=True)
     request_data["imageFilePath"] = str(target)
     await _call("SaveSourceScreenshot", request_data)
@@ -693,6 +702,7 @@ async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
     return ScreenshotResult(
         source_name=source_name,
         image_format=payload.image_format,
+        image_data=image_data,
         file_path=str(target),
     )
 

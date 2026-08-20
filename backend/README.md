@@ -97,7 +97,8 @@ backend/
     │   ├── obs.py           OBS status, screenshot and recording payloads
     │   ├── event_capture.py capture runs and the events inside them
     │   ├── game_input.py     game window state, click targets and click results
-    │   └── ocr.py           engine status, options and what was read
+    │   ├── ocr.py           engine status, options and what was read
+    │   └── roi.py           region catalog, and one extracted crop
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -109,7 +110,8 @@ backend/
         ├── obs.py            the single long-lived obs-websocket session
         ├── event_capture.py  follows the game log and screenshots its events
         ├── game_input.py     clicks the game's own window, proven by its log
-        └── ocr.py            reads the game's meters off a frame
+        ├── ocr.py            reads the game's meters off a frame
+        └── roi.py            cuts one configured region out of a screenshot
 ```
 
 Adding a resource is three files plus one line:
@@ -387,7 +389,15 @@ Things worth knowing:
   separated without turning the API into an arbitrary-file-write primitive.
 - **`file_name` remains a bare filename.** It is resolved inside the selected
   screenshot directory and rejected if it contains a path separator or `..`.
-  Omit it to get base64 back instead.
+- **A screenshot always comes back as base64.** `file_name` additionally writes
+  the file and adds `file_path` to the response; without one, only the inline
+  data URI is returned. So the dashboard shows the same preview either way, and
+  saving is a separate decision from previewing.
+- **`OBS_SCREENSHOT_SUBDIR` is where the dashboard writes.** The Screenshot
+  button sends `output_dir` set to it -- `screenshots` by default, so
+  `obs-captured-files/screenshots` -- and it is the directory
+  `GET /api/roi/regions` reads its newest frame from. Named in configuration
+  rather than spelled out in both features.
 - **`OBS_SET_RECORD_DIRECTORY=true` applies the configured recording root** on
   connect and on starts without an explicit `output_dir`. OBS persists that
   profile setting after the app exits. An explicit `output_dir` is always
@@ -557,6 +567,60 @@ meter = crop_file(screenshot, region, destination=out / "cash_meter.png")
 - **A bad region is rejected where it is read.** A missing name, a wrong count,
   a fraction outside `0..1` or edges the wrong way round all raise `RoiError`
   naming the region — instead of surfacing later as a blank crop.
+
+## Extracting a region (ROI)
+
+Cuts one configured region out of a screenshot and hands back the picture. This
+is the crop step of OCR, stopping before the engine — worth having on its own,
+because *is this region aimed at the right rectangle* and *does the engine read
+it correctly* fail independently, and only the first is visible in the crop.
+It needs no Tesseract install.
+
+```
+GET  /api/roi/regions         the active game's regions, and the frame in hand
+POST /api/roi/extract         crop one region and return it as a data URI
+```
+
+```bash
+# what the dropdown lists, plus the screenshot an extraction would use
+curl -s localhost:8001/api/roi/regions
+# cut the cash meter out of the newest screenshot
+curl -s -X POST localhost:8001/api/roi/extract -H 'content-type: application/json' -d '{
+  "region": "cash_meter"
+}'
+# or out of a particular one
+curl -s -X POST localhost:8001/api/roi/extract -H 'content-type: application/json' -d '{
+  "region": "cash_meter",
+  "file_name": "screenshot-1787192384798.png"
+}'
+```
+
+**The frame comes off disk, newest first.** The dashboard's Screenshot button
+writes into `OBS_SCREENSHOT_SUBDIR` below the screenshot root —
+`obs-captured-files/screenshots` by default — and an extraction with no
+`file_name` uses the newest image there, by modification time rather than by
+name. Nothing here asks OBS for a frame: a region is checked against evidence
+still on disk to be looked at again, and a live capture would make the same crop
+mean two different pictures on two extractions. `latest_frame` is null until a
+screenshot has been taken, which is the panel's empty state rather than an error.
+
+**Nothing is written.** The crop comes back as a PNG data URI, like OCR's own
+`include_crop`. PNG regardless of the source format, because a crop of a meter is
+about to be looked at closely and JPEG would add exactly the artefacts that make
+a region look badly aimed.
+
+**The response carries the pixel box.** `box` is what the fractions resolved to
+on that frame, which is the thing to read when a crop looks off by a few pixels —
+the fractions are right and the frame is a size nobody measured against, or the
+fractions are wrong.
+
+A region declared with unusable numbers is listed in `GET /api/roi/regions` with
+its `error` set rather than omitted, so a typo in the config is visible in the
+dropdown instead of only on extraction. Extracting it is a 500
+`GAME_CONFIG_INVALID`, naming the file — the config is wrong, not the request.
+A region the game does not declare is a 404 `ROI_REGION_NOT_FOUND`, and a frame
+that is not there is a 404 `ROI_FRAME_NOT_FOUND`; a `.png` that is not one, which
+is what a shot caught mid-write looks like, is a 502 `ROI_EXTRACT_FAILED`.
 
 ## Reading text (OCR)
 

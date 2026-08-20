@@ -250,7 +250,13 @@ export function ObsPanel() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => screenshot.mutate({ width: PREVIEW_WIDTH })}
+                onClick={() =>
+                  screenshot.mutate({
+                    width: PREVIEW_WIDTH,
+                    file_name: `screenshot-${Date.now()}`,
+                    output_dir: "screenshots",
+                  })
+                }
                 disabled={screenshot.isPending || !isConnected}
               >
                 <Camera />

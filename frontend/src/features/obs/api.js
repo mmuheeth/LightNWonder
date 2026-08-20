@@ -53,10 +53,10 @@ export function selectGameWindow() {
 /**
  * Capture a screenshot.
  *
- * Omit `file_name` to get `image_data` as a base64 data URI, ready for an
- * `<img>` src. Pass a bare filename to have OBS write it into the configured
- * screenshot directory and return `file_path` instead. `output_dir` can select
- * a relative use-case subdirectory below that root.
+ * Always returns `image_data` as a base64 data URI, ready for an `<img>` src.
+ * Pass a bare filename to also have OBS write it into the configured
+ * screenshot directory and return `file_path` alongside it. `output_dir` can
+ * select a relative use-case subdirectory below that root.
  *
  * @param {{source_name?: string, image_format?: string, width?: number,
  *   height?: number, quality?: number, file_name?: string,

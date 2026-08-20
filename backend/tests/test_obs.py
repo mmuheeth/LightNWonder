@@ -492,7 +492,15 @@ async def test_screenshot_honours_an_explicit_source(
 async def test_screenshot_to_a_file_returns_a_path_inside_the_screenshot_root(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = install(monkeypatch, FakeClient(responses={"SaveSourceScreenshot": {}}))
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                "GetSourceScreenshot": {"imageData": PNG_DATA_URI},
+                "SaveSourceScreenshot": {},
+            }
+        ),
+    )
 
     response = await client.post(
         "/api/obs/screenshot",
@@ -501,7 +509,7 @@ async def test_screenshot_to_a_file_returns_a_path_inside_the_screenshot_root(
 
     assert response.status_code == 200
     data = assert_success(response.json())
-    assert data["image_data"] is None
+    assert data["image_data"] == PNG_DATA_URI
 
     saved = Path(data["file_path"])
     assert saved.is_absolute()
@@ -519,7 +527,15 @@ async def test_screenshot_to_a_file_returns_a_path_inside_the_screenshot_root(
 async def test_screenshot_can_use_a_use_case_subdirectory(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = install(monkeypatch, FakeClient(responses={"SaveSourceScreenshot": {}}))
+    fake = install(
+        monkeypatch,
+        FakeClient(
+            responses={
+                "GetSourceScreenshot": {"imageData": PNG_DATA_URI},
+                "SaveSourceScreenshot": {},
+            }
+        ),
+    )
 
     response = await client.post(
         "/api/obs/screenshot",

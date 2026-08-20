@@ -60,7 +60,8 @@ src/
 │   ├── ideck/              presses the Virtual OLED button deck
 │   ├── games/              active game catalog and selector
 │   ├── event-capture/      start/stop log-driven capture, and read runs back
-│   └── obs/                OBS Studio control: connect, screenshot, record
+│   ├── obs/                OBS Studio control: connect, screenshot, record
+│   └── roi/                crops a configured region out of the latest shot
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -89,6 +90,14 @@ status query on a short `refetchInterval`, mutations that invalidate
 `queryKeys.obs.all`, and one mutation (`useTakeScreenshot`) whose result is read
 straight from `mutation.data` rather than the cache, so the preview needs no
 component state.
+
+`features/roi/` is the smallest complete slice, and the one to copy for a
+read-then-act panel: one query for what can be chosen, one mutation whose crop is
+read from `mutation.data`, and no client state beyond which option the dropdown
+is on. It also shows the one case for reaching across features -- taking a
+screenshot changes which frame the ROI panel would extract from, so
+`useTakeScreenshot` invalidates `queryKeys.roi.all` rather than the ROI query
+polling for a file it cannot see.
 
 ## Talking to the API
 

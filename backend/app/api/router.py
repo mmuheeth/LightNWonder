@@ -9,7 +9,15 @@ never depend on the API prefix.
 
 from fastapi import APIRouter
 
-from app.api.endpoints import event_capture, game_input, games, ideck, obs, ocr
+from app.api.endpoints import (
+    event_capture,
+    game_input,
+    games,
+    ideck,
+    obs,
+    ocr,
+    roi,
+)
 
 api_router = APIRouter()
 
@@ -21,3 +29,4 @@ api_router.include_router(
 )
 api_router.include_router(game_input.router, prefix="/game-input", tags=["game-input"])
 api_router.include_router(ocr.router, prefix="/ocr", tags=["ocr"])
+api_router.include_router(roi.router, prefix="/roi", tags=["roi"])

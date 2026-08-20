@@ -41,6 +41,11 @@ class ObsSettings(BaseSettings):
     OBS_RECORDING_DIR: Path | None = None
     OBS_SET_RECORD_DIRECTORY: bool = True
 
+    # Subdirectory of the screenshot root that the dashboard's Screenshot button
+    # writes into, and the one the ROI extractor reads its newest frame from.
+    # Named here rather than spelled out in both features.
+    OBS_SCREENSHOT_SUBDIR: str = "screenshots"
+
     @property
     def obs_url(self) -> str:
         """WebSocket URL of the obs-websocket server."""
@@ -60,3 +65,8 @@ class ObsSettings(BaseSettings):
     def obs_recording_dir(self) -> Path:
         """Absolute default root for recordings."""
         return (self.OBS_RECORDING_DIR or self.OBS_CAPTURE_DIR).resolve()
+
+    @property
+    def obs_dashboard_screenshot_dir(self) -> Path:
+        """Absolute directory the dashboard's Screenshot button writes into."""
+        return self.obs_screenshot_dir / self.OBS_SCREENSHOT_SUBDIR

@@ -19,22 +19,24 @@ import { queryKeys } from "@/lib/query-keys";
 
 /** While tracking, events land every few seconds; idle, nothing changes. */
 const ACTIVE_INTERVAL_MS = 2_000;
-const IDLE_INTERVAL_MS = 10_000;
+const IDLE_STALE_MS = 30_000;
 
 /**
  * Poll the run in progress.
  *
- * The interval is a function of the last result so a live run feels responsive
- * without an idle dashboard asking ten times a minute for the same answer.
+ * The interval is a function of the last result: a live run polls every couple
+ * of seconds, an idle one not at all. Idling on `false` rather than a slow
+ * interval keeps this in line with `useObsStatus` — starting or stopping a run
+ * invalidates the subtree, so the card still updates the moment you act on it.
+ * A run begun in another tab shows up on the next action or manual refresh.
  */
 export function useCaptureStatus() {
   return useQuery({
     queryKey: queryKeys.eventCapture.status(),
     queryFn: ({ signal }) => getCaptureStatus({ signal }),
-    refetchInterval: (query) =>
-      query.state.data?.active ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS,
-    // Run state is a live signal; never serve it from a stale cache.
-    staleTime: 0,
+    refetchInterval: (query) => (query.state.data?.active ? ACTIVE_INTERVAL_MS : false),
+    // Idle status is not a live signal; a remount inside the window is cached.
+    staleTime: IDLE_STALE_MS,
   });
 }
 

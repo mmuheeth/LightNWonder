@@ -274,3 +274,29 @@ class OcrReadFailedError(AppException):
     status_code = HTTPStatus.BAD_GATEWAY
     error_code = "OCR_READ_FAILED"
     message = "The frame to read could not be obtained"
+
+
+# --- ROI extraction -------------------------------------------------------
+# The same split once more, one door further along. A 404 is a region the active
+# game does not declare, or a frame that is not on disk -- both of them a wrong
+# name rather than a broken crop. A 502 is a file that is there and is not a
+# readable image, which is the one failure the caller can do nothing about
+# except take another screenshot.
+
+
+class RoiRegionNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "ROI_REGION_NOT_FOUND"
+    message = "No such region in the active game's config"
+
+
+class RoiFrameNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "ROI_FRAME_NOT_FOUND"
+    message = "No screenshot is available to extract a region from"
+
+
+class RoiExtractFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "ROI_EXTRACT_FAILED"
+    message = "The region could not be extracted from the frame"

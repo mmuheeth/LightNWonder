@@ -80,9 +80,18 @@ export function useResumeRecording() {
 /**
  * Capture a screenshot.
  *
- * Deliberately does not invalidate anything: the image is read from
- * `mutation.data`, so the panel needs no extra state to hold the preview.
+ * The preview is read from `mutation.data`, so nothing in the `obs` subtree
+ * needs invalidating for the panel's own sake. The `roi` subtree does: a
+ * screenshot is also the frame the ROI panel extracts from, and its catalog
+ * names the newest one.
  */
 export function useTakeScreenshot() {
-  return useMutation({ mutationFn: takeScreenshot });
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: takeScreenshot,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.roi.all });
+    },
+  });
 }

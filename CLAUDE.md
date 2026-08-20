@@ -14,7 +14,8 @@ they talk to processes, windows and log files on the developer's own PC, not to 
 network service.
 
 The dashboard covers the first three, plus `features/games` for choosing the
-active game. `game-input` and `ocr` are backend-only so far — endpoints and
+active game and `features/roi` for cropping a configured region out of the
+latest screenshot. `game-input` and `ocr` are backend-only so far — endpoints and
 services with no `src/features/` slice — so don't go hunting for their UI.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
@@ -121,6 +122,14 @@ but both are `0.0..1.0` against the **whole frame, letterboxing included** — s
 resized simulator or a different capture resolution needs no re-measurement. Keep
 that convention when adding either.
 
+**`services/roi.py` and `services/ocr.py` are the same joinery, one step apart.**
+Both resolve the active game's `roi` block against a frame; ROI returns the crop
+and OCR hands it to Tesseract. Keep them apart — checking that a region is aimed
+correctly must not require an engine install. ROI reads the newest file in
+`settings.obs_dashboard_screenshot_dir` and never asks OBS for a frame, so the
+same crop extracted twice is the same picture. It is also the one service holding
+no state, so it has no `reset()` and nothing in `conftest.py`.
+
 **Request correlation.** `RequestContextMiddleware` is registered last, so it
 runs outermost. The id lives both in a `ContextVar` (for loggers and envelope
 builders) and on the ASGI scope, because Starlette's `ServerErrorMiddleware`
@@ -194,9 +203,10 @@ one directory. Shared plumbing is in `src/lib/`.
 - **Background polling is opt-in.** `useObsStatus` and `useIDeckStatus` default
   to `refetchInterval: false` with `staleTime: 30_000`; mutations invalidate the
   subtree, so an action still refreshes status immediately. Don't reintroduce a
-  standing poll for these. `features/event-capture/` is the exception and the
-  reference for a functional `refetchInterval` (2s while a run is live, 10s idle)
-  plus `captureImageUrl()`, the one fetch that bypasses `apiRequest`.
+  standing poll for these. `useCaptureStatus` in `features/event-capture/` is the
+  reference for a functional `refetchInterval` — 2s while a run is live,
+  `false` when idle, so no panel polls without a reason to. That slice also
+  owns `captureImageUrl()`, the one fetch that bypasses `apiRequest`.
 - `features/obs/` is still the reference slice for the query + mutate shape.
 - Tailwind v4 has no `tailwind.config.js`; theming is CSS-first in
   `src/index.css` (`@theme inline` + `:root`/`.dark` oklch values).

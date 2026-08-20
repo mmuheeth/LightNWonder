@@ -1,6 +1,7 @@
 import { EventCapturePanel } from "@/features/event-capture/event-capture-panel";
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
+import { RoiPanel } from "@/features/roi/roi-panel";
 import { GameSelector } from "@/features/games/game-selector";
 
 export function DashboardPage() {
@@ -20,6 +21,7 @@ export function DashboardPage() {
         <ObsPanel />
         <IDeckPanel />
         <EventCapturePanel />
+        <RoiPanel />
       </div>
     </div>
   );
