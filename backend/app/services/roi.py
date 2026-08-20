@@ -69,6 +69,12 @@ logger = get_logger("roi")
 # frame and then failing to open.
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
 
+# The one region whose crop is also kept on disk, for a running record of what
+# the meter read over time rather than only the single latest crop the API
+# returns.
+_SAVED_REGION = "cash_meter"
+_SAVED_REGION_DIR = "cash-meter"
+
 
 # --- the active game ------------------------------------------------------
 
@@ -203,6 +209,26 @@ def _describe_path(path: Path) -> RoiFrame:
         ) from exc
 
 
+def _save_crop(crop: Image.Image, source: Path) -> None:
+    """Write a cash meter crop to disk, named after the frame it came from.
+
+    Raises:
+        RoiExtractFailedError: if the crop could not be written.
+    """
+    directory = settings.obs_capture_dir / _SAVED_REGION_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"{source.stem}.png"
+    try:
+        crop.save(destination, format="PNG")
+    except OSError as exc:
+        raise RoiExtractFailedError(
+            f"{destination} could not be written: {exc}"
+        ) from exc
+    logger.info(
+        "Saved roi.%s crop of %s to %s", _SAVED_REGION, source.name, destination
+    )
+
+
 # --- public API -----------------------------------------------------------
 
 
@@ -305,6 +331,8 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
         crop.width,
         crop.height,
     )
+    if request.region == _SAVED_REGION:
+        _save_crop(crop, path)
     return RoiExtractResult(
         game=name,
         region=request.region,

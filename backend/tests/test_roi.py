@@ -411,6 +411,50 @@ async def test_extract_500s_on_a_region_declared_with_bad_numbers(
     assert config.name in payload["message"]
 
 
+async def test_extract_saves_the_cash_meter_crop_to_disk(
+    client: AsyncClient,
+    tmp_path: Path,
+    active_game: Path,
+    screenshots: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cash meter is the one region also kept on disk, run over run."""
+    capture_dir = tmp_path / "capture"
+    monkeypatch.setattr(
+        type(settings), "obs_capture_dir", property(lambda _self: capture_dir)
+    )
+    write_frame(screenshots / "shot.png", size=(400, 200), region=CASH_METER)
+
+    response = await client.post(f"{API}/extract", json={"region": "cash_meter"})
+
+    assert response.status_code == 200
+    saved = capture_dir / "cash-meter" / "shot.png"
+    assert saved.is_file()
+    saved_image = Image.open(saved)
+    saved_image.load()
+    data = assert_success(response.json())
+    assert saved_image.size == (data["width"], data["height"])
+
+
+async def test_extract_does_not_save_other_regions_to_disk(
+    client: AsyncClient,
+    tmp_path: Path,
+    active_game: Path,
+    screenshots: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capture_dir = tmp_path / "capture"
+    monkeypatch.setattr(
+        type(settings), "obs_capture_dir", property(lambda _self: capture_dir)
+    )
+    write_frame(screenshots / "shot.png", size=(400, 200), region=QUARTER)
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    assert response.status_code == 200
+    assert not (capture_dir / "cash-meter").exists()
+
+
 async def test_extract_rejects_an_empty_region_name(
     client: AsyncClient, active_game: Path, screenshots: Path
 ) -> None:
