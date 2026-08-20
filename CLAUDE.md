@@ -5,17 +5,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A Windows-hosted control surface for slot-game simulators. The FastAPI backend
-(`backend/`, port 8001) drives three local integrations — OBS Studio over
-obs-websocket v5, a Virtual OLED button deck served by `OledPanelSvc.exe`, and a
-log-following screenshot recorder — and the React dashboard (`frontend/`, port
-3001) is the UI for them. All three integrations are host-machine specific: they
-talk to processes, windows and log files on the developer's own PC, not to a
+(`backend/`, port 8001) drives five local integrations — OBS Studio over
+obs-websocket v5, a Virtual OLED button deck served by `OledPanelSvc.exe`, a
+log-following screenshot recorder, Tesseract OCR over the frames OBS wrote, and
+posted mouse clicks into the game's own Unity window — and the React dashboard
+(`frontend/`, port 3001) is the UI for them. Every one is host-machine specific:
+they talk to processes, windows and log files on the developer's own PC, not to a
 network service.
+
+The dashboard covers the first three, plus `features/games` for choosing the
+active game. `game-input` and `ocr` are backend-only so far — endpoints and
+services with no `src/features/` slice — so don't go hunting for their UI.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
 and current; read the relevant one before changing an integration.
 
 ## Commands
+
+`.\start.ps1` from the repo root launches both dev servers — the backend
+**elevated** (Windows Terminal cannot mix integrity levels in one window, hence
+two windows) and the frontend not. `-NoAdmin` gives one window with two tabs and
+i-deck presses refused; everything else works. Read the comments in `start.ps1`
+before editing it: the `wt` tab payloads must contain **no semicolons**, because
+Windows Terminal splits its commandline on `;` after PowerShell has stripped the
+quotes.
 
 Backend commands **must run from `backend/`** — `app` is imported from the
 working directory, not installed into site-packages.
@@ -68,17 +81,20 @@ Adding a backend resource is three files plus one line: `app/schemas/<thing>.py`
 
 ## Backend architecture
 
-**Services are module-level singletons, not classes.** `obs.py`, `ideck.py` and
-`event_capture.py` each hold their state (client, lock, running run) in module
-globals and expose a `reset()` that `tests/conftest.py` calls autouse before and
-after every test. Callers import the namespace, not the functions:
-`from app.services import obs as obs_service`.
+**Services are module-level singletons, not classes.** `obs.py`, `ideck.py`,
+`event_capture.py`, `game_input.py` and `ocr.py` each hold their state (client,
+lock, running run, cached engine) in module globals and expose a `reset()` that
+`tests/conftest.py` calls autouse before and after every test. Callers import the
+namespace, not the functions: `from app.services import obs as obs_service`. Only
+`event_capture.reset()` is async — it has a watcher task to cancel.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
-inherits `ObsSettings`, `IDeckSettings` and `EventCaptureSettings` (each in its
-own `app/config/*.py`) while env var names stay flat. `get_settings()` is
-`lru_cache`d and a module-level `settings` instance is imported directly by
-services — so tests override behaviour with
+inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`,
+`EventCaptureSettings`, `GameInputSettings` and `OcrSettings` (each in its own
+`app/config/*.py`) while env var names stay flat — a new integration is a new
+mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
+module-level `settings` instance is imported directly by services — so tests
+override behaviour with
 `monkeypatch.setattr(settings, "IDECK_GAME_CONFIG_DIR", tmp_path)` rather than
 by building new settings. `app/core/config.py` is a re-export shim.
 
@@ -94,8 +110,16 @@ who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
 log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
 `log_tail.py` (rotation-aware cursor), `win32.py` (the only ctypes),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
+`image_roi.py` (crops a named region out of a frame),
+`click_target.py` (reads the `button_targets` block),
 `paths.py` (resolves untrusted filenames inside a root — use it for anything
 that came off the wire).
+
+**Regions and click targets are fractions of the frame, never pixels.** `roi`
+crops *out* of a captured image and `button_targets` aims a click *into* a window,
+but both are `0.0..1.0` against the **whole frame, letterboxing included** — so a
+resized simulator or a different capture resolution needs no re-measurement. Keep
+that convention when adding either.
 
 **Request correlation.** `RequestContextMiddleware` is registered last, so it
 runs outermost. The id lives both in a `ContextVar` (for loggers and envelope
@@ -113,6 +137,32 @@ and does nothing else — no schema, tables or migrations. An empty or missing
 `DATABASE_URL` disables it silently so local dev and tests run without a
 database; when configured, a failed connection aborts startup.
 
+**`app/agents/` is wired to nothing yet.** LangChain v1 + LangGraph v1 building
+blocks — `build_chat_model`, `build_agent`, `new_workflow`/`compile_workflow`,
+and sync/async `checkpoint_context` — imported by no service and no endpoint.
+Treat it as the sanctioned shape for the first real agent, not as dead code.
+Three rules it exists to enforce:
+
+- **Nothing is constructed at import time.** No model, no database connection.
+  The caller composes an agent in its service layer and owns invocation, thread
+  ids and the checkpointer's lifetime, which keeps request lifecycles and
+  background workflows independently testable.
+- **`AGENT_ENABLED` is `false` by default** and `build_agent` raises
+  `AgentDisabledError` until it is set. `.env.example` ships dummy credentials,
+  so `is_placeholder_secret()` in `app/config/agents.py` screens values like
+  `dummy-replace-with-real-key` and refuses to forward them to a provider or to
+  LangSmith. Add a marker there rather than working around it.
+- **Provider-neutral.** `AGENT_MODEL` uses LangChain's `provider:model`
+  notation (`openai:gpt-4o-mini`, `anthropic:claude-sonnet-4-6`); only
+  `langchain-openai` and `langchain-anthropic` are installed. A new provider is
+  a new `langchain-<provider>` package, plus `AGENT_API_KEY_PARAM` if its
+  constructor does not take `api_key`.
+
+`AGENT_CHECKPOINT_BACKEND` is `memory` locally; `postgres` imports the Postgres
+saver lazily inside the context manager and falls back to `DATABASE_URL` when
+`AGENT_CHECKPOINT_URL` is empty. `recursion_limit` is invocation config, not a
+`compile()` argument — it comes from `default_run_config()`.
+
 ## Test conventions that bite
 
 - `pytest.ini` sets `filterwarnings = error`. A task cancelled but not awaited
@@ -125,7 +175,9 @@ database; when configured, a failed connection aborts startup.
   tests; anything that must be exercised has to be called directly.
 - `raise_app_exceptions=False` on the transport, so handler output is asserted
   rather than the exception propagating.
-- `mypy.ini` has `files = app` — tests are not strictly typed.
+- `mypy.ini` has `files = app` — tests are not strictly typed. It pins
+  `python_version = 3.12` because numpy's stubs (via `opencv-python`) use syntax
+  mypy rejects below it; ruff still targets `py311`.
 - Ruff deliberately does **not** enable `TCH`: moving Pydantic/FastAPI imports
   into `TYPE_CHECKING` breaks runtime annotation resolution.
 
@@ -139,10 +191,13 @@ one directory. Shared plumbing is in `src/lib/`.
   inline an array literal.
 - react-query owns server state; Zustand (`store/ui-store.js`) owns only the
   client-side theme. Do not copy server data into Zustand.
-- `features/obs/` is the reference slice for poll + mutate.
-  `features/event-capture/` shows a functional `refetchInterval` (2s while a run
-  is live, 10s idle) and `captureImageUrl()`, the one fetch that bypasses
-  `apiRequest`.
+- **Background polling is opt-in.** `useObsStatus` and `useIDeckStatus` default
+  to `refetchInterval: false` with `staleTime: 30_000`; mutations invalidate the
+  subtree, so an action still refreshes status immediately. Don't reintroduce a
+  standing poll for these. `features/event-capture/` is the exception and the
+  reference for a functional `refetchInterval` (2s while a run is live, 10s idle)
+  plus `captureImageUrl()`, the one fetch that bypasses `apiRequest`.
+- `features/obs/` is still the reference slice for the query + mutate shape.
 - Tailwind v4 has no `tailwind.config.js`; theming is CSS-first in
   `src/index.css` (`@theme inline` + `:root`/`.dark` oklch values).
 - `src/components/ui/` is vendored shadcn output — excluded from Prettier and
@@ -162,6 +217,18 @@ one directory. Shared plumbing is in `src/lib/`.
   because SDL takes a click's position from the last motion event.
 - **Presses are confirmed, not assumed.** Each one reads only what was appended
   to the panel log and returns 502 if the press did not land.
+- **Take-win and gamble are not on the i-deck.** The panel has fourteen keys and
+  neither is among them — the games' logs prove it, arriving as a `TouchMsg` from
+  the glass. So `services/game_input.py` posts clicks into the simulator's Unity
+  window. There is no API to ask politely with: Unity implements neither UI
+  Automation nor MSAA, and GDK's GAF Thrift server (which has a literal
+  `SimulateTouch`) is present in `Assembly-CSharp.dll` but not started by a
+  normal launch. If it ever is, it belongs behind that module's public API.
+- **A missed click is silent** — no error, no exception, just nothing. So each
+  one records the game log's size first and reads only what was appended.
+  A target's `confirm` key names a `game_log` event, which proves *which* button
+  was hit; without one the fallback is `TOUCH_REGISTERED`, which proves only that
+  input arrived. The two are reported apart, never blurred — don't collapse them.
 - **OBS window selection needs the game running.** The window identifier is
   `title:class:executable` matched against the list OBS enumerates itself; one
   built from the process name alone binds to nothing and fails silently as a

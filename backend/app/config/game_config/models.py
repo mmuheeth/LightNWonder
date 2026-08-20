@@ -54,9 +54,11 @@ class GameConfig:
     roi: Mapping[str, Any]
     """Named screen regions, as fractions of the frame.
 
-    Passed through unvalidated beyond being an object: nothing reads it yet,
-    and guessing at a shape now would be a constraint invented rather than
-    observed.
+    Passed through unvalidated beyond being an object. The shape is enforced
+    where a region is actually used, by :func:`app.utils.image_roi.named_roi` --
+    which is where a typo in a region name or in its numbers becomes a sentence
+    saying which region it was and what was wrong with it. :mod:`app.services.ocr`
+    is the consumer today.
     """
 
     ocr: Mapping[str, Mapping[str, Any]]
