@@ -23,7 +23,15 @@ two different pictures.
 
 **Nothing is written.** The crop goes back as a data URI, like OCR's own
 ``include_crop``. A folder of crops of crops is litter, and the source frame is
-already saved.
+already saved. The cash meter is the one exception, kept on disk for a record of
+what the meter read over time.
+
+**The cash meter is also read.** That one region hands its crop to
+:mod:`app.services.meter` and returns the numbers beside the picture, because
+cropping the meter and reading it are one action from the panel's point of view --
+and cropping separately for each would let two extractions of the same strip
+disagree. Reading cannot fail the extraction: the failure arrives as an ``error``
+on the reading, so a host with no Tesseract still gets its crop.
 
 Unlike its neighbours this service holds no state -- no client, no lock, no
 cached engine -- so it has no ``reset()`` and ``tests/conftest.py`` has nothing
@@ -60,6 +68,7 @@ from app.schemas.roi import (
     RoiFrame,
     RoiRegionSummary,
 )
+from app.services import meter as meter_service
 from app.utils import image_roi, paths
 
 logger = get_logger("roi")
@@ -331,8 +340,10 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
         crop.width,
         crop.height,
     )
+    values = None
     if request.region == _SAVED_REGION:
         _save_crop(crop, path)
+        values = meter_service.read(crop, game=name, profile=config.meter)
     return RoiExtractResult(
         game=name,
         region=request.region,
@@ -342,6 +353,7 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
         width=crop.width,
         height=crop.height,
         image_data=_encode(crop),
+        meter=values,
     )
 
 

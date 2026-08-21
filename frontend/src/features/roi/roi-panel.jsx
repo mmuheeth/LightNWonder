@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MeterValues } from "@/features/roi/meter-values";
 import { useExtractRoi, useRoiRegions } from "@/features/roi/use-roi";
 import { cn } from "@/lib/utils";
 
@@ -29,6 +30,11 @@ function formatCapturedAt(value) {
  * whatever that game declares and never a rectangle typed in here. The frame is
  * the newest shot in the screenshots directory, which is what the OBS panel's
  * Screenshot button writes -- take one there, extract here.
+ *
+ * Extracting the cash meter also reads it: the backend returns the numbers on the
+ * strip beside the crop, so `<MeterValues>` renders below the picture rather than
+ * in a card of its own. Every other region leaves `meter` null and nothing extra
+ * is shown.
  */
 export function RoiPanel() {
   const { data, error, isPending, isFetching, refetch } = useRoiRegions();
@@ -161,6 +167,7 @@ export function RoiPanel() {
                   alt={`Crop of roi.${extract.data.region}`}
                   className="bg-muted w-full rounded-md border"
                 />
+                <MeterValues meter={extract.data.meter} />
               </div>
             ) : null}
           </>

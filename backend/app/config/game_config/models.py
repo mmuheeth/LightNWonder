@@ -73,6 +73,20 @@ class GameConfig:
     button_targets: Mapping[str, Any]
     """Named in-game click targets, as fractions of the frame."""
 
+    meter: Mapping[str, Any]
+    """Optional overrides for reading the cash meter strip.
+
+    ``band`` is ``[top, bottom]`` as fractions of the *strip's* height -- the rows
+    the values sit in. :mod:`app.services.meter` fits that by reading when it is
+    absent, which needs no setup for a new game but depends on whichever frame
+    arrives first being a good one to fit from. Declaring it removes that luck.
+    Fractions, not pixels, so the same two numbers hold at any capture resolution.
+
+    ``windows`` maps a field name to the ``[low, high]`` span of the strip's width
+    it owns, for a skin that orders its cells differently from the usual
+    cash-win-bet. Absent means :data:`app.utils.meter.DEFAULT_WINDOWS`.
+    """
+
     event_rules: Sequence[EventRule]
     """Extra log-event rules this game declares, already compiled.
 

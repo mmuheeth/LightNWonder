@@ -111,6 +111,7 @@ backend/
         ├── event_capture.py  follows the game log and screenshots its events
         ├── game_input.py     clicks the game's own window, proven by its log
         ├── ocr.py            reads the game's meters off a frame
+        ├── meter.py          turns a cash-meter crop into its five values
         └── roi.py            cuts one configured region out of a screenshot
 ```
 
@@ -621,6 +622,122 @@ dropdown instead of only on extraction. Extracting it is a 500
 A region the game does not declare is a 404 `ROI_REGION_NOT_FOUND`, and a frame
 that is not there is a 404 `ROI_FRAME_NOT_FOUND`; a `.png` that is not one, which
 is what a shot caught mid-write looks like, is a 502 `ROI_EXTRACT_FAILED`.
+
+## Reading the meter (values)
+
+Extracting `roi.cash_meter` also reads the numbers on it. There is no
+`/api/meter`: cropping the meter and reading it are one action from the panel's
+point of view, so `POST /api/roi/extract` returns a `meter` object beside the
+crop, and every other region leaves it null.
+
+```jsonc
+"meter": {
+  "mode": "cash",              // or "credits" -- the same cell, different quantity
+  "currency": "$",             // "?" when a symbol is drawn that Tesseract won't name
+  "cash": 995.60,              // null in credits mode
+  "credits": null,             // null in cash mode
+  "win": 0.75,                 // null is normal: the WIN cell is empty between spins
+  "bet": 0.88,
+  "fields": { "cash": { "value": 995.6, "text": "$995.60", "confidence": 96.0 } },
+  "unmapped": [],              // non-empty means the layout is not what was expected
+  "band": [3, 20], "engine_calls": 17, "duration_ms": 3989, "error": null
+}
+```
+
+`app/utils/meter.py` does the image work and knows nothing about game configs;
+`app/services/meter.py` supplies the engine and the per-skin band. Reading never
+fails the crop -- a missing Tesseract or an unreadable strip populates
+`meter.error` and the picture still comes back, because checking that a region is
+aimed correctly must not require anything to be legible inside it.
+
+### The values are found, not looked up
+
+Fixed pixel boxes do not work. The same 683x29 strip arrives in **three different
+horizontal alignments**, because `roi.cash_meter` is a fraction of the *frame* and
+the game does not fill the canvas identically every launch. A hand-tuned box table
+reads 15 of the 20 saved crops and mangles the rest -- truncating `$996.10` to
+`$996.1`, welding a cell border onto `,$999.12`.
+
+So the digits are located per image: they are the brightest thing in the strip, so
+a lit column is one whose brightest pixel is near the strip's own maximum, and
+neighbouring lit columns group into one number. Relative to each image, so a
+change of skin, palette or background costs nothing.
+
+### Which number is which comes from position
+
+**The labels cannot be read.** `CASH`, `WIN` and `BET` are drawn 8px tall and
+letter-spaced over artwork; tight crops at 10x return `'LA'`, `'C'`, `'CREOS'` at
+confidence 0 to 45, against 79 to 97 for the values. This is not a tuning problem,
+so it is not attempted. Each field owns a span of the strip's width instead:
+
+```json
+"meter": { "windows": { "cash": [0.33, 0.44], "win": [0.47, 0.55], "bet": [0.58, 0.66] } }
+```
+
+Those defaults fit **both** shipped skins despite them looking nothing alike,
+because meter bars put these three cells at similar proportions. Declaring
+`windows` is only for a skin that orders its cells differently.
+
+Taking the cells left to right instead would need no windows, but **11 of the 20
+saved crops have an empty WIN cell**, so counting would report the bet as the win.
+Detecting the cells rather than the values does not rescue it either: bright digits
+split a full cell into fragments while an empty cell stays whole.
+
+**A number that lands in no window is reported in `unmapped`, never nudged into
+the nearest field.** A strip from a differently-ordered skin reads perfectly and
+means something else, and a bet quietly filed as a balance is worse than one that
+arrives asking to be looked at.
+
+### The row band is per skin, so declare it
+
+Which rows hold the values differs by skin -- FortuneOx prints its labels *below*
+the cells, HuffNPuffLink *inside* them. Read the full height of the first and its
+values collapse into `4000.07` and `30.88`.
+
+```json
+"meter": { "band": [0.103448, 0.689655] }
+```
+
+`[top, bottom]` as fractions of the **strip's** height, so the same pair holds at
+any capture resolution. Without one, `fit_band` works it out by reading: the
+row-ink profile offers two or three candidates and the one that reads with the
+highest mean confidence wins, cached per game and size. That is what lets a new
+game work with no setup, but it can only judge from the frame in front of it --
+measured over the saved crops, fitting from each strip independently reads 15 of
+20 correctly where a declared band reads 19. **Measure it once per game.**
+
+### One reading is usually enough, and the confident one wins
+
+`psm 7` reads `49531` as `49331`; `psm 8` gets that right but turns `75` into
+`75.`; and HuffNPuffLink's orange WIN value is read by **`psm 13` alone** -- every
+other mode returns nothing at all for it. So a field is read at `psm 8` first and
+escalated only while it is unconvincing, and the reading the engine was *surest*
+of is taken rather than the most popular one: where those two rules disagreed,
+confident was right and popular was wrong every time (`0.88` over `0.83`, `75`
+over `5`, `99371` over `99374`).
+
+Escalating keeps a strip near six engine calls instead of twenty-seven, and the
+reads run concurrently, which matters because each is a subprocess at roughly
+200ms. Expect **3-6s** for a strip.
+
+### Checking it
+
+```bash
+python scripts/meter_probe.py          # every saved crop, as a table plus CSV
+```
+
+The harness runs the real extractor rather than its own copy, and fits a band per
+*file* -- deliberately harsher than the dashboard, where one band is reused per
+skin. Against the 20 saved crops the declared bands give **59 of 60 values
+correct, with no wrong ones**; the single failure is a missing `bet` on the yen
+strip, which reports as `null` rather than as a number.
+
+Two limits worth knowing. Both skins are **bright digits on a dark strip**, so a
+dark-on-light meter would invert the brightness assumption -- untested rather than
+known-broken, and `invert` is already an `OcrOptions` knob. And **cash-vs-credits
+is inferred**, not read: a currency symbol or a fractional amount is money, a bare
+whole number is credits. Correct on all 20, but a judgement about meaning. The
+game log carries the real bet and win events, and is the way to make it certain.
 
 ## Reading text (OCR)
 
