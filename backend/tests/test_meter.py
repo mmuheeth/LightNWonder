@@ -1,0 +1,555 @@
+"""Reading the five values off a cash-meter strip.
+
+Most of this runs without Tesseract installed. ``FakeEngine`` replaces the one
+function in :mod:`app.utils.ocr` that touches a subprocess and answers with real
+TSV, keyed by how wide the crop it was handed is -- which is enough to exercise
+the parts that are actually this project's: locating the numbers, fitting the row
+band, filing each number under a field, and refusing to guess when one belongs to
+none.
+
+The geometry tests use no engine at all. Where a number *is* on a strip is a
+question about pixels, and answering it with a fake reader would prove only that
+the fake was consulted.
+
+One group of tests uses the real engine over the project's own saved crops, and
+skips when there is neither. Those are the only ones that can catch the thing a
+fake cannot: that the values are *right*.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from collections.abc import Iterator, Sequence
+from pathlib import Path
+
+import pytest
+from PIL import Image, ImageDraw
+
+from app.config.game_config import GameConfigError, load_game_config
+from app.config.ocr import EXECUTABLE_NAME, discover_executable
+from app.core.config import settings
+from app.schemas.meter import MeterMode
+from app.services import meter as meter_service
+from app.utils import meter, ocr
+
+TSV_HEADER = (
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\t"
+    "left\ttop\twidth\theight\tconf\ttext"
+)
+
+
+def tsv(*words: tuple[str, float]) -> bytes:
+    """The TSV Tesseract writes for one line of words."""
+    rows = [
+        TSV_HEADER,
+        "1\t1\t0\t0\t0\t0\t0\t0\t600\t90\t-1\t",
+        "2\t1\t1\t0\t0\t0\t30\t12\t540\t30\t-1\t",
+        "3\t1\t1\t1\t0\t0\t30\t12\t540\t30\t-1\t",
+        "4\t1\t1\t1\t1\t0\t30\t12\t540\t30\t-1\t",
+    ]
+    for index, (text, confidence) in enumerate(words, start=1):
+        rows.append(f"5\t1\t1\t1\t1\t{index}\t30\t12\t60\t30\t{confidence}\t{text}")
+    return ("\n".join(rows) + "\n").encode("utf-8")
+
+
+VERSION_STDOUT = b"tesseract v5.5.3.20260724\n leptonica-1.87.0\n"
+
+
+class FakeEngine:
+    """Answers every read from a table, so a test can say what each cell says.
+
+    Keyed by the *width* of the PNG it is handed, because that is the one thing a
+    caller can control from the outside: a strip is built with its cells at known
+    widths and each one then answers for itself. Unknown widths read as nothing,
+    which is how an empty WIN cell is expressed.
+    """
+
+    def __init__(self) -> None:
+        self.by_width: dict[int, bytes] = {}
+        self.default: bytes = tsv()
+        self.reads = 0
+        self.widths: list[int] = []
+        self.calls: list[list[str]] = []
+        self.timeouts: list[float] = []
+
+    def __call__(
+        self,
+        executable: Path | str,
+        args: Sequence[str],
+        *,
+        payload: bytes | None = None,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        self.calls.append([str(executable), *args])
+        self.timeouts.append(timeout)
+        if "--version" in args:
+            return self._done(VERSION_STDOUT)
+        if "--list-langs" in args:
+            return self._done(b"List of available languages (1):\neng\n")
+        self.reads += 1
+        width = 0
+        if payload is not None:
+            import io
+
+            with Image.open(io.BytesIO(payload)) as handed:
+                width = handed.width
+        self.widths.append(width)
+        return self._done(self.by_width.get(width, self.default))
+
+    @staticmethod
+    def _done(stdout: bytes) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=["tesseract"], returncode=0, stdout=stdout, stderr=b""
+        )
+
+
+def strip(
+    *,
+    width: int = 600,
+    height: int = 20,
+    cells: Sequence[tuple[float, float]] = (),
+    band: tuple[int, int] = (4, 16),
+) -> Image.Image:
+    """A synthetic strip: a dark bar with a bright block per cell.
+
+    ``cells`` are ``(start, end)`` as fractions of the width, so a test can put a
+    number where a field expects one -- or deliberately where none does.
+    """
+    image = Image.new("RGB", (width, height), (10, 10, 12))
+    draw = ImageDraw.Draw(image)
+    for start, end in cells:
+        draw.rectangle(
+            [round(start * width), band[0], round(end * width) - 1, band[1] - 1],
+            fill=(255, 255, 255),
+        )
+    return image
+
+
+# Fractions that land inside each field's default window. Deliberately three
+# different widths, because the fake engine answers by the width of the crop it is
+# handed -- that is how a test says "the cash cell reads $12.34 and the bet cell
+# reads $0.50" without reaching inside the extractor.
+CASH_CELL = (0.35, 0.42)
+WIN_CELL = (0.49, 0.53)
+BET_CELL = (0.60, 0.655)
+
+
+@pytest.fixture
+def engine_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin the engine to a file that exists but is never run."""
+    executable = tmp_path / EXECUTABLE_NAME
+    executable.write_bytes(b"")
+    monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", executable)
+    return executable
+
+
+@pytest.fixture
+def fake_engine(
+    engine_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[FakeEngine]:
+    fake = FakeEngine()
+    monkeypatch.setattr(ocr, "_run", fake)
+    yield fake
+
+
+# --- geometry, with no engine at all ----------------------------------------
+
+
+def test_ink_groups_finds_one_group_per_cell() -> None:
+    image = strip(cells=[CASH_CELL, WIN_CELL, BET_CELL])
+    groups = meter.ink_groups(image, (4, 16))
+    assert len(groups) == 3
+    centres = [(left + right) / 2 / image.width for left, right in groups]
+    assert centres == sorted(centres), "groups must come back in reading order"
+
+
+def test_ink_groups_ignores_specks_narrower_than_a_digit() -> None:
+    """A cell corner is bright too, and must not be offered as a value."""
+    image = strip(cells=[CASH_CELL, (0.70, 0.702)])
+    assert len(meter.ink_groups(image, (4, 16))) == 1
+
+
+def test_row_bands_separates_values_from_labels_below_them() -> None:
+    """The whole point of the strict threshold: two lines, two candidates.
+
+    A skin that prints labels under its cells must not offer only a band covering
+    both -- reading them together is what turned 1.76 into 76.
+    """
+    image = strip(height=30, cells=[CASH_CELL], band=(4, 14))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([210, 20, 250, 26], fill=(255, 255, 255))  # the "label"
+
+    bands = meter.row_bands(image)
+    assert len(bands) >= 3, bands
+    # A candidate covering the values without reaching into the label rows.
+    assert any(top <= 4 and 14 <= bottom <= 19 for top, bottom in bands), bands
+    # And the whole strip, offered last as the fallback.
+    assert bands[-1] == (0, 30)
+
+
+def test_row_bands_offers_the_whole_strip_when_nothing_is_lit() -> None:
+    assert meter.row_bands(strip()) == ((0, 20),)
+
+
+def test_grey_rejects_a_strip_with_no_area() -> None:
+    with pytest.raises(meter.MeterError):
+        meter.row_bands(Image.new("RGB", (0, 0)))
+
+
+# --- mapping ----------------------------------------------------------------
+
+
+def test_each_value_is_filed_under_the_field_whose_window_it_falls_in(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    image = strip(cells=[CASH_CELL, WIN_CELL, BET_CELL])
+    widths = {
+        round((end - start) * image.width) + 2 * meter.CLUSTER_PAD
+        for start, end in (CASH_CELL, WIN_CELL, BET_CELL)
+    }
+    assert len(widths) == 3, "the three cells must be distinguishable by width"
+
+    cash_w, win_w, bet_w = (
+        round((end - start) * image.width) + 2 * meter.CLUSTER_PAD
+        for start, end in (CASH_CELL, WIN_CELL, BET_CELL)
+    )
+    scale = 8
+    fake_engine.by_width = {
+        cash_w * scale: tsv(("$12.34", 96.0)),
+        win_w * scale: tsv(("$1.00", 95.0)),
+        bet_w * scale: tsv(("$0.50", 94.0)),
+    }
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    assert str(scan.fields["cash"].value) == "12.34"
+    assert str(scan.fields["win"].value) == "1.00"
+    assert str(scan.fields["bet"].value) == "0.50"
+    assert scan.unmapped == ()
+
+
+def test_a_value_in_no_window_is_reported_unmapped_not_nudged_into_a_field(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """The failure this design exists to make visible.
+
+    A skin that orders its cells differently reads perfectly and means something
+    else. Filing the number under the nearest field would look like success.
+    """
+    stray = (0.78, 0.85)
+    image = strip(cells=[stray])
+    fake_engine.default = tsv(("777", 96.0))
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    assert all(field.value is None for field in scan.fields.values())
+    assert len(scan.unmapped) == 1
+    assert str(scan.unmapped[0].value) == "777"
+    assert 0.78 <= scan.unmapped[0].centre <= 0.86
+
+
+def test_an_empty_win_cell_leaves_win_null_without_shifting_bet(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """Eleven of the twenty saved strips look like this.
+
+    Assigning left to right would call the bet a win. The windows are what stop
+    that, so it is worth a test of its own.
+    """
+    image = strip(cells=[CASH_CELL, BET_CELL])
+    cash_w = (round((CASH_CELL[1] - CASH_CELL[0]) * image.width) + 4) * 8
+    bet_w = (round((BET_CELL[1] - BET_CELL[0]) * image.width) + 4) * 8
+    fake_engine.by_width = {
+        cash_w: tsv(("$50.00", 96.0)),
+        bet_w: tsv(("$2.00", 96.0)),
+    }
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    assert str(scan.fields["cash"].value) == "50.00"
+    assert scan.fields["win"].value is None
+    assert str(scan.fields["bet"].value) == "2.00"
+    assert scan.unmapped == ()
+
+
+def test_a_reading_below_the_floor_is_discarded_rather_than_reported(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    image = strip(cells=[CASH_CELL])
+    fake_engine.default = tsv(("$9.99", meter.FLOOR - 1))
+    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    assert scan.fields["cash"].value is None
+
+
+def test_reading_escalates_only_while_it_is_unconvincing(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """A confident first answer must not cost eight more engine calls."""
+    image = strip(cells=[CASH_CELL])
+    fake_engine.default = tsv(("$12.34", 99.0))
+    meter.extract(image, executable=engine_path, band=(4, 16))
+    assert fake_engine.reads == 1
+
+    fake_engine.reads = 0
+    fake_engine.default = tsv(("$12.34", meter.CONFIDENT - 20))
+    meter.extract(image, executable=engine_path, band=(4, 16))
+    assert fake_engine.reads == sum(len(rung) for rung in meter.LADDER)
+
+
+def test_the_longest_token_wins_so_a_cell_border_does_not_become_a_digit() -> None:
+    """The engine welds a border onto a value as a leading 1 or comma."""
+    assert str(meter._token("1$1,001.40")[0]) == "1001.40"
+    assert meter._token("1$1,001.40")[1] == "$"
+    assert str(meter._token(",$999.12")[0]) == "999.12"
+    assert meter._token("")[0] is None
+
+
+# --- the service ------------------------------------------------------------
+
+
+def test_mode_is_credits_for_a_bare_integer_and_cash_for_an_amount(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    image = strip(cells=[CASH_CELL])
+
+    fake_engine.default = tsv(("49883", 96.0))
+    credits = meter_service.read(image, game="Fake")
+    assert credits.mode is MeterMode.CREDITS
+    assert credits.credits == 49883
+    assert credits.cash is None
+    assert credits.currency is None
+
+    meter_service.reset()
+    fake_engine.default = tsv(("$999.64", 96.0))
+    cash = meter_service.read(image, game="Fake")
+    assert cash.mode is MeterMode.CASH
+    assert cash.cash == 999.64
+    assert cash.credits is None
+    assert cash.currency == "$"
+
+
+def test_an_amount_with_an_unreadable_symbol_reports_the_currency_as_unknown(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """The yen glyph these games draw reads as nothing at every mode and scale.
+
+    Money with no symbol the engine would name is still money, and saying "no
+    currency" would be a different and wrong claim.
+    """
+    image = strip(cells=[CASH_CELL])
+    fake_engine.default = tsv(("999.19", 96.0))
+    values = meter_service.read(image, game="Fake")
+    assert values.mode is MeterMode.CASH
+    assert values.currency == "?"
+
+
+def test_the_fitted_band_is_cached_per_game_and_size(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """Fitting costs extra scans, so it must happen once per skin, not per frame."""
+    image = strip(cells=[CASH_CELL])
+    fake_engine.default = tsv(("$5.00", 96.0))
+
+    meter_service.read(image, game="Fake")
+    first = fake_engine.reads
+    fake_engine.reads = 0
+    meter_service.read(image, game="Fake")
+    assert fake_engine.reads <= first
+
+    # A different size is a different band, so it is fitted again.
+    fake_engine.reads = 0
+    meter_service.read(strip(width=400, cells=[CASH_CELL]), game="Fake")
+    assert fake_engine.reads > 0
+
+
+def test_reset_drops_the_cached_bands(fake_engine: FakeEngine) -> None:
+    image = strip(cells=[CASH_CELL])
+    fake_engine.default = tsv(("$5.00", 96.0))
+    meter_service.read(image, game="Fake")
+    assert meter_service._bands
+    meter_service.reset()
+    assert not meter_service._bands
+
+
+def test_a_missing_engine_is_reported_on_the_reading_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host with no Tesseract still gets its crop out of the ROI panel."""
+    monkeypatch.setattr(
+        settings, "OCR_TESSERACT_CMD", tmp_path / "nowhere" / EXECUTABLE_NAME
+    )
+    values = meter_service.read(strip(cells=[CASH_CELL]), game="Fake")
+    assert values.error is not None
+    assert "Tesseract" in values.error
+    assert values.mode is MeterMode.UNKNOWN
+    assert values.cash is None
+
+
+def test_ocr_disabled_is_reported_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "OCR_ENABLED", False)
+    values = meter_service.read(strip(cells=[CASH_CELL]), game="Fake")
+    assert values.error is not None
+    assert "disabled" in values.error
+
+
+def test_a_strip_with_no_area_is_reported_not_raised(
+    fake_engine: FakeEngine,
+) -> None:
+    values = meter_service.read(Image.new("RGB", (0, 0)), game="Fake")
+    assert values.error is not None
+    assert values.mode is MeterMode.UNKNOWN
+
+
+# --- against the real engine, over the project's own crops ------------------
+
+SAVED_CROPS = Path("obs-captured-files") / "cash-meter"
+
+
+def _saved(name: str) -> Path:
+    return SAVED_CROPS / name
+
+
+real_engine = pytest.mark.skipif(
+    discover_executable() is None, reason="no Tesseract installed"
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "game", "mode", "currency", "balance", "win", "bet"),
+    [
+        # Verified by eye against the crops, both skins, both modes, and a WIN
+        # cell that is empty as well as ones that are not.
+        ("screenshot-1787208401603.png", "FortuneOx", "cash", "$", 1001.40, None, 1.76),
+        ("screenshot-1787213890262.png", "FortuneOx", "credits", None, 49883, None, 88),
+        ("screenshot-1787213930188.png", "FortuneOx", "credits", None, 49531, 10, 88),
+        ("screenshot-1787224228160.png", "FortuneOx", "cash", "$", 995.60, 0.75, 0.88),
+        ("screenshot-1787224299454.png", "FortuneOx", "credits", None, 99371, 140, 176),
+        (
+            "screenshot-1787217604256.png",
+            "HuffNPuffLink",
+            "cash",
+            "$",
+            999.00,
+            0.05,
+            1.00,
+        ),
+        (
+            "screenshot-1787223377684.png",
+            "HuffNPuffLink",
+            "credits",
+            None,
+            99210,
+            450,
+            100,
+        ),
+    ],
+)
+@real_engine
+def test_real_strips_read_the_values_that_are_on_them(
+    name: str,
+    game: str,
+    mode: str,
+    currency: str | None,
+    balance: float,
+    win: float | None,
+    bet: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The only tests that can catch a wrong number rather than a wrong shape.
+
+    Verified by eye against the crops. Skipped where the saved crops are not
+    present, since they are gitignored capture output rather than fixtures.
+    """
+    path = _saved(name)
+    if not path.is_file():
+        pytest.skip(f"{path} is not present")
+    monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", None)
+
+    # Through the declared band, which is what the ROI service uses. Fitting one
+    # from the frame in hand is the fallback for a game nobody has measured, and
+    # is measurably worse -- so it is not what these assertions should ride on.
+    config = load_game_config(Path("app/config/game_config/games") / f"{game}.json")
+    with Image.open(path) as image:
+        values = meter_service.read(
+            image.convert("RGB"), game=game, profile=config.meter
+        )
+
+    assert values.error is None
+    assert values.mode.value == mode
+    assert values.currency == currency
+    assert (values.cash if mode == "cash" else values.credits) == pytest.approx(balance)
+    assert values.win == (pytest.approx(win) if win is not None else None)
+    assert values.bet == (pytest.approx(bet) if bet is not None else None)
+    assert values.unmapped == []
+
+
+# --- the declared band ------------------------------------------------------
+
+
+def test_a_declared_band_is_used_instead_of_fitting_one(
+    fake_engine: FakeEngine,
+) -> None:
+    """A declared band must skip the fit entirely, not merely outrank it."""
+    image = strip(height=20, cells=[CASH_CELL])
+    fake_engine.default = tsv(("$5.00", 96.0))
+
+    values = meter_service.read(image, game="Fake", profile={"band": (0.2, 0.8)})
+    assert values.band == [4, 16]
+    assert not meter_service._bands, "a declared band must not be cached as a guess"
+
+
+def test_declared_windows_move_which_field_a_value_lands_in(
+    fake_engine: FakeEngine,
+) -> None:
+    """The escape hatch for a skin that orders its cells differently."""
+    image = strip(cells=[(0.78, 0.85)])
+    fake_engine.default = tsv(("$7.00", 96.0))
+
+    # With the defaults that value belongs to no field at all.
+    astray = meter_service.read(image, game="Fake", profile={"band": (0.2, 0.8)})
+    assert astray.cash is None
+    assert len(astray.unmapped) == 1
+
+    meter_service.reset()
+    claimed = meter_service.read(
+        image,
+        game="Fake",
+        profile={"band": (0.2, 0.8), "windows": {"cash": (0.74, 0.9)}},
+    )
+    assert claimed.cash == 7.0
+    assert claimed.unmapped == []
+
+
+def test_the_shipped_games_declare_a_band_for_their_skin() -> None:
+    """Both skins are measured, so neither depends on the fitting fallback."""
+    for game in ("FortuneOx", "HuffNPuffLink"):
+        config = load_game_config(Path("app/config/game_config/games") / f"{game}.json")
+        top, bottom = config.meter["band"]
+        assert 0.0 <= top < bottom <= 1.0
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"band": [0.7, 0.2]},
+        {"band": [0.2]},
+        {"band": [0.2, 1.4]},
+        {"band": ["a", "b"]},
+        {"band": [True, 0.9]},
+        {"windows": {"cash": [0.6, 0.3]}},
+        {"nonsense": 1},
+    ],
+)
+def test_a_malformed_meter_block_fails_when_the_config_is_read(
+    block: dict[str, object], tmp_path: Path
+) -> None:
+    """Named, at load time -- not as a meter that quietly reads the wrong rows."""
+    config = tmp_path / "Broken.json"
+    config.write_text(json.dumps({"name": "Broken", "meter": block}), encoding="utf-8")
+    with pytest.raises(GameConfigError):
+        load_game_config(config)
+
+
+def test_a_game_with_no_meter_block_is_not_an_error(tmp_path: Path) -> None:
+    """Declaring one is the remedy, not the requirement."""
+    config = tmp_path / "Plain.json"
+    config.write_text(json.dumps({"name": "Plain"}), encoding="utf-8")
+    assert load_game_config(config).meter == {}

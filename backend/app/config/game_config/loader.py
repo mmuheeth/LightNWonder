@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,52 @@ def _ocr(raw: Any, *, path: Path) -> dict[str, Mapping[str, Any]]:
         except OcrOptionsError as exc:
             raise GameConfigError(str(exc)) from exc
     return overrides
+
+
+def _fractions(raw: Any, *, where: str) -> tuple[float, float]:
+    """Narrow a decoded JSON value to an ordered pair of fractions."""
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence) or len(raw) != 2:
+        raise GameConfigError(f"{where} must be an array of two numbers")
+    pair = []
+    for value in raw:
+        # `bool` is an `int`, and `true` as a coordinate is a mistake, not a 1.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise GameConfigError(f"{where} must contain only numbers, got {value!r}")
+        if not 0.0 <= float(value) <= 1.0:
+            raise GameConfigError(
+                f"{where} must be fractions between 0 and 1, got {value!r}"
+            )
+        pair.append(float(value))
+    if pair[0] >= pair[1]:
+        raise GameConfigError(f"{where} must be [low, high], got {pair}")
+    return pair[0], pair[1]
+
+
+def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
+    """Read the optional ``meter`` block: how to read the cash meter strip.
+
+    Validated here, when the config is read, so a band the wrong way round is an
+    error naming the file rather than a meter that silently reads as punctuation
+    months later.
+    """
+    block = _object(raw, where=f"'meter' in {path}")
+    parsed: dict[str, Any] = {}
+    if "band" in block:
+        parsed["band"] = _fractions(block["band"], where=f"'meter.band' in {path}")
+    if "windows" in block:
+        windows = _object(block["windows"], where=f"'meter.windows' in {path}")
+        parsed["windows"] = {
+            str(field): _fractions(span, where=f"'meter.windows.{field}' in {path}")
+            for field, span in windows.items()
+        }
+    unknown = set(block) - {"band", "windows"}
+    if unknown:
+        known = "band, windows"
+        raise GameConfigError(
+            f"'meter' in {path} has no {', '.join(sorted(unknown))} setting "
+            f"(settings are: {known})"
+        )
+    return parsed
 
 
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
@@ -145,6 +191,7 @@ def load_game_config(path: Path) -> GameConfig:
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")
         ),
+        meter=freeze_mapping(_meter(document.get("meter"), path=path)),
         event_rules=event_rules,
         disabled_events=disabled_events,
     )

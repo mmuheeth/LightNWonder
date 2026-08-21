@@ -11,6 +11,7 @@ from app.main import create_app
 from app.services import event_capture as event_capture_service
 from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
+from app.services import meter as meter_service
 from app.services import obs as obs_service
 from app.services import ocr as ocr_service
 
@@ -59,6 +60,14 @@ def _clean_ocr_state() -> Iterator[None]:
     ocr_service.reset()
     yield
     ocr_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_meter_state() -> Iterator[None]:
+    """Drop the fitted meter row bands, so one skin's band is not another's."""
+    meter_service.reset()
+    yield
+    meter_service.reset()
 
 
 @pytest.fixture(autouse=True)

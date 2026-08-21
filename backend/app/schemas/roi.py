@@ -19,6 +19,12 @@ Naming one is still allowed, for going back to an older frame.
 region's fractions were resolved against. Reported apart because they answer
 different questions: a crop of the wrong thing is either a badly measured region
 or a misdetected content box, and only the pair says which.
+**The cash meter comes back read as well as cropped.** Extracting that one region
+also carries the numbers on it -- see :attr:`RoiExtractResult.meter` -- because
+cropping the meter and reading it are one action from the panel's point of view,
+and cropping twice would allow two extractions of the same strip to disagree.
+Every other region leaves it null, and a reading that failed populates its own
+``error`` rather than failing the crop.
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.meter import MeterValues
 
 
 class RoiFrame(BaseModel):
@@ -148,4 +156,13 @@ class RoiExtractResult(BaseModel):
     height: int = Field(ge=1, description="Crop height in pixels.")
     image_data: str = Field(
         description="Base64 data URI of the crop, ready for an <img> src."
+    )
+    meter: MeterValues | None = Field(
+        default=None,
+        description=(
+            "The values read off the crop, for the cash meter region only; null "
+            "for every other region. Carries its own 'error' when the numbers "
+            "could not be read, because a failed reading still has a crop worth "
+            "looking at."
+        ),
     )
