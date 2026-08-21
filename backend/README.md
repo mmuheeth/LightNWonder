@@ -71,7 +71,7 @@ backend/
     │   ├── event_capture.py Event Based Capture runtime settings
     │   ├── ocr.py           Tesseract OCR settings, and finding the engine
     │   └── game_config/     active selection plus per-game aliases, process,
-    │                         logs, ROIs and targets
+    │                         logs, ROIs, reel bounds and targets
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -83,6 +83,9 @@ backend/
     │                         fractions, so it survives a resolution change
     │   ├── click_target.py   reads a config's named click targets, by fractions,
     │                         so they survive a window resize
+    │   ├── reel_grid.py     reads a config's reel bounds and hands back the
+    │                         tiles of the matrix, by fractions of the crop,
+    │                         border trim included
     │   ├── ocr.py           runs Tesseract over an image and reads its answer
     │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
@@ -98,7 +101,8 @@ backend/
     │   ├── event_capture.py capture runs and the events inside them
     │   ├── game_input.py     game window state, click targets and click results
     │   ├── ocr.py           engine status, options and what was read
-    │   └── roi.py           region catalog, and one extracted crop
+    │   ├── roi.py           region catalog, and one extracted crop
+    │   └── grid.py          reel grid shape, and one split into tiles
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -111,7 +115,8 @@ backend/
         ├── event_capture.py  follows the game log and screenshots its events
         ├── game_input.py     clicks the game's own window, proven by its log
         ├── ocr.py            reads the game's meters off a frame
-        └── roi.py            cuts one configured region out of a screenshot
+        ├── roi.py            cuts one configured region out of a screenshot
+        └── grid.py           splits the reels of a screenshot into tiles
 ```
 
 Adding a resource is three files plus one line:
@@ -533,10 +538,10 @@ Things worth knowing:
 ## Regions of interest
 
 A game config names the parts of the screen worth reading, as fractions of the
-frame:
+**game window**:
 
 ```json
-"roi": { "cash_meter": [0.229264, 0.844468, 0.762349, 0.884554] }
+"roi": { "cash_meter": [0.000000, 0.844468, 1.000000, 0.884554] }
 ```
 
 Left, top, right, bottom, each `0.0..1.0`. `app/utils/image_roi.py` turns those
@@ -554,19 +559,81 @@ meter = crop_file(screenshot, region, destination=out / "cash_meter.png")
   rounded to the nearest pixel rather than truncated, so the region scales
   instead of creeping inwards. `tests/test_image_roi.py` checks this against the
   event-capture screenshots themselves, rescaled up and down.
-- **Fractions of the whole frame, letterboxing included.** A portrait game
-  inside a landscape canvas has black down both sides, and the region is
-  measured against the picture OBS wrote. That is the rectangle both the person
-  measuring the region and the code cropping it can see — but it does mean a
-  region follows a *resolution* change, not a change in how much of the canvas
-  the game window fills. Resize the game window without re-measuring and the
-  region drifts.
+- **Fractions of the game, not of the canvas.** A portrait game inside a
+  landscape canvas has black down both sides, and the width of those bars is a
+  property of the *game window's shape*, not of the capture — so a region
+  measured against the whole frame follows a resolution change but comes unaimed
+  the moment the simulator is resized. `Roi.to_box_within(box)` resolves the same
+  four numbers against a rectangle inside the frame and hands back pixels of the
+  frame, and `app/utils/letterbox.py` is what finds that rectangle. Every
+  region-resolving service goes through it, so one config works at every window
+  size.
 - **Measured in pixels, stored as fractions.** `Roi.from_pixels(box,
   width=..., height=...)` converts a reading taken off one screenshot in an
   image editor, so the conversion happens once rather than at every use.
 - **A bad region is rejected where it is read.** A missing name, a wrong count,
   a fraction outside `0..1` or edges the wrong way round all raise `RoiError`
   naming the region — instead of surfacing later as a blank crop.
+
+### The content box
+
+OBS writes every frame at its **canvas** size — 1280x720 here — and fits the
+window capture inside it with the source's aspect ratio preserved. A portrait
+simulator in a landscape canvas therefore arrives with black bars down both
+sides, and the width of those bars is a property of the game window's shape at
+that moment, nothing else:
+
+```
+1280x720 canvas, 632x1080 window      1280x720 canvas, same window widened
++--------+-----------+--------+       +-----+-----------------+-----+
+|        |           |        |       |     |                 |     |
+| bars   |   game    |  bars  |       |bars |      game       |bars |
+|        | 421 wide  |        |       |     |    643 wide     |     |
++--------+-----------+--------+       +-----+-----------------+-----+
+         ^ x=429     ^ x=850                ^ x=318           ^ x=961
+```
+
+Same file size, same everything a filename shows, different picture in a
+different place. A region measured as fractions of the canvas lands correctly on
+one and misses on the other — which is why regions are fractions of the box
+inside the bars instead.
+
+`app/utils/letterbox.py` finds it. The frame is thresholded and the bounding box
+of what survives is taken, so everything outside the box is dark by
+construction. Two cases are refused rather than believed, because both look like
+a very letterboxed frame: nothing above the threshold at all (the black frame
+OBS writes between scenes), and a box under a quarter of the frame on either
+axis (a dark game screen). Both come back as the whole frame — a fade to black
+is a normal thing for a screenshot to catch, and one bad crop beats an error on
+the frame after it.
+
+```
+FRAME_LETTERBOX_TRIM=true       off puts every region back on the whole canvas
+FRAME_LETTERBOX_THRESHOLD=8     luminance a pixel must exceed to count as game
+FRAME_LETTERBOX_MIN_FRACTION=0.25   smallest box that will be believed, per axis
+```
+
+`app/services/roi.py` owns the question for every feature that resolves a
+region: `content_box(frame)` finds it, `resolve_box(roi, frame)` is the
+single-region shorthand, and OCR finds it once per frame rather than once per
+region. Every response reports it beside the region's own pixel box —
+`content_box` and `letterboxed` on an ROI extraction, a grid split and an OCR
+read alike — because a crop of the wrong thing is either a badly measured region
+or a misdetected box, and only the pair tells them apart.
+
+> **Measuring a new region.** Read the pixel box off a screenshot as usual, then
+> subtract the content box's origin and divide by its size rather than by the
+> frame's. `POST /api/roi/extract` prints the content box of whatever frame it
+> just used, so one extraction of any existing region gives you the numbers to
+> divide by. A region measured against the canvas by mistake shows up as a crop
+> that is right on the frame it was measured on and wrong on every other window
+> size.
+
+> **`button_targets` are already in this space.** A click target is fractions of
+> the window client area, which `win32.py` asks Windows for directly — and the
+> content box is that same rectangle as the canvas received it. So the two
+> conventions now agree, and a number measured for one reads correctly for the
+> other.
 
 ## Extracting a region (ROI)
 
@@ -604,10 +671,14 @@ still on disk to be looked at again, and a live capture would make the same crop
 mean two different pictures on two extractions. `latest_frame` is null until a
 screenshot has been taken, which is the panel's empty state rather than an error.
 
-**Nothing is written.** The crop comes back as a PNG data URI, like OCR's own
-`include_crop`. PNG regardless of the source format, because a crop of a meter is
-about to be looked at closely and JPEG would add exactly the artefacts that make
-a region look badly aimed.
+**Almost nothing is written.** The crop comes back as a PNG data URI, like OCR's
+own `include_crop`. PNG regardless of the source format, because a crop of a
+meter is about to be looked at closely and JPEG would add exactly the artefacts
+that make a region look badly aimed. The one exception is `cash_meter`, whose
+crop is also kept at `obs-captured-files/cash-meter/<frame>.png` — a running
+record of what the meter read over time, rather than only the latest crop the API
+returned. Splitting the reels writes everything, for the same reason inverted:
+see [Splitting the reels into a grid](#splitting-the-reels-into-a-grid).
 
 **The response carries the pixel box.** `box` is what the fractions resolved to
 on that frame, which is the thing to read when a crop looks off by a few pixels —
@@ -621,6 +692,158 @@ dropdown instead of only on extraction. Extracting it is a 500
 A region the game does not declare is a 404 `ROI_REGION_NOT_FOUND`, and a frame
 that is not there is a 404 `ROI_FRAME_NOT_FOUND`; a `.png` that is not one, which
 is what a shot caught mid-write looks like, is a 502 `ROI_EXTRACT_FAILED`.
+
+## Splitting the reels into a grid
+
+One step past ROI: crops the reels out of a screenshot and then divides that crop
+into the individual symbol positions, as a matrix.
+
+```
+GET  /api/grid/layout         the shape of the active game's grid, and the frame in hand
+POST /api/grid/split          split one frame into tiles, and write them out
+```
+
+```bash
+# how many reels, how many rows, and which screenshot would be used
+curl -s localhost:8001/api/grid/layout
+# split the newest screenshot
+curl -s -X POST localhost:8001/api/grid/split -H 'content-type: application/json' -d '{}'
+# a particular frame, files only -- no base64 in the response
+curl -s -X POST localhost:8001/api/grid/split -H 'content-type: application/json' -d '{
+  "file_name": "screenshot-1787192384798.png",
+  "include_images": false
+}'
+```
+
+**Two blocks, measured against two different rectangles.** This is the one thing
+to get right:
+
+```json
+"roi": { "reels": [0.35, 0.559722, 0.649219, 0.822222] },
+"reel_bounds": {
+  "col_bounds": [[0.0, 0.193089], [0.20122, 0.395325], [0.403455, 0.596545],
+                 [0.604675, 0.79878], [0.806911, 1.0]],
+  "row_bounds": [[0.0, 0.333333], [0.333333, 0.666667], [0.666667, 1.0]],
+  "inset": 0.03
+}
+```
+
+`roi.reels` is fractions of the **frame**, like every other region and click
+target here. `reel_bounds` is fractions of the **reels crop** — of the rectangle
+`roi.reels` cut out. That is why `row_bounds` reads as thirds and `col_bounds`
+runs `0.0`..`1.0`: the reels fill their own crop by definition, and the gaps
+between the column spans are the gaps between the reel strips. Keeping them
+apart is what makes them independent — move the reel window on screen and only
+`roi.reels` changes; add a sixth reel and only `col_bounds` does.
+
+**Positions are 1-indexed and row-major.** `r1c1` is the top symbol of reel 1,
+the way a paytable reads. Every tile carries its own `row` and `column` rather
+than relying on its place in the list, and `positions` is the same names already
+laid out as a matrix, so nothing downstream has to chunk anything:
+
+```
+positions: [["r1c1", "r1c2", "r1c3", "r1c4", "r1c5"],
+            ["r2c1", "r2c2", "r2c3", "r2c4", "r2c5"],
+            ["r3c1", "r3c2", "r3c3", "r3c4", "r3c5"]]
+```
+
+**`inset` trims the border the bounds cannot.** The spans divide the crop edge
+to edge, so a tile takes everything between its neighbours — including the frame
+the game draws *inside* a reel when it highlights a win, which is a line of gold
+lying across the symbol's own edge rather than a gap the bounds could have
+skipped. An inset shrinks every tile towards its centre:
+
+```json
+"inset": 0.03                    // a fraction off all four edges
+"inset": [0.04, 0.02]            // [horizontal, vertical]
+"inset": [0.04, 0.02, 0.0, 0.0]  // [left, top, right, bottom] — an roi's order
+```
+
+Each number is a fraction **of the tile**, not of the crop, so one value means
+the same trim for a wide reel and a narrow one and survives a resolution change
+like everything else here. It is optional and defaults to nothing.
+
+Finding the right number is a loop, so a request can override the config for one
+split — the same shape as OCR's per-request options, and for the same reason:
+
+```bash
+# try a trim against a frame that does not move, then write the winner in
+curl -s -X POST localhost:8001/api/grid/split -H 'content-type: application/json' -d '{
+  "file_name": "screenshot-1787224299454.png",
+  "inset": 0.03
+}'
+```
+
+The effective trim comes back as `inset` on both endpoints, and every tile's
+`roi` and `box` already have it applied — a tile's size is never a number
+someone has to go and look up. An unusable value is a 500 `GAME_CONFIG_INVALID`
+in the config and a 400 `BAD_REQUEST` in a request: the same numbers, but only
+one of the two is something the caller can fix by asking differently. A trim
+that would leave no tile is rejected rather than clamped, because a one-pixel
+sliver of the middle of a symbol is not a smaller mistake than a crash.
+
+**Every tile comes out the same number of pixels.** Rounding each tile's edges
+on its own is right for a single region and wrong for a grid: five reels spanning
+76.6 pixels each round to 74, 74, 73, 74, 74 purely from where the boundaries
+fall, and tiles that differ by a row or a column cannot be stacked, diffed, or
+fed to anything that expects one input size. So each tile keeps its **own**
+rounded left and top — nothing drifts off the symbol it is aimed at — and they
+all take one shared width and height, the smallest that fits every span. The
+pixel a wide tile gives up comes off its right or bottom edge, inside the gap
+between reels. `tile_width` and `tile_height` on the result say what that size
+is, once, instead of leaving fifteen equal numbers to be compared.
+
+**The bounds have to be in reading order**, and `app/utils/reel_grid.py` rejects
+them if they are not. A shuffled list still splits into the right number of
+tiles and labels every one of them wrong, which nothing downstream could notice.
+Overlap between neighbours is allowed — that is a judgement about where a symbol
+ends, not a mistake.
+
+**Unlike an ROI extraction, the split is written down.** Fifteen tiles are the
+input to whatever looks at symbols next, not something to glance at and discard:
+
+```
+obs-captured-files/grid/screenshot-1787192384798/
+├── reels.png            the whole crop, so the tiles have something to be checked against
+└── tiles/
+    ├── r1c1.png  r1c2.png  r1c3.png  r1c4.png  r1c5.png
+    ├── r2c1.png  r2c2.png  r2c3.png  r2c4.png  r2c5.png
+    └── r3c1.png  r3c2.png  r3c3.png  r3c4.png  r3c5.png
+```
+
+One directory per source frame, named after it — so splitting two frames leaves
+two records, and splitting the *same* frame twice replaces its own, which is what
+makes it safe to re-run after editing the bounds. A stale tile from a
+differently-shaped grid is removed rather than left looking like part of the
+current answer, and only names matching a tile's own pattern are touched.
+`include_images: false` still writes everything; it only drops the base64 from
+the response.
+
+**The frame is ROI's frame.** Same directory, same newest-first rule, and the
+same `ROI_FRAME_NOT_FOUND` / `ROI_EXTRACT_FAILED` when it is missing or is not
+readable — `app/services/grid.py` calls `app/services/roi.py` for it rather than
+growing a second reading of "the latest screenshot".
+
+A game that declares no `roi.reels` or no `reel_bounds` is a 404
+`GRID_NOT_CONFIGURED` on a split, but a **200 with `error` set** on
+`GET /api/grid/layout`: only some games have reels, and selecting one of the
+others is a state the dashboard renders rather than a request that went wrong.
+Numbers that are unusable are a 500 `GAME_CONFIG_INVALID` naming the file, and a
+crop that could not be written is a 502 `GRID_SPLIT_FAILED`.
+
+> **A note on capture geometry.** The reel bounds are fractions of the crop and
+> `roi.reels` is fractions of the game, so between them they survive both a
+> resolution change and a resize of the simulator — see
+> [The content box](#the-content-box) for how the second one is found.
+> `reels.png` in the output is what makes a mis-aimed region obvious.
+>
+> FortuneOx's shipped `roi.reels` was measured against a letterboxed 1280x720
+> capture where the portrait window occupied x [429, 850), and then expressed as
+> fractions of that window rather than of the canvas — which is why it reads
+> `[0.045131, …, 0.954870, …]`, nearly the full width of a game that fills its
+> own window. The `col_bounds` were checked against the same frame and land
+> within a pixel of the reel strips, so only the region needed converting —
+> which is the separation the two blocks exist for.
 
 ## Reading text (OCR)
 

@@ -855,6 +855,75 @@ async def test_a_region_is_read_off_a_screenshot_from_a_run(
     assert reading["crop"] == [293, 608, 976, 637]
 
 
+async def test_a_region_is_read_against_the_game_not_the_canvas(
+    client: AsyncClient,
+    active_game: Path,
+    fake_engine: FakeTesseract,
+    capture_frame: tuple[str, str],
+) -> None:
+    """A letterboxed capture puts the meter somewhere the canvas fractions miss.
+
+    OBS writes every frame at its canvas size and fits the game window inside
+    it, so the same four fractions have to be resolved against the part of the
+    frame the game filled -- otherwise resizing the simulator un-aims every
+    region at once.
+    """
+    run_id, file_name = capture_frame
+    directory = settings.obs_screenshot_dir / settings.EVENT_CAPTURE_DIR_NAME / run_id
+    # The real shape: a 632x1080 simulator lands as a 421-wide strip of a
+    # 1280x720 canvas, black either side of it.
+    frame = solid(1280, 720)
+    frame.paste(Image.new("RGB", (421, 720), (200, 180, 40)), (429, 0))
+    frame.save(directory / file_name)
+
+    data = assert_success(
+        (
+            await client.post(
+                f"{API}/read",
+                json={
+                    "run_id": run_id,
+                    "file_name": file_name,
+                    "regions": ["cash_meter", "bet_meter"],
+                },
+            )
+        ).json()
+    )
+
+    assert data["content_box"] == [429, 0, 850, 720]
+    assert data["letterboxed"] is True
+    # 0.229264..0.762349 of the 421-wide content box, offset back to the frame.
+    assert data["readings"][0]["crop"] == [526, 608, 750, 637]
+    # Reported once for the frame, not once per region: every region of one shot
+    # is measured against the same rectangle.
+    assert data["readings"][1]["crop"] != data["readings"][0]["crop"]
+
+
+async def test_a_frame_with_no_letterbox_is_read_against_the_whole_frame(
+    client: AsyncClient,
+    active_game: Path,
+    fake_engine: FakeTesseract,
+    capture_frame: tuple[str, str],
+) -> None:
+    run_id, file_name = capture_frame
+
+    data = assert_success(
+        (
+            await client.post(
+                f"{API}/read",
+                json={
+                    "run_id": run_id,
+                    "file_name": file_name,
+                    "regions": ["cash_meter"],
+                },
+            )
+        ).json()
+    )
+
+    assert data["content_box"] == [0, 0, 1280, 720]
+    assert data["letterboxed"] is False
+    assert data["readings"][0]["crop"] == [293, 608, 976, 637]
+
+
 async def test_a_live_read_takes_a_frame_from_obs(
     client: AsyncClient,
     active_game: Path,

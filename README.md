@@ -127,7 +127,8 @@ backend/app/
 └── core/           settings, logging, request context
 
 backend/obs-captured-files/    OBS screenshots and recordings (gitignored)
-└── event-capture/      one folder per capture run: images + run.json
+├── event-capture/      one folder per capture run: images + run.json
+└── grid/               one folder per split frame: reels.png + tiles/r1c1.png…
 
 frontend/src/
 ├── features/       one directory per feature (api + hooks + components)
@@ -255,6 +256,47 @@ game config's per-region `ocr` block, then a request's own overrides for one rea
 tuned against a frame that does not move. See
 [backend/README.md](backend/README.md#reading-text-ocr) for the options, the
 tuning loop and the failure codes.
+
+## Reel grid
+
+The dashboard's **Reel grid** card crops the reels out of the latest screenshot
+and divides that crop into the individual symbol positions, as a matrix:
+
+```
+GET  /api/grid/layout    how many reels, how many rows, and the frame in hand
+POST /api/grid/split     split one frame into tiles, and write them out
+```
+
+The shape comes from the selected game's config — `roi.reels` says where the
+reels are, and `reel_bounds` says where each reel and row sits inside that crop.
+**The two are measured against different rectangles**: `roi.reels` is fractions
+of the game window, `reel_bounds` fractions of the crop, which is what keeps them
+independent when the reel window moves or a sixth reel appears.
+
+Fractions of the *game window* rather than of the frame, because OBS writes every
+frame at its canvas size and fits the window capture inside it — so a portrait
+simulator arrives with black bars whose width changes the moment the window is
+resized. The bars are trimmed before a region is resolved, and every split
+reports the rectangle it found, so one config works at any window size. See
+[backend/README.md](backend/README.md#the-content-box).
+
+Tiles are named `r1c1`…`r3c5`, 1-indexed and row-major, so `r1c1` is the top
+symbol of reel 1. An optional `reel_bounds.inset` trims a fraction off each tile
+edge, which is what removes the frame a game draws inside a reel when it
+highlights a win — a request can override it for one split, so the number can be
+found against a fixed frame before it is written into the config.
+
+Every tile comes out the same number of pixels: each keeps its own rounded
+position but they all share one width and height, because rounding each tile's
+edges independently varies them by a pixel and a grid of unequal tiles cannot be
+stacked or batched.
+
+Unlike an ROI extraction the split is kept: the crop and every tile are written
+to `obs-captured-files/grid/<frame>/`, one folder per source screenshot, because
+fifteen tiles are the input to whatever looks at symbols next rather than
+something to glance at. See
+[backend/README.md](backend/README.md#splitting-the-reels-into-a-grid) for the
+bounds format, the output layout and the failure codes.
 
 ## Notes
 

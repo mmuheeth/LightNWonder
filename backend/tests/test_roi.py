@@ -10,6 +10,13 @@ four fractions of a frame, and the mistake worth catching is one that still
 produces a correctly-sized rectangle taken from the wrong place -- so the frames
 are built with a known block of colour inside the region and plain background
 outside it, and the assertion is that the crop came back that colour.
+
+Some frames here are letterboxed on purpose. OBS writes every frame at its
+canvas size and fits the game window inside it, so resizing the simulator gives
+a differently-shaped picture in an identically-sized file -- which is exactly the
+case a region measured against the canvas fails at. Those frames are built with
+pure black bars round a content box, and the region is painted relative to that
+box rather than to the frame.
 """
 
 from __future__ import annotations
@@ -39,6 +46,15 @@ QUARTER = [0.25, 0.5, 0.5, 1.0]
 
 BACKGROUND = (10, 20, 30)
 REGION_FILL = (200, 100, 50)
+# Bars are pure black, the way OBS pads a canvas round a source. The background
+# above is dim but well clear of the detection threshold, so a frame with no
+# bars is all content.
+BARS = (0, 0, 0)
+
+# The two real captures of one FortuneOx window, resized: a 632x1080 simulator
+# lands as a 421-wide strip of the 1280x720 canvas, and widening it lands as 643.
+NARROW_CONTENT = (429, 0, 850, 720)
+WIDE_CONTENT = (318, 0, 961, 720)
 
 
 def write_game_config(directory: Path, document: dict[str, Any]) -> Path:
@@ -54,27 +70,51 @@ def write_frame(
     *,
     size: tuple[int, int] = (400, 200),
     region: list[float] | None = None,
+    content: tuple[int, int, int, int] | None = None,
 ) -> Path:
     """Write a frame with ``region`` filled in a colour the background is not.
 
     Filling the region is what lets a test assert the crop came from the right
     part of the picture rather than merely being the right shape.
+
+    With ``content`` given, the frame is black outside that box and the region is
+    painted relative to it -- a window capture letterboxed inside a canvas, which
+    is what every real frame from OBS is.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGB", size, BACKGROUND)
+    image = Image.new("RGB", size, BARS if content is not None else BACKGROUND)
+    left, top, right, bottom = content if content is not None else (0, 0, *size)
+    if content is not None:
+        image.paste(
+            Image.new("RGB", (right - left, bottom - top), BACKGROUND), (left, top)
+        )
     if region is not None:
-        width, height = size
+        width, height = right - left, bottom - top
         box = (
-            round(region[0] * width),
-            round(region[1] * height),
-            round(region[2] * width),
-            round(region[3] * height),
+            left + round(region[0] * width),
+            top + round(region[1] * height),
+            left + round(region[2] * width),
+            top + round(region[3] * height),
         )
         image.paste(
             Image.new("RGB", (box[2] - box[0], box[3] - box[1]), REGION_FILL), box
         )
     image.save(path)
     return path
+
+
+def corners_are_region(crop: Image.Image) -> bool:
+    """Whether all four corners of a crop are the region's own colour.
+
+    The assertion that a crop is the right *place* and not merely the right
+    shape -- a box off by more than its own border catches background.
+    """
+    rgb = crop.convert("RGB")
+    edge_x, edge_y = crop.width - 1, crop.height - 1
+    return all(
+        rgb.getpixel(corner) == REGION_FILL
+        for corner in ((0, 0), (edge_x, 0), (0, edge_y), (edge_x, edge_y))
+    )
 
 
 def decode(image_data: str) -> Image.Image:
@@ -293,6 +333,120 @@ async def test_extract_scales_the_same_fractions_to_any_frame_size(
         small["width"] * 4,
         small["height"] * 4,
     )
+
+
+# --- the letterbox --------------------------------------------------------
+
+
+async def test_extract_resolves_the_region_against_the_game_not_the_canvas(
+    client: AsyncClient, active_game: Path, screenshots: Path
+) -> None:
+    """A region is fractions of the picture, not of the black round it."""
+    write_frame(
+        screenshots / "shot.png",
+        size=(400, 200),
+        region=QUARTER,
+        content=(100, 0, 300, 200),
+    )
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    # 0.25..0.5 of the 200-wide content box, offset back to the frame.
+    assert data["box"] == [150, 100, 200, 200]
+    assert data["content_box"] == [100, 0, 300, 200]
+    assert data["letterboxed"] is True
+    assert corners_are_region(decode(data["image_data"]))
+
+
+async def test_extract_follows_the_game_when_the_window_is_resized(
+    client: AsyncClient, active_game: Path, screenshots: Path
+) -> None:
+    """The bug this exists for: one canvas size, two window shapes, one region.
+
+    Both frames are 1280x720 because OBS's canvas never changes; only the part
+    of it the game fills does. The same four fractions have to land on the same
+    part of the game in both.
+    """
+    write_frame(
+        screenshots / "narrow.png",
+        size=(1280, 720),
+        region=QUARTER,
+        content=NARROW_CONTENT,
+    )
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+    narrow = assert_success(response.json())
+
+    wide = write_frame(
+        screenshots / "wide.png",
+        size=(1280, 720),
+        region=QUARTER,
+        content=WIDE_CONTENT,
+    )
+    _make_newest(wide)
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+    widened = assert_success(response.json())
+
+    assert narrow["content_box"] == list(NARROW_CONTENT)
+    assert widened["content_box"] == list(WIDE_CONTENT)
+    # Different pixels, because the game moved and grew...
+    assert narrow["box"] != widened["box"]
+    assert widened["width"] > narrow["width"]
+    # ...and the same part of the game in both, which is the whole point.
+    assert corners_are_region(decode(narrow["image_data"]))
+    assert corners_are_region(decode(widened["image_data"]))
+
+
+async def test_extract_reports_an_unletterboxed_frame_as_the_whole_frame(
+    client: AsyncClient, active_game: Path, screenshots: Path
+) -> None:
+    write_frame(screenshots / "shot.png", size=(400, 200), region=QUARTER)
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    assert data["content_box"] == [0, 0, 400, 200]
+    assert data["letterboxed"] is False
+    # And the region resolved exactly as fractions of the canvas.
+    assert data["box"] == [100, 100, 200, 200]
+
+
+async def test_extract_ignores_the_letterbox_when_trimming_is_off(
+    client: AsyncClient,
+    active_game: Path,
+    screenshots: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``FRAME_LETTERBOX_TRIM=false`` puts every region back on the canvas."""
+    monkeypatch.setattr(settings, "FRAME_LETTERBOX_TRIM", False)
+    write_frame(
+        screenshots / "shot.png",
+        size=(400, 200),
+        region=QUARTER,
+        content=(100, 0, 300, 200),
+    )
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    assert data["content_box"] == [0, 0, 400, 200]
+    assert data["letterboxed"] is False
+    assert data["box"] == [100, 100, 200, 200]
+
+
+async def test_extract_uses_the_whole_frame_of_a_black_shot(
+    client: AsyncClient, active_game: Path, screenshots: Path
+) -> None:
+    """A shot caught between scenes is a black frame, not a zero-size window."""
+    path = screenshots / "black.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (400, 200), BARS).save(path)
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    assert data["content_box"] == [0, 0, 400, 200]
+    assert data["box"] == [100, 100, 200, 200]
 
 
 async def test_extract_can_name_an_older_frame(

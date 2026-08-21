@@ -55,9 +55,10 @@ def test_memory_checkpoint_context_is_ready_for_local_workflows() -> None:
 def test_postgres_checkpoint_requires_a_database_url() -> None:
     settings = AgentSettings(AGENT_CHECKPOINT_BACKEND="postgres")
 
-    with pytest.raises(
-        AgentConfigurationError, match="requires AGENT_CHECKPOINT_URL"
-    ), checkpoint_context(settings):
+    with (
+        pytest.raises(AgentConfigurationError, match="requires AGENT_CHECKPOINT_URL"),
+        checkpoint_context(settings),
+    ):
         pass
 
 

@@ -52,13 +52,31 @@ class GameConfig:
     """The game's own log, when it declares one."""
 
     roi: Mapping[str, Any]
-    """Named screen regions, as fractions of the frame.
+    """Named screen regions, as fractions of the part of the frame the game fills.
+
+    Not of the whole canvas: OBS fits a window capture inside its canvas, so a
+    portrait game arrives letterboxed and the bars' width is a property of the
+    window's shape rather than of the capture. :mod:`app.utils.letterbox` finds
+    the rectangle these are measured against, so one set of numbers survives the
+    simulator being resized.
 
     Passed through unvalidated beyond being an object. The shape is enforced
     where a region is actually used, by :func:`app.utils.image_roi.named_roi` --
     which is where a typo in a region name or in its numbers becomes a sentence
-    saying which region it was and what was wrong with it. :mod:`app.services.ocr`
-    is the consumer today.
+    saying which region it was and what was wrong with it. :mod:`app.services.roi`,
+    :mod:`app.services.ocr` and :mod:`app.services.grid` are the consumers.
+    """
+
+    reel_bounds: Mapping[str, Any]
+    """Where the reel strips and symbol rows sit inside the ``reels`` region.
+
+    Fractions of the ``roi.reels`` **crop**, not of the game -- which is the
+    one thing about this block that is easy to get wrong, and is why it is a
+    separate key rather than more entries under :attr:`roi`.
+
+    Passed through unvalidated beyond being an object, like :attr:`roi` above.
+    The shape is enforced where the grid is actually split, by
+    :meth:`app.utils.reel_grid.ReelGrid.from_mapping`.
     """
 
     ocr: Mapping[str, Mapping[str, Any]]
@@ -71,7 +89,12 @@ class GameConfig:
     """
 
     button_targets: Mapping[str, Any]
-    """Named in-game click targets, as fractions of the frame."""
+    """Named in-game click targets, as fractions of the window client area.
+
+    The same space :attr:`roi` is in: the content box of a capture *is* the
+    window client area as the canvas received it, so a number measured for one
+    reads correctly for the other.
+    """
 
     event_rules: Sequence[EventRule]
     """Extra log-event rules this game declares, already compiled.

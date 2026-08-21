@@ -18,6 +18,10 @@ export const queryKeys = Object.freeze({
     all: ["roi"],
     regions: () => [...queryKeys.roi.all, "regions"],
   }),
+  grid: Object.freeze({
+    all: ["grid"],
+    layout: () => [...queryKeys.grid.all, "layout"],
+  }),
   eventCapture: Object.freeze({
     all: ["event-capture"],
     status: () => [...queryKeys.eventCapture.all, "status"],

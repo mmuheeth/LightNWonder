@@ -1,4 +1,5 @@
 import { EventCapturePanel } from "@/features/event-capture/event-capture-panel";
+import { GridPanel } from "@/features/grid/grid-panel";
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
 import { RoiPanel } from "@/features/roi/roi-panel";
@@ -22,6 +23,7 @@ export function DashboardPage() {
         <IDeckPanel />
         <EventCapturePanel />
         <RoiPanel />
+        <GridPanel />
       </div>
     </div>
   );

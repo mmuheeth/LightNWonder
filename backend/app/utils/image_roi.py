@@ -1,17 +1,19 @@
 """Crop a named region out of a captured frame.
 
-A game config declares its regions as fractions of the frame --
-``"cash_meter": [0.229264, 0.844468, 0.762349, 0.884554]`` is left, top, right
-and bottom, each in ``0.0..1.0``. Fractions rather than pixels is the whole
-point: the same four numbers describe the same part of the picture whether OBS
-wrote 1280x720 or 3840x2160, so a change of capture size costs nobody a
-re-measurement.
+A game config declares its regions as four fractions --
+``"cash_meter": [0.0, 0.844468, 1.0, 0.884554]`` is left, top, right and bottom,
+each in ``0.0..1.0``. Fractions rather than pixels is the whole point: the same
+four numbers describe the same part of the picture whether OBS wrote 1280x720 or
+3840x2160, so a change of capture size costs nobody a re-measurement.
 
-The fractions are of the **whole frame**, letterboxing included. A window
-capture of a portrait game inside a landscape canvas has black down both sides,
-and a region is measured against the picture that was written rather than
-against the part of it the game fills -- the frame is the only rectangle both
-the person measuring the region and the code cropping it can see.
+The fractions are of a rectangle, and **which** rectangle is the caller's to
+choose. :func:`crop` and :meth:`Roi.to_box` take the whole image, which is right
+when the image is all picture. A window capture of a portrait game inside a
+landscape canvas is not: it has black down both sides whose width depends on the
+shape of the game window at that moment, so a region measured against the canvas
+comes unaimed the moment the window is resized. For that,
+:meth:`Roi.to_box_within` resolves the same four numbers against the part of the
+frame the game fills -- :mod:`app.utils.letterbox` is what finds it.
 
 Nothing here knows about game configs or capture runs. It takes an image and
 four fractions and hands back the pixels inside them; where the fractions came
@@ -36,7 +38,10 @@ class RoiError(ValueError):
 
 @dataclass(frozen=True)
 class Roi:
-    """One rectangle, as fractions of the frame it will be cropped from.
+    """One rectangle, as fractions of the rectangle it will be resolved against.
+
+    Usually the frame, via :meth:`to_box`; a letterboxed capture resolves against
+    the part of the frame the game fills instead, via :meth:`to_box_within`.
 
     Edges are half-open in the same sense as Pillow's own box: ``right`` and
     ``bottom`` are one past the last pixel kept.
@@ -114,14 +119,50 @@ class Roi:
     def to_box(self, width: int, height: int) -> tuple[int, int, int, int]:
         """Pixel box for a frame of this size, in the order Pillow wants it.
 
+        The fractions are of the whole frame. Where the frame is a canvas with
+        the picture letterboxed inside it, :meth:`to_box_within` is the one to
+        use instead.
+
         Raises:
             RoiError: if the frame has no area to take a region from.
         """
         if width <= 0 or height <= 0:
             raise RoiError("the frame must have a non-zero width and height")
+        return self.to_box_within((0, 0, width, height))
+
+    def to_box_within(
+        self, within: tuple[int, int, int, int]
+    ) -> tuple[int, int, int, int]:
+        """Pixel box for a rectangle *inside* a frame, in the frame's own pixels.
+
+        The fractions are resolved against ``within`` and the result is offset
+        back to the frame, so the caller crops the frame it already has rather
+        than cropping twice. A region at ``0.0`` starts at the rectangle's left
+        edge and one at ``1.0`` ends at its right, whatever the frame around it.
+
+        This is what makes a region survive the game window being resized: the
+        canvas OBS writes never changes size, but the part of it the game fills
+        does, and a region is aimed at the game.
+
+        Args:
+            within: ``(left, top, right, bottom)`` in pixels of the frame --
+                :attr:`app.utils.letterbox.ContentBox.box`, in practice.
+
+        Raises:
+            RoiError: if that rectangle has no area to take a region from.
+        """
+        left_edge, top_edge, right_edge, bottom_edge = within
+        width, height = right_edge - left_edge, bottom_edge - top_edge
+        if width <= 0 or height <= 0:
+            raise RoiError("the content box must have a non-zero width and height")
         left, right = _edges(self.left, self.right, width)
         top, bottom = _edges(self.top, self.bottom, height)
-        return left, top, right, bottom
+        return (
+            left_edge + left,
+            top_edge + top,
+            left_edge + right,
+            top_edge + bottom,
+        )
 
 
 def _four_numbers(values: Any, *, where: str) -> tuple[float, float, float, float]:

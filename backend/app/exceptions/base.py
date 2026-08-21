@@ -300,3 +300,24 @@ class RoiExtractFailedError(AppException):
     status_code = HTTPStatus.BAD_GATEWAY
     error_code = "ROI_EXTRACT_FAILED"
     message = "The region could not be extracted from the frame"
+
+
+# --- Reel grid ------------------------------------------------------------
+# Only two of its own, because the grid splitter reads the same frame off the
+# same directory as ROI does and raises ROI's own errors for it -- a missing
+# screenshot is a missing screenshot, and duplicating the code for it would mean
+# two messages to keep pointing at the OBS panel. What is new here is a game
+# that does not describe a reel grid at all, and a split that could not be
+# written to disk.
+
+
+class GridNotConfiguredError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "GRID_NOT_CONFIGURED"
+    message = "The active game does not describe a reel grid"
+
+
+class GridSplitFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "GRID_SPLIT_FAILED"
+    message = "The reel grid could not be split out of the frame"

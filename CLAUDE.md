@@ -14,8 +14,9 @@ they talk to processes, windows and log files on the developer's own PC, not to 
 network service.
 
 The dashboard covers the first three, plus `features/games` for choosing the
-active game and `features/roi` for cropping a configured region out of the
-latest screenshot. `game-input` and `ocr` are backend-only so far — endpoints and
+active game, `features/roi` for cropping a configured region out of the latest
+screenshot and `features/grid` for splitting that screenshot's reels into a
+matrix of tiles. `game-input` and `ocr` are backend-only so far — endpoints and
 services with no `src/features/` slice — so don't go hunting for their UI.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
@@ -91,9 +92,9 @@ namespace, not the functions: `from app.services import obs as obs_service`. Onl
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
 inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`,
-`EventCaptureSettings`, `GameInputSettings` and `OcrSettings` (each in its own
-`app/config/*.py`) while env var names stay flat — a new integration is a new
-mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
+`EventCaptureSettings`, `GameInputSettings`, `OcrSettings` and `FrameSettings`
+(each in its own `app/config/*.py`) while env var names stay flat — a new
+integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
 override behaviour with
 `monkeypatch.setattr(settings, "IDECK_GAME_CONFIG_DIR", tmp_path)` rather than
@@ -101,7 +102,7 @@ by building new settings. `app/core/config.py` is a re-export shim.
 
 **Per-game data is separate from env config.** `app/config/game_config/games/<Game>.json`
 ships with the code and carries the process name, log path, i-deck aliases,
-OBS window source, ROIs, click targets and event rules.
+OBS window source, ROIs, reel bounds, click targets and event rules.
 `active_game.json` holds the current selection and is rewritten atomically by
 `PUT /api/games/active` — no restart, no `.env` edit. Adding a game is adding a
 JSON file.
@@ -112,23 +113,74 @@ log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
 `log_tail.py` (rotation-aware cursor), `win32.py` (the only ctypes),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
 `image_roi.py` (crops a named region out of a frame),
+`letterbox.py` (finds the part of a frame the game fills),
+`reel_grid.py` (reads the `reel_bounds` block into positioned tiles),
 `click_target.py` (reads the `button_targets` block),
 `paths.py` (resolves untrusted filenames inside a root — use it for anything
 that came off the wire).
 
-**Regions and click targets are fractions of the frame, never pixels.** `roi`
-crops *out* of a captured image and `button_targets` aims a click *into* a window,
-but both are `0.0..1.0` against the **whole frame, letterboxing included** — so a
-resized simulator or a different capture resolution needs no re-measurement. Keep
-that convention when adding either.
+**Regions and click targets are fractions of the game window, never pixels.**
+`roi` crops *out* of a captured image and `button_targets` aims a click *into* a
+window, but both are `0.0..1.0` against the rectangle **the game itself fills** —
+so neither a different capture resolution nor a resized simulator needs a
+re-measurement. Keep that convention when adding either.
 
-**`services/roi.py` and `services/ocr.py` are the same joinery, one step apart.**
-Both resolve the active game's `roi` block against a frame; ROI returns the crop
-and OCR hands it to Tesseract. Keep them apart — checking that a region is aimed
+For a click target that rectangle is the window client area, which `win32.py`
+asks Windows for. For a region it is the **content box**: OBS writes every frame
+at its canvas size and fits the window capture inside it, so a portrait game in a
+landscape canvas arrives with black bars whose width is a property of the
+window's shape at that moment. `utils/letterbox.py` finds the box by trimming
+near-black borders, `services/roi.py` owns the question for ROI, OCR and grid
+alike (`content_box()` / `resolve_box()`), and `Roi.to_box_within()` is what
+resolves fractions against it. Three things are deliberate: detection refuses to
+believe a box under a quarter of the frame or a frame with nothing above the
+threshold (both come back as the whole frame, because a fade to black is a normal
+thing for a screenshot to catch), the box is found once per frame rather than
+once per region, and every response reports it beside the region's own box —
+a crop of the wrong thing is either a badly measured region or a misdetected box,
+and only the pair says which. `FRAME_LETTERBOX_TRIM=false` reverts to canvas
+fractions. **Region values in a game config are therefore fractions of the game,
+not of the canvas** — measuring one off a letterboxed screenshot means
+subtracting the bars first.
+
+**`reel_bounds` is the one exception, deliberately.** Its `col_bounds` and
+`row_bounds` are fractions of the **`roi.reels` crop**, not of the game — which
+is why `row_bounds` reads as thirds and `col_bounds` runs `0.0`..`1.0`. That is
+what keeps the two independent: the reel window moving on screen is a change to
+`roi.reels` alone, and a sixth reel a change to `col_bounds` alone. Don't
+"correct" it to frame fractions. Its optional `inset` is a third rectangle
+again: a fraction of **each tile**, trimmed off every edge, which is what removes
+the frame a game draws inside a reel to highlight a win. A request may override
+it for one split — config errors are 500, request errors 400 — and a trim that
+would leave no tile is rejected rather than clamped.
+
+**`services/roi.py`, `services/ocr.py` and `services/grid.py` are the same
+joinery, one step apart each.** All three resolve the active game's `roi` block
+against the content box of a frame; ROI returns the crop, OCR hands it to
+Tesseract, and grid divides it by `reel_bounds`. Keep them apart — checking that a region is aimed
 correctly must not require an engine install. ROI reads the newest file in
 `settings.obs_dashboard_screenshot_dir` and never asks OBS for a frame, so the
-same crop extracted twice is the same picture. It is also the one service holding
-no state, so it has no `reset()` and nothing in `conftest.py`.
+same crop extracted twice is the same picture, and **`roi.py` owns that question
+for everyone**: its `resolve_frame`/`open_frame`/`content_box`/`resolve_box`/
+`describe`/`describe_path`/`encode_png` are public and `grid.py` and `ocr.py`
+call them rather than re-deriving "the latest screenshot" or re-reading a
+letterboxed frame. ROI and grid are also the two services holding no state, so
+neither has a `reset()` nor anything in `conftest.py`.
+
+**Every tile is the same pixel size, deliberately.** `ReelGrid.place()` rounds
+each tile's *position* on its own and then gives them all one shared width and
+height (the smallest that fits every span) — because rounding both edges of every
+tile independently varies them by a pixel, and a grid of unequal tiles cannot be
+stacked or fed to anything expecting one input size. Don't "simplify" it back to
+`tile.roi.to_box()` per tile.
+
+**Grid always writes its output; ROI only writes the cash meter.** A split goes
+to `obs-captured-files/grid/<frame stem>/` — `reels.png` plus `tiles/r1c1.png`,
+1-indexed and row-major — one directory per source frame, so re-splitting a frame
+replaces its own record. Stale tiles from a differently-shaped grid are cleared,
+and only names matching a tile's own pattern are touched. ROI's own
+`_SAVED_REGION` writes `cash-meter/<frame>.png` and every other region comes back
+as a data URI only.
 
 **Request correlation.** `RequestContextMiddleware` is registered last, so it
 runs outermost. The id lives both in a `ContextVar` (for loggers and envelope

@@ -138,6 +138,9 @@ def load_game_config(path: Path) -> GameConfig:
         ideck_panel=panel,
         log_path=Path(log) if log else None,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
+        reel_bounds=freeze_mapping(
+            _object(document.get("reel_bounds"), where=f"'reel_bounds' in {path}")
+        ),
         ocr=freeze_mapping(_ocr(document.get("ocr"), path=path)),
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")

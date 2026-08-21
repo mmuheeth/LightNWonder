@@ -132,7 +132,10 @@ class OcrRegion(BaseModel):
     roi: list[float] = Field(
         min_length=4,
         max_length=4,
-        description="[left, top, right, bottom] as fractions of the frame.",
+        description=(
+            "[left, top, right, bottom] as fractions of the part of the frame "
+            "the game fills, not of the whole canvas."
+        ),
     )
     options: OcrOptions = Field(
         description="Effective options: the environment defaults with this "
@@ -270,6 +273,21 @@ class OcrReadResult(BaseModel):
     file_name: str | None = Field(default=None, description="Frame that was read.")
     frame_width: int = Field(ge=1, description="Width of the frame in pixels.")
     frame_height: int = Field(ge=1, description="Height of the frame in pixels.")
+    content_box: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Pixel box [left, top, right, bottom] of the part of the frame the "
+            "game filled, which every region's fractions were resolved against. "
+            "The whole frame when the capture had no letterboxing to trim."
+        ),
+    )
+    letterboxed: bool = Field(
+        default=False,
+        description=(
+            "Whether any of the frame was letterbox rather than game. False "
+            "means the regions resolved exactly as fractions of the canvas."
+        ),
+    )
     readings: list[OcrReading] = Field(
         description="One entry per requested region, in the order asked for."
     )

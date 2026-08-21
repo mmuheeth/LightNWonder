@@ -1,7 +1,7 @@
 """Read the ``button_targets`` block of a game config.
 
 A game config names the on-screen buttons a person would touch on the cabinet
-glass, as fractions of the frame::
+glass, as fractions of the window client area::
 
     "button_targets": {
       "take_win": [0.0713, 0.9724],
@@ -12,8 +12,10 @@ Fractions rather than pixels for the same reason :mod:`app.utils.image_roi` uses
 them: the two numbers describe the same spot on the glass whether the simulator
 window is 518x1033 or twice that, so a resize costs nobody a re-measurement. The
 sibling module crops a region *out* of a frame; this one aims a click *into* a
-window, and the fractions mean the same thing in both -- a position in the whole
-rectangle, letterboxing included.
+window, and the fractions mean the same thing in both -- a position in the
+rectangle the game fills. For a click that rectangle is the client area Windows
+reports; for a region it is the same area as OBS's canvas received it, which
+:mod:`app.utils.letterbox` finds by trimming the bars round it.
 
 A target may also say how a click on it can be proven to have landed::
 

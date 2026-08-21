@@ -49,8 +49,10 @@ const CROP = envelope(
     region: "cash_meter",
     roi: [0.229264, 0.844468, 0.762349, 0.884554],
     source: FRAME,
-    box: [293, 608, 976, 637],
-    width: 683,
+    box: [526, 608, 750, 637],
+    content_box: [429, 0, 850, 720],
+    letterboxed: true,
+    width: 224,
     height: 29,
     image_data: PIXEL,
   },
@@ -101,7 +103,11 @@ describe("RoiPanel", () => {
     });
     expect(image).toHaveAttribute("src", PIXEL);
     // The pixel box is shown beside it: what to read when a crop looks off.
-    expect(screen.getByText(/293, 608, 976, 637/)).toBeInTheDocument();
+    expect(screen.getByText(/526, 608, 750, 637/)).toBeInTheDocument();
+    // And the game's own rectangle, which is what the fractions resolved
+    // against -- the number that says whether a misplaced crop is the region's
+    // fault or the detection's.
+    expect(screen.getByText(/421×720 at \[429, 0, 850, 720\]/)).toBeInTheDocument();
 
     const post = request.mock.calls.find(([config]) => config.method === "POST");
     // No file_name, so the backend picks the newest frame.

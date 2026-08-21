@@ -13,6 +13,7 @@ from app.api.endpoints import (
     event_capture,
     game_input,
     games,
+    grid,
     ideck,
     obs,
     ocr,
@@ -30,3 +31,4 @@ api_router.include_router(
 api_router.include_router(game_input.router, prefix="/game-input", tags=["game-input"])
 api_router.include_router(ocr.router, prefix="/ocr", tags=["ocr"])
 api_router.include_router(roi.router, prefix="/roi", tags=["roi"])
+api_router.include_router(grid.router, prefix="/grid", tags=["grid"])

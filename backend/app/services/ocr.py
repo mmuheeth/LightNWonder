@@ -31,6 +31,12 @@ name is wrong is a rejected request, but a region the engine choked on comes bac
 beside the others with its ``error`` set. A 502 for the whole read would say
 nothing about the three that worked.
 
+**A region is aimed at the game, not at the canvas.** Where a region lands on a
+frame is :mod:`app.services.roi`'s question, and the answer accounts for the
+black bars a window capture arrives with -- so a resized simulator does not need
+every region re-measured. The content box is found once per frame rather than
+once per region, and reported on the result beside the frame size.
+
 State is module-level, like the other services here, and callers use the
 namespace rather than the functions::
 
@@ -79,7 +85,8 @@ from app.schemas.ocr import (
 from app.schemas.ocr import OcrOptions as OcrOptionsPayload
 from app.services import event_capture as capture_service
 from app.services import obs as obs_service
-from app.utils import image_roi, ocr
+from app.services import roi as roi_service
+from app.utils import image_roi, letterbox, ocr
 
 logger = get_logger("ocr")
 
@@ -349,6 +356,7 @@ def _read_region(
     region: str,
     regions: Mapping[str, Any],
     *,
+    content: letterbox.ContentBox,
     executable: Path,
     options: ocr.OcrOptions,
     include_crop: bool,
@@ -357,12 +365,16 @@ def _read_region(
 
     Runs in a worker thread: the engine is a subprocess and Pillow releases
     nothing while it works.
+
+    ``content`` is the part of the frame the game fills, found once by the caller
+    rather than per region -- every region of one frame is aimed at the same
+    rectangle, and finding it is a pass over the pixels.
     """
     started = time.perf_counter()
     reading = OcrReading(region=region, options=_as_payload(options))
     try:
         roi = image_roi.named_roi(regions, region)
-        box = roi.to_box(frame.width, frame.height)
+        box = roi.to_box_within(content.box)
         crop = frame.crop(box)
         result = ocr.read_image(crop, executable=executable, options=options)
     except image_roi.RoiError as exc:
@@ -537,12 +549,17 @@ async def read(request: OcrReadRequest) -> OcrReadResult:
         source = OcrSource.LIVE
         frame = await _live_frame()
 
+    # Once for the frame, not once per region: the bars round a window capture
+    # are a property of the shot, and every region is measured against what is
+    # inside them.
+    content = await asyncio.to_thread(roi_service.content_box, frame)
     readings = [
         await asyncio.to_thread(
             _read_region,
             frame,
             region,
             config.roi,
+            content=content,
             executable=executable,
             options=options[region],
             include_crop=request.include_crop,
@@ -562,5 +579,7 @@ async def read(request: OcrReadRequest) -> OcrReadResult:
         file_name=request.file_name,
         frame_width=frame.width,
         frame_height=frame.height,
+        content_box=list(content.box),
+        letterboxed=content.letterboxed,
         readings=readings,
     )

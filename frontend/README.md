@@ -61,7 +61,8 @@ src/
 │   ├── games/              active game catalog and selector
 │   ├── event-capture/      start/stop log-driven capture, and read runs back
 │   ├── obs/                OBS Studio control: connect, screenshot, record
-│   └── roi/                crops a configured region out of the latest shot
+│   ├── roi/                crops a configured region out of the latest shot
+│   └── grid/               splits the reels of the latest shot into tiles
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -97,7 +98,20 @@ read from `mutation.data`, and no client state beyond which option the dropdown
 is on. It also shows the one case for reaching across features -- taking a
 screenshot changes which frame the ROI panel would extract from, so
 `useTakeScreenshot` invalidates `queryKeys.roi.all` rather than the ROI query
-polling for a file it cannot see.
+polling for a file it cannot see. `features/grid/` reaches across the same way,
+and `useTakeScreenshot` invalidates both subtrees.
+
+`features/grid/` is the same read-then-act shape, and its one piece of client
+state exists for a loop rather than for a preference: the trim override is typed
+in, tried against a frame that does not move, and then written into the game
+config, so it is held as the raw string and sent only when it is not blank. It
+also shows what to do when the server already knows the layout: the tiles arrive row-major carrying their own
+`row`/`column`, so the panel sets `gridTemplateColumns` from the response's
+`columns` instead of chunking the list itself -- a game with six reels needs
+nothing changed in the component. It also shows the other half of the ROI panel's
+disabled-with-a-reason pattern: a game that declares no reels comes back as a 200
+with `error` set, so the card says why Split is refused rather than rendering an
+error alert for a request that succeeded.
 
 ## Talking to the API
 

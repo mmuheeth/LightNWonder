@@ -13,6 +13,12 @@ even installed.
 Screenshot button writes into the configured screenshots directory, so "extract
 the cash meter" means "off the shot I just took" without anyone naming a file.
 Naming one is still allowed, for going back to an older frame.
+
+**Two rectangles come back, not one.** ``box`` is where the region landed and
+``content_box`` is the part of the frame the game filled, which is what the
+region's fractions were resolved against. Reported apart because they answer
+different questions: a crop of the wrong thing is either a badly measured region
+or a misdetected content box, and only the pair says which.
 """
 
 from __future__ import annotations
@@ -41,7 +47,11 @@ class RoiRegionSummary(BaseModel):
     roi: list[float] = Field(
         min_length=4,
         max_length=4,
-        description="[left, top, right, bottom] as fractions of the frame.",
+        description=(
+            "[left, top, right, bottom] as fractions of the part of the frame "
+            "the game fills -- not of the whole canvas, which is letterboxed "
+            "when the game window is not the canvas's shape."
+        ),
     )
     error: str | None = Field(
         default=None,
@@ -116,6 +126,22 @@ class RoiExtractResult(BaseModel):
         description=(
             "Pixel box [left, top, right, bottom] the fractions resolved to on "
             "this frame -- what to check when a crop looks off by a few pixels."
+        ),
+    )
+    content_box: list[int] = Field(
+        min_length=4,
+        max_length=4,
+        description=(
+            "Pixel box [left, top, right, bottom] of the part of the frame the "
+            "game filled, which the region's fractions were resolved against. "
+            "The whole frame when the capture had no letterboxing to trim."
+        ),
+    )
+    letterboxed: bool = Field(
+        description=(
+            "Whether any of the frame was letterbox rather than game. False "
+            "means the content box is the whole frame, so the region resolved "
+            "exactly as fractions of the canvas."
         ),
     )
     width: int = Field(ge=1, description="Crop width in pixels.")

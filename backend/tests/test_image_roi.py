@@ -8,6 +8,12 @@ and 4K, not only against synthetic images.
 The second is that a bad region is rejected where it is read, with a message
 naming the region, rather than surfacing later as a blank crop nobody can trace
 back to a config file.
+
+The third is the one the frames themselves force: a window capture arrives
+letterboxed inside the canvas, so the same fractions have to be resolvable
+against a rectangle *inside* the frame and come back in the frame's own pixels.
+That is ``to_box_within``, and what it buys is a region that survives the game
+window being resized rather than only a change of capture resolution.
 """
 
 from __future__ import annotations
@@ -20,7 +26,9 @@ from PIL import Image
 
 from app.utils.image_roi import Roi, RoiError, crop, crop_file, named_roi
 
-# The reference region: FortuneOx's cash meter, as its config declares it.
+# The reference region: a wide, short strip, which is the shape a cash meter is.
+# Not read from a config -- the shipped ones are fractions of the game's part of
+# the frame, and this file is about resolving fractions against any rectangle.
 CASH_METER = [0.229264, 0.844468, 0.762349, 0.884554]
 
 GAME_CONFIGS = Path(__file__).resolve().parents[1] / "app/config/game_config/games"
@@ -177,6 +185,52 @@ def test_the_same_content_is_cropped_from_a_rescaled_frame() -> None:
     assert from_large.getcolors() == [(600 * 60, (255, 0, 0))]
 
 
+# --- Resolving inside a letterboxed frame -----------------------------------
+
+
+def test_to_box_within_resolves_against_the_rectangle_not_the_frame() -> None:
+    # A 400-wide frame with the picture in the middle 200 of it.
+    region = Roi(left=0.0, top=0.0, right=0.5, bottom=1.0)
+
+    assert region.to_box_within((100, 0, 300, 200)) == (100, 0, 200, 200)
+
+
+def test_to_box_within_returns_pixels_of_the_frame() -> None:
+    """The offset is added back, so the caller crops the frame it already has."""
+    region = Roi(left=0.5, top=0.5, right=1.0, bottom=1.0)
+
+    assert region.to_box_within((40, 20, 140, 120)) == (90, 70, 140, 120)
+
+
+def test_to_box_within_matches_to_box_when_the_rectangle_is_the_frame() -> None:
+    region = Roi.from_sequence(CASH_METER)
+
+    assert region.to_box_within((0, 0, 1280, 720)) == region.to_box(1280, 720)
+
+
+def test_the_same_fractions_follow_a_rectangle_that_moved_and_grew() -> None:
+    """The promise the content box exists for: one region, any window size."""
+    region = Roi(left=0.25, top=0.0, right=0.75, bottom=1.0)
+
+    narrow = region.to_box_within((429, 0, 850, 720))
+    wide = region.to_box_within((318, 0, 961, 720))
+
+    # Centred in both, and half the width of each, rather than fixed pixels.
+    assert narrow == (534, 0, 745, 720)
+    assert wide == (479, 0, 800, 720)
+
+
+@pytest.mark.parametrize(
+    "within",
+    [(0, 0, 0, 100), (0, 0, 100, 0), (100, 0, 50, 100), (0, 100, 100, 50)],
+)
+def test_to_box_within_rejects_a_rectangle_with_no_area(
+    within: tuple[int, int, int, int],
+) -> None:
+    with pytest.raises(RoiError, match="non-zero width and height"):
+        Roi.from_sequence(CASH_METER).to_box_within(within)
+
+
 # --- Cropping ---------------------------------------------------------------
 
 
@@ -202,7 +256,9 @@ def test_crop_takes_the_fractions_straight_from_a_config() -> None:
 
     cropped = crop(frame, named_roi(config["roi"], "cash_meter"))
 
-    assert cropped.size == (683, 29)
+    # The shipped meter spans the game's full width, so against a frame that is
+    # all game it is the frame's full width.
+    assert cropped.size == (1280, 29)
 
 
 def test_crop_file_reads_writes_and_closes(tmp_path: Path) -> None:
