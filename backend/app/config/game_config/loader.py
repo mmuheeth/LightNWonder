@@ -187,6 +187,9 @@ def load_game_config(path: Path) -> GameConfig:
         reel_bounds=freeze_mapping(
             _object(document.get("reel_bounds"), where=f"'reel_bounds' in {path}")
         ),
+        paylines=freeze_mapping(
+            _object(document.get("paylines"), where=f"'paylines' in {path}")
+        ),
         ocr=freeze_mapping(_ocr(document.get("ocr"), path=path)),
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")

@@ -79,6 +79,20 @@ class GameConfig:
     :meth:`app.utils.reel_grid.ReelGrid.from_mapping`.
     """
 
+    paylines: Mapping[str, Any]
+    """Winning patterns, keyed by bet configuration then by line number.
+
+    ``{"5": {"1": [[2,1],[2,2],...]}}``: the outer key is how many lines the
+    cabinet is being played for, the inner one is the line's own number, and a
+    position is ``[row, column]`` 1-indexed against :attr:`reel_bounds` -- the
+    same numbering a tile's name is written in.
+
+    Passed through unvalidated beyond being an object, like :attr:`roi` and
+    :attr:`reel_bounds` above. The shape is enforced where a set is actually
+    evaluated, by :func:`app.utils.paylines.read_set`, which is where a line
+    that backtracks a reel becomes a sentence naming the line and the position.
+    """
+
     ocr: Mapping[str, Mapping[str, Any]]
     """Per-region OCR option overrides, keyed by the region name in :attr:`roi`.
 

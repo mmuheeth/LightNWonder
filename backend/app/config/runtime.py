@@ -7,7 +7,8 @@ environment is parsed exactly once per process.
 Integration-specific settings are defined in :mod:`app.config.obs`,
 :mod:`app.config.ideck`, :mod:`app.config.event_capture`,
 :mod:`app.config.game_input`, :mod:`app.config.ocr`,
-:mod:`app.config.frame` and :mod:`app.config.agents`, then composed here.
+:mod:`app.config.frame`, :mod:`app.config.paylines` and
+:mod:`app.config.agents`, then composed here.
 Their environment names stay flat for backwards compatibility with existing
 ``.env`` files.
 """
@@ -27,6 +28,7 @@ from app.config.game_input import GameInputSettings
 from app.config.ideck import PACKAGE_ROOT, IDeckSettings
 from app.config.obs import ObsSettings
 from app.config.ocr import OcrSettings
+from app.config.paylines import PaylineSettings
 
 Environment = Literal["local", "development", "staging", "production"]
 
@@ -52,6 +54,7 @@ class Settings(
     GameInputSettings,
     OcrSettings,
     FrameSettings,
+    PaylineSettings,
 ):
     """Complete runtime configuration for the API."""
 

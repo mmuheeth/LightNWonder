@@ -62,7 +62,8 @@ src/
 │   ├── event-capture/      start/stop log-driven capture, and read runs back
 │   ├── obs/                OBS Studio control: connect, screenshot, record
 │   ├── roi/                crops a configured region out of the latest shot
-│   └── grid/               splits the reels of the latest shot into tiles
+│   ├── grid/               splits the reels of the latest shot into tiles
+│   └── paylines/           checks a split's tiles against the patterns that pay
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -112,6 +113,43 @@ nothing changed in the component. It also shows the other half of the ROI panel'
 disabled-with-a-reason pattern: a game that declares no reels comes back as a 200
 with `error` set, so the card says why Split is refused rather than rendering an
 error alert for a request that succeeded.
+
+`features/paylines/` is the full-width panel, and the slice to copy when a
+result has to be *checkable* rather than merely displayed. Three things in it are
+deliberate:
+
+- **The evidence is shown next to the verdict, as boxes rather than a
+  sentence.** A payline that "pays 4" reads identically whether four symbols
+  really line up or the match threshold is too low, so a paying line gets its
+  own `PaylineResultCard` -- colour, name, pay count -- instead of being one
+  clause in `result.summary`'s comma list, and the combined overlay, the run's
+  whole score distribution and every adjacent comparison sit behind a dropdown
+  each rather than in running text.
+- **Per-line detail is a native `<details>` each, with its own tracking
+  picture inside.** No accordion primitive is vendored for the dropdown, because
+  that element already is this behaviour with the keyboard and screen-reader
+  support written; forty lines of four comparisons is not something to read all
+  at once, so all of them start closed and open independently. Opening one shows
+  `line.image_data` -- that one line drawn over the reels, its confirmed tiles
+  ringed green and, on this picture only, the tile at `line.break_position`
+  ringed red. The combined overlay above never shows red: several lines share
+  it, and "here is where this one broke" is a question about one of them. A line
+  that pays nothing still gets its own picture, because "how far did it get" is
+  the more interesting question for exactly those lines. Note for tests: a
+  paying line's name is shown twice -- its own box and its dropdown's header --
+  so a bare `getByText("Line 1")` throws on ambiguity; scope to the `<summary>`
+  to find the dropdown specifically. And a closed `<details>` keeps its content
+  in the DOM, so assert with `toBeVisible()` rather than `toBeInTheDocument()`.
+- **A line's colour comes from the server.** The swatch beside a line and the
+  stroke drawn in both the combined overlay and that line's own picture have to
+  be the same decision, and the only way to guarantee that is for the backend to
+  own the palette and report each line's colour on the result -- so nothing in
+  this directory picks a colour.
+
+Its one piece of client state is the threshold override, held as a raw string for
+the same reason the grid panel holds its trim that way: it is a number to be found
+by trying it against a fixed split and reading `stats.matched_min` /
+`stats.rejected_max` on the result.
 
 ## Talking to the API
 

@@ -129,6 +129,7 @@ backend/app/
 backend/obs-captured-files/    OBS screenshots and recordings (gitignored)
 ├── event-capture/      one folder per capture run: images + run.json
 └── grid/               one folder per split frame: reels.png + tiles/r1c1.png…
+    └── paylines/       the annotated reels, one picture per line set checked
 
 frontend/src/
 ├── features/       one directory per feature (api + hooks + components)
@@ -297,6 +298,55 @@ fifteen tiles are the input to whatever looks at symbols next rather than
 something to glance at. See
 [backend/README.md](backend/README.md#splitting-the-reels-into-a-grid) for the
 bounds format, the output layout and the failure codes.
+
+## Payline check
+
+The dashboard's **Payline check** card takes a split the Reel grid card already
+wrote and says which of the game's winning patterns pay on it:
+
+```
+GET  /api/paylines/layout    the line sets the game declares, and the split in hand
+POST /api/paylines/check     evaluate one set against one split, and draw the result
+```
+
+The patterns come from a `paylines` block in the selected game's config, keyed by
+bet configuration — a cabinet playable for 5, 20 or 40 lines ships all three, and
+one set is checked at a time. A position is `[row, column]`, 1-indexed, in the
+same numbering the tiles are named in, so `[2,1]` is `r2c1`.
+
+**Two tiles count as the same symbol when their cosine similarity clears a
+threshold.** Cosine and not an exact match because a slot game glows, pulses and
+scales its symbols continuously, so the same pot of gold on two reels is never
+the same pixels — treating brightness as vector length rather than direction is
+exactly the invariance wanted.
+
+**That threshold is higher than it sounds.** Pixel channels are non-negative, so
+the measure does not start at zero for unrelated pictures: on FortuneOx's own
+captures two *different* symbols score 0.60–0.89 and two crops of the *same*
+symbol score 0.967 and up. The separation is wide and clean but it sits well
+above 0.7, so a generous-sounding cut calls everything a match. Every check
+reports the distribution it measured — `matched_min` and `rejected_max` are the
+two numbers a working cut sits between — so tune `PAYLINE_MATCH_THRESHOLD`
+against a fixed split rather than by intuition.
+
+**A line is read left to right and stops at the first pair that differs**, so
+`pays` is the length of the *leading* run: three matching reels behind a break
+pay nothing, and a line whose first two reels differ pays 0. Every adjacent pair
+is scored anyway and reported with two flags — whether it matched, and whether
+the left-to-right read got that far — because a real match on a line that pays
+nothing is exactly the case a single flag would misrepresent.
+
+The dashboard shows every paying line as its own box rather than a
+comma-separated sentence, the run's statistics, and the per-line evidence behind
+a dropdown each — which is where each line's own tracking picture is, paying or
+not, with a green ring on every confirmed tile and (on that picture only) a red
+ring on the tile where its run stopped. A combined picture of every *paying*
+line is also written to `obs-captured-files/grid/<frame>/paylines/<set>.png`,
+beside the tiles it was computed from — green rings, no red, since that picture
+is several lines at once. A pay count cannot be checked by reading it, which is
+why a picture comes back with every line. See
+[backend/README.md](backend/README.md#checking-the-paylines) for the block
+format, the threshold, and the failure codes.
 
 ## Notes
 

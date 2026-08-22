@@ -65,6 +65,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PIL import Image
@@ -77,6 +80,7 @@ from app.exceptions.base import (
     GameConfigInvalidError,
     GridNotConfiguredError,
     GridSplitFailedError,
+    PaylineSourceNotFoundError,
     RoiExtractFailedError,
 )
 from app.schemas.grid import (
@@ -87,7 +91,7 @@ from app.schemas.grid import (
     GridTile,
 )
 from app.services import roi as roi_service
-from app.utils import image_roi, reel_grid
+from app.utils import image_roi, paths, reel_grid
 
 logger = get_logger("grid")
 
@@ -103,8 +107,14 @@ _CROP_FILE = f"{REELS_REGION}.png"
 _TILES_DIR = "tiles"
 
 # What a tile file is called. Used to clear stale tiles without touching
-# anything else that may be in the directory.
+# anything else that may be in the directory, and to pick them out again when a
+# split is read back.
 _TILE_NAME = re.compile(r"^r\d+c\d+\.png$", re.IGNORECASE)
+
+# The same name without its suffix, with the numbers captured: reading a split
+# back has to get the matrix out of the filenames, since they are the only record
+# of the shape that was split.
+_TILE_POSITION = re.compile(r"r(\d+)c(\d+)", re.IGNORECASE)
 
 
 # --- the active game ------------------------------------------------------
@@ -263,6 +273,187 @@ def _prepare(source: Path, tiles: list[reel_grid.PlacedTile]) -> tuple[Path, Pat
         raise GridSplitFailedError(f"{tiles_dir} could not be created: {exc}") from exc
     _clear_stale_tiles(tiles_dir, {tile.file_name for tile in tiles})
     return directory, tiles_dir
+
+
+# --- reading a split back -------------------------------------------------
+# The written split is the deliverable, so reading one back belongs here rather
+# than in whatever reads it next -- this module is what named the directory, the
+# crop and the tiles, and a second module spelling those three the same way is a
+# second module to change when one of them moves. The same reason
+# :mod:`app.services.roi` owns "the latest screenshot" for the grid and for OCR.
+
+
+@dataclass(frozen=True)
+class SplitOnDisk:
+    """One written split, read back off disk.
+
+    The shape comes from the tile filenames rather than from the game config on
+    purpose: this describes what *was* split, which is the thing a later check is
+    actually looking at, and whether that still matches what the game declares is
+    the caller's question to ask.
+    """
+
+    directory: Path
+    """The split's own directory, named after the frame it came from."""
+
+    name: str
+    """Its directory name, which is the source frame's stem."""
+
+    written_at: datetime
+    """When the crop was written, which is when the split was made."""
+
+    crop: Image.Image
+    """The whole reels crop -- the picture the tiles were cut out of."""
+
+    tiles: Mapping[str, Image.Image]
+    """Every tile, keyed by its position name (``r1c1``)."""
+
+    rows: int
+    columns: int
+    tile_width: int
+    tile_height: int
+
+
+def _split_root() -> Path:
+    """Directory every split is written below."""
+    return settings.obs_capture_dir / _OUTPUT_DIR
+
+
+def latest_split() -> Path | None:
+    """Newest split directory, or None if nothing has been split yet.
+
+    Modification time, like :func:`app.services.roi.latest_path` and for the same
+    reason: the directory names carry the frame's timestamp today, and sorting
+    them as strings is a bug waiting for the day they do not.
+    """
+    root = _split_root()
+    if not root.is_dir():
+        return None
+    directories = [path for path in root.iterdir() if path.is_dir()]
+    if not directories:
+        return None
+    return max(directories, key=lambda path: path.stat().st_mtime)
+
+
+def resolve_split(name: str | None) -> Path:
+    """The split to read: the one that was named, or the newest one.
+
+    Raises:
+        BadRequestError: if a named split is not a bare directory name.
+        PaylineSourceNotFoundError: if the named split, or any split at all, is
+            not there.
+    """
+    if name is not None:
+        try:
+            directory = paths.resolve_within(_split_root(), name)
+        except paths.UnsafeNameError as exc:
+            raise BadRequestError(
+                f"split is not a usable split name: {exc.reason}"
+            ) from exc
+        if not directory.is_dir():
+            raise PaylineSourceNotFoundError(
+                f"No split named {name!r} is in {_split_root()}"
+            )
+        return directory
+
+    latest = latest_split()
+    if latest is None:
+        raise PaylineSourceNotFoundError(
+            "No reel grid has been split yet. Split one from the Reel grid "
+            f"panel; they are written to {_split_root()}"
+        )
+    return latest
+
+
+def _split_shape(names: list[str]) -> tuple[int, int]:
+    """The matrix a set of tile filenames describes.
+
+    Rows and columns from the largest of each, and then every position in that
+    rectangle has to be present: a split missing ``r2c3`` would otherwise be read
+    as a complete 3x5 grid with a hole in it, and a hole in the middle of a
+    payline is a line that silently cannot be evaluated.
+
+    Raises:
+        PaylineSourceNotFoundError: if the names describe no complete matrix.
+    """
+    positions = [
+        (int(match.group(1)), int(match.group(2)))
+        for match in (_TILE_POSITION.fullmatch(name) for name in names)
+        if match is not None
+    ]
+    if not positions:
+        raise PaylineSourceNotFoundError("the split holds no tiles")
+
+    rows = max(row for row, _ in positions)
+    columns = max(column for _, column in positions)
+    missing = {
+        reel_grid.position_name(row, column)
+        for row in range(1, rows + 1)
+        for column in range(1, columns + 1)
+    } - set(names)
+    if missing:
+        raise PaylineSourceNotFoundError(
+            f"the split is missing {len(missing)} of its {rows * columns} tiles "
+            f"({', '.join(sorted(missing)[:5])})"
+        )
+    return rows, columns
+
+
+def read_split(directory: Path) -> SplitOnDisk:
+    """Open one written split: its crop, its tiles, and the shape they make.
+
+    Every tile is opened, because every tile is what a comparison needs -- and
+    because a split with an unreadable tile in it is worth failing on rather than
+    silently evaluating around.
+
+    Raises:
+        PaylineSourceNotFoundError: if the crop or the tiles directory is not
+            there, or the tiles do not make a complete matrix.
+        RoiExtractFailedError: if the crop or a tile is not a readable image.
+        GridSplitFailedError: if two tiles are different sizes, which means they
+            did not come from one split.
+    """
+    crop_path = directory / _CROP_FILE
+    tiles_dir = directory / _TILES_DIR
+    if not crop_path.is_file():
+        raise PaylineSourceNotFoundError(
+            f"{directory.name} holds no {_CROP_FILE}, so it is not a split"
+        )
+    if not tiles_dir.is_dir():
+        raise PaylineSourceNotFoundError(
+            f"{directory.name} holds no '{_TILES_DIR}' directory of tiles"
+        )
+
+    files = sorted(path for path in tiles_dir.iterdir() if _TILE_NAME.match(path.name))
+    # Lowercased, because the position names every caller asks with come from
+    # `reel_grid.position_name` and a hand-renamed `R1C1.png` is still that tile.
+    try:
+        rows, columns = _split_shape([path.stem.lower() for path in files])
+    except PaylineSourceNotFoundError as exc:
+        raise PaylineSourceNotFoundError(f"{directory.name}: {exc.message}") from exc
+
+    crop = roi_service.open_frame(crop_path)
+    tiles = {path.stem.lower(): roi_service.open_frame(path) for path in files}
+    sizes = {tile.size for tile in tiles.values()}
+    if len(sizes) != 1:
+        raise GridSplitFailedError(
+            f"{directory.name} holds tiles of {len(sizes)} different sizes "
+            f"({', '.join(f'{w}x{h}' for w, h in sorted(sizes))}), so they are "
+            "not one split -- split the frame again"
+        )
+    width, height = sizes.pop()
+
+    return SplitOnDisk(
+        directory=directory,
+        name=directory.name,
+        written_at=datetime.fromtimestamp(crop_path.stat().st_mtime, tz=UTC),
+        crop=crop,
+        tiles=tiles,
+        rows=rows,
+        columns=columns,
+        tile_width=width,
+        tile_height=height,
+    )
 
 
 # --- public API -----------------------------------------------------------

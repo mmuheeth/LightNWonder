@@ -321,3 +321,34 @@ class GridSplitFailedError(AppException):
     status_code = HTTPStatus.BAD_GATEWAY
     error_code = "GRID_SPLIT_FAILED"
     message = "The reel grid could not be split out of the frame"
+
+
+# --- Payline check --------------------------------------------------------
+# One step past the reel grid, and its errors say which of the three inputs is
+# missing: the patterns, the split they are checked against, or the agreement
+# between the two. A frame is not among them -- the check reads a split the grid
+# already wrote, so "no screenshot yet" cannot reach this far.
+
+
+class PaylinesNotConfiguredError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "PAYLINES_NOT_CONFIGURED"
+    message = "The active game does not describe the paylines to check"
+
+
+class PaylineSourceNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "PAYLINE_SOURCE_NOT_FOUND"
+    message = "There is no split reel grid to check the paylines against"
+
+
+class PaylineSourceStaleError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "PAYLINE_SOURCE_STALE"
+    message = "The split on disk does not match the grid the game now declares"
+
+
+class PaylineCheckFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "PAYLINE_CHECK_FAILED"
+    message = "The paylines could not be checked against the split"

@@ -70,8 +70,9 @@ backend/
     │   ├── ideck.py         i-deck runtime settings and path resolution
     │   ├── event_capture.py Event Based Capture runtime settings
     │   ├── ocr.py           Tesseract OCR settings, and finding the engine
+    │   ├── paylines.py      match threshold, default line set, overlay size
     │   └── game_config/     active selection plus per-game aliases, process,
-    │                         logs, ROIs, reel bounds and targets
+    │                         logs, ROIs, reel bounds, paylines and targets
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -86,6 +87,12 @@ backend/
     │   ├── reel_grid.py     reads a config's reel bounds and hands back the
     │                         tiles of the matrix, by fractions of the crop,
     │                         border trim included
+    │   ├── paylines.py     reads a config's winning patterns, per bet
+    │                         configuration, as 1-indexed grid positions
+    │   ├── similarity.py    cosine similarity between two pictures, which is
+    │                         how a glowing symbol still matches itself
+    │   ├── payline_overlay.py draws evaluated lines over the reels, one colour
+    │                         each, and owns the palette they are reported with
     │   ├── ocr.py           runs Tesseract over an image and reads its answer
     │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
@@ -102,7 +109,8 @@ backend/
     │   ├── game_input.py     game window state, click targets and click results
     │   ├── ocr.py           engine status, options and what was read
     │   ├── roi.py           region catalog, and one extracted crop
-    │   └── grid.py          reel grid shape, and one split into tiles
+    │   ├── grid.py          reel grid shape, and one split into tiles
+    │   └── paylines.py      line sets, one line's verdict and its evidence
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -115,7 +123,9 @@ backend/
         ├── event_capture.py  follows the game log and screenshots its events
         ├── game_input.py     clicks the game's own window, proven by its log
         ├── ocr.py            reads the game's meters off a frame
-        ├── grid.py           splits the reels of a screenshot into tiles
+        ├── grid.py           splits the reels of a screenshot into tiles,
+        │                      and reads one of its own splits back
+        ├── paylines.py       matches a split's tiles against the patterns that pay
         ├── meter.py          turns a cash-meter crop into its five values
         └── roi.py            cuts one configured region out of a screenshot
 ```
@@ -845,6 +855,167 @@ crop that could not be written is a 502 `GRID_SPLIT_FAILED`.
 > own window. The `col_bounds` were checked against the same frame and land
 > within a pixel of the reel strips, so only the region needed converting —
 > which is the separation the two blocks exist for.
+## Checking the paylines
+
+One step past the reel grid, and the reason the grid writes its tiles down: it
+reads a written split off disk, compares the tiles a payline runs through, and
+says which lines pay.
+
+```
+GET  /api/paylines/layout     the sets the active game declares, and the split in hand
+POST /api/paylines/check      evaluate one set against one split, and draw the result
+```
+
+```bash
+# which line sets exist, which one is the default, and which split would be read
+curl -s localhost:8001/api/paylines/layout
+# check the default set against the newest split
+curl -s -X POST localhost:8001/api/paylines/check -H 'content-type: application/json' -d '{}'
+# a particular split, a particular set, a threshold of your own, numbers only
+curl -s -X POST localhost:8001/api/paylines/check -H 'content-type: application/json' -d '{
+  "split": "screenshot-1787384342702",
+  "set": "5",
+  "threshold": 0.93,
+  "include_images": false
+}'
+```
+
+**The patterns are a third block in the game config, keyed by bet
+configuration.** A cabinet playable for five lines, twenty or forty ships all
+three, so a set is looked up by name and evaluated on its own:
+
+```json
+"paylines": {
+  "5": {
+    "1": [[2,1],[2,2],[2,3],[2,4],[2,5]],
+    "4": [[1,1],[2,2],[3,3],[2,4],[1,5]]
+  },
+  "20": { "1": [[2,1],[2,2],[2,3],[2,4],[2,5]], "...": [] },
+  "40": { "1": [[2,1],[2,2],[2,3],[2,4],[2,5]], "...": [] }
+}
+```
+
+A position is `[row, column]`, both 1-indexed, in exactly the numbering a tile's
+name is written in — `[2,1]` is `r2c1`, the middle symbol of the leftmost reel.
+Row first, like the matrix and like the filenames; on a 3x5 grid a transposed
+coordinate is often still in range, so it is worth being deliberate about.
+**Columns must strictly increase along a line**, and `app/utils/paylines.py`
+rejects one that does not: a line that backtracks a reel would compare a tile
+against itself and score a perfect match, which is a typo that would otherwise
+read as a win.
+
+**Two tiles are "the same symbol" by cosine similarity.** The same pot of gold on
+two reels is never the same pixels — a slot game glows, pulses and scales its
+symbols continuously — so an exact comparison says "different" for every pair and
+a naive difference says "different" for a bright frame. Cosine similarity treats
+brightness as vector *length* rather than direction, which is exactly the
+invariance wanted: a uniformly brighter copy of a symbol scores 1.0.
+
+> **The threshold is much higher than it sounds, and this is the one number worth
+> tuning.** Pixel channels are non-negative, so the measure does not start at
+> zero for unrelated pictures. Measured on FortuneOx's own captures: two
+> *different* symbols sharing one purple reel background score **0.60 to 0.89**,
+> and two crops of the *same* symbol score **0.967 and up**. The gap is wide and
+> clean, but it sits far above where "0.7 means similar" would put it — at 0.7
+> almost every pair is a match and every line pays five.
+>
+> Nothing has to be guessed. Every result reports the distribution it measured —
+> `matched_min` and `rejected_max` are the two numbers a working threshold sits
+> between. Tune `PAYLINE_MATCH_THRESHOLD` against a split that does not move
+> rather than by intuition.
+
+**A line is read from the left, one adjacent pair at a time, and stops at the
+first pair that does not match.** That is how a slot pays: three pots on reels
+1-3 pay what a pot pays for three, and a fourth pot on reel 5 behind something
+else on reel 4 pays nothing extra. So `pays` is the length of the **leading** run
+— 0 when reels 1 and 2 differ, otherwise 2 or more — and never a count of
+matches anywhere on the line. The comparison chains tile to tile rather than
+every tile back to the first, so `A~B` and `B~C` is taken as `A~B~C`.
+
+**Every adjacent pair is scored anyway, including the ones after the run broke.**
+They cost nothing — a pair is compared once and cached across the lines that
+share it, which is how forty lines of four steps becomes at most 105 distinct
+comparisons — and each step reports two flags rather than one:
+
+| field | question it answers |
+| --- | --- |
+| `matched` | are these two tiles the same symbol? |
+| `counted` | did the left-to-right read get this far? |
+
+A step that is `matched: true, counted: false` is the interesting one: a real
+pair of like symbols on a line that pays nothing, because the break was to its
+left. Collapsing the two into one flag is what makes a payline checker look
+wrong.
+
+**The picture is part of the answer, and there are two of them**, because a pay
+count cannot be checked by reading it. A combined overlay draws every *paying*
+line over the reels in its own colour, each confirmed tile ringed **green**, and
+the unmatched remainder trailing off thin and dimmed, written to disk beside the
+tiles it was computed from:
+
+```
+obs-captured-files/grid/screenshot-1787384342702/
+├── reels.png
+├── tiles/ …
+└── paylines/
+    ├── 5.png          the five-line set, as it was last checked
+    └── 40.png
+```
+
+One file per (split, set), so re-checking at a different threshold replaces its
+own record — which is the loop the threshold needs. The combined picture never
+shows *where* a paying line stopped short of the full width, on purpose: several
+lines share it, and "here is where this one broke" is a question about one line,
+not about all of them together.
+
+**Every line also gets its own picture, whether it pays or not**, back as
+`image_data` on that line's own entry rather than written to disk. A line that
+pays nothing is exactly the one a combined overlay leaves out, and it is
+usually the more interesting question: not "did it pay" but "how far did it get
+before it didn't". A line's own picture is the one place the break shows: the
+tile that ended its run is ringed **red**, distinct from every line's own colour
+so it reads the same on every line, and `pays`'s counterpart `break_position` is
+the tile name that ring sits on, or `null` when the whole line paid and nothing
+broke. Neither ring colour is a member of the line palette, precisely so a ring
+is never mistaken for a second line.
+
+The palette lives in `app/utils/payline_overlay.py` and each line's colour comes
+back on the result, so a swatch in the dashboard and a stroke in either picture
+cannot drift apart. It avoids purple and deep red on purpose: these games are
+drawn in purple, gold and red, and a violet payline over a violet reel is an
+invisible payline. A forty-line set drawn all at once on the combined overlay is
+busy whatever the palette does — the labels are what disambiguate it, and the
+five-line set is the one to look at first; the individual pictures have no such
+limit, since each is one line alone. A label reads just ``Line 4`` — the pay
+count is already numeric data on the response, and printing it on the picture
+too would be the same number twice.
+
+**Nothing here touches a screenshot.** The input is a directory the grid already
+wrote, so the same split checked twice at the same threshold gives the same
+answer and re-checking after moving the threshold does not depend on the
+simulator still showing the same spin. `app/services/grid.py` owns reading a
+split back (`latest_split`, `resolve_split`, `read_split`) for the same reason it
+delegates "the latest screenshot" to ROI: it named the directory, the crop and
+the tiles, so a second module spelling those the same way is a second module to
+change when one of them moves.
+
+The failures say which of the three inputs is missing:
+
+| status | code | means |
+| --- | --- | --- |
+| 404 | `PAYLINES_NOT_CONFIGURED` | no `paylines` block, or no set by that name |
+| 404 | `GRID_NOT_CONFIGURED` | no `reel_bounds` to place the coordinates on |
+| 404 | `PAYLINE_SOURCE_NOT_FOUND` | nothing split yet, or the split is missing tiles |
+| 409 | `PAYLINE_SOURCE_STALE` | the split's shape is not the grid the game now declares |
+| 502 | `PAYLINE_CHECK_FAILED` | a line runs through a tile the split lacks, or the picture could not be written |
+| 500 | `GAME_CONFIG_INVALID` | the block is declared with unusable numbers |
+
+`GET /api/paylines/layout` reports the first three as `error` on a **200**
+instead: only some games declare paylines, and a checkout that has split nothing
+is a state the dashboard renders rather than a request that went wrong. A stale
+split is a 409 rather than a 500 because the config may well be right and the
+split merely old — split the frame again.
+
 ## Reading the meter (values)
 
 Extracting `roi.cash_meter` also reads the numbers on it. There is no

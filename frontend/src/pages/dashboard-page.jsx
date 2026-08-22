@@ -2,6 +2,7 @@ import { EventCapturePanel } from "@/features/event-capture/event-capture-panel"
 import { GridPanel } from "@/features/grid/grid-panel";
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
+import { PaylinePanel } from "@/features/paylines/payline-panel";
 import { RoiPanel } from "@/features/roi/roi-panel";
 import { GameSelector } from "@/features/games/game-selector";
 
@@ -25,6 +26,11 @@ export function DashboardPage() {
         <RoiPanel />
         <GridPanel />
       </div>
+
+      {/* Its own row rather than a cell of the two-column grid: the
+          annotated reels are a wide picture and the per-line evidence is a
+          long list, and neither survives half a row. */}
+      <PaylinePanel />
     </div>
   );
 }

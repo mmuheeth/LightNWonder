@@ -22,6 +22,10 @@ export const queryKeys = Object.freeze({
     all: ["grid"],
     layout: () => [...queryKeys.grid.all, "layout"],
   }),
+  paylines: Object.freeze({
+    all: ["paylines"],
+    layout: () => [...queryKeys.paylines.all, "layout"],
+  }),
   eventCapture: Object.freeze({
     all: ["event-capture"],
     status: () => [...queryKeys.eventCapture.all, "status"],

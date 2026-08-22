@@ -15,9 +15,10 @@ network service.
 
 The dashboard covers the first three, plus `features/games` for choosing the
 active game, `features/roi` for cropping a configured region out of the latest
-screenshot and `features/grid` for splitting that screenshot's reels into a
-matrix of tiles. `game-input` and `ocr` are backend-only so far — endpoints and
-services with no `src/features/` slice — so don't go hunting for their UI.
+screenshot, `features/grid` for splitting that screenshot's reels into a matrix of
+tiles and `features/paylines` for checking which of the game's winning patterns
+those tiles satisfy. `game-input` and `ocr` are backend-only so far — endpoints
+and services with no `src/features/` slice — so don't go hunting for their UI.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
 and current; read the relevant one before changing an integration.
@@ -91,8 +92,8 @@ namespace, not the functions: `from app.services import obs as obs_service`. Onl
 `event_capture.reset()` is async — it has a watcher task to cancel.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
-inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`,
-`EventCaptureSettings`, `GameInputSettings`, `OcrSettings` and `FrameSettings`
+inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
+`GameInputSettings`, `OcrSettings`, `FrameSettings` and `PaylineSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
@@ -102,7 +103,7 @@ by building new settings. `app/core/config.py` is a re-export shim.
 
 **Per-game data is separate from env config.** `app/config/game_config/games/<Game>.json`
 ships with the code and carries the process name, log path, i-deck aliases,
-OBS window source, ROIs, reel bounds, click targets and event rules.
+OBS window source, ROIs, reel bounds, paylines, click targets and event rules.
 `active_game.json` holds the current selection and is rewritten atomically by
 `PUT /api/games/active` — no restart, no `.env` edit. Adding a game is adding a
 JSON file.
@@ -116,6 +117,9 @@ log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
 `letterbox.py` (finds the part of a frame the game fills),
 `reel_grid.py` (reads the `reel_bounds` block into positioned tiles),
 `click_target.py` (reads the `button_targets` block),
+`paylines.py` (reads the `paylines` block into ordered grid positions),
+`similarity.py` (cosine similarity between two pictures),
+`payline_overlay.py` (draws evaluated lines over a crop, and owns their palette),
 `paths.py` (resolves untrusted filenames inside a root — use it for anything
 that came off the wire).
 
@@ -164,8 +168,8 @@ same crop extracted twice is the same picture, and **`roi.py` owns that question
 for everyone**: its `resolve_frame`/`open_frame`/`content_box`/`resolve_box`/
 `describe`/`describe_path`/`encode_png` are public and `grid.py` and `ocr.py`
 call them rather than re-deriving "the latest screenshot" or re-reading a
-letterboxed frame. ROI and grid are also the two services holding no state, so
-neither has a `reset()` nor anything in `conftest.py`.
+letterboxed frame. ROI, grid and paylines are also the three services
+holding no state, so none has a `reset()` nor anything in `conftest.py`.
 
 **Every tile is the same pixel size, deliberately.** `ReelGrid.place()` rounds
 each tile's *position* on its own and then gives them all one shared width and
@@ -174,10 +178,57 @@ tile independently varies them by a pixel, and a grid of unequal tiles cannot be
 stacked or fed to anything expecting one input size. Don't "simplify" it back to
 `tile.roi.to_box()` per tile.
 
+**`services/paylines.py` reads a written split rather than a screenshot, and
+that is the whole point of the grid writing one.** ROI asks *is this rectangle
+aimed right*, grid asks *does it divide into the symbols I expect*, paylines asks
+*do those symbols line up* — each reads the previous one's output instead of
+redoing it, which is why a check is repeatable at a new threshold without the
+simulator still showing the same spin. `grid.py` owns reading a split back
+(`latest_split` / `resolve_split` / `read_split`) for the same reason `roi.py`
+owns "the latest screenshot": it named the directory, the crop and the tiles.
+
+**Two tiles are the same symbol by cosine similarity, and the threshold is not
+intuitive.** Pixel channels are non-negative, so the measure does not start at
+zero for unrelated pictures — on FortuneOx's captures two *different* symbols
+score 0.60–0.89 and two crops of the *same* symbol score 0.967 and up. The
+separation is wide but far above where "0.7 means similar" would put it, so a
+threshold that sounds generous calls almost every pair a match. Do not "fix"
+that by inventing a normalisation: every result already reports `matched_min`
+and `rejected_max`, the two numbers a working cut sits between — tune
+`PAYLINE_MATCH_THRESHOLD` (default `0.85`) against a split that does not move.
+
+**A payline is read left to right and stops at the first pair that does not
+match**, so `pays` is the length of the *leading* run — 0 when reels 1 and 2
+differ, otherwise 2 or more — and never a count of matches anywhere on the line.
+Every adjacent pair is scored anyway and each step carries `matched` (are these
+the same symbol) *and* `counted` (did the read get this far). A matched step that
+was never counted is the interesting case; collapsing the two flags into one is
+what makes a payline checker look wrong. Line colours come from
+`utils/payline_overlay.py` and travel on the response, so the dashboard's swatch
+and the drawn stroke cannot drift — the frontend never picks one.
+
+**Every line gets its own picture, paying or not, with a break marker where its
+run stopped.** `pays`'s counterpart is `break_position` -- the tile name where
+the leading run failed, or null when the whole line paid -- and the picture at
+`PaylineLine.image_data` draws exactly that line, its confirmed tiles ringed
+green and (on this picture only) the break tile ringed red. The combined
+`overlay_image` still draws only the *paying* lines and never the red ring --
+several lines share that picture, and "here is where this one broke" is a
+question about one of them. Both pictures are built from the one
+`payline_overlay.DrawnLine` per config line that
+`services/paylines._line_drawing()` produces: the combined overlay is that list
+filtered to `pays >= 2` with `dataclasses.replace(drawing, break_point=None)`,
+not a second drawing pass. A line's label on either picture is just `Line 4` --
+`pays` is already numeric data on the response, not something to repeat as text
+on the picture.
+
 **Grid always writes its output; ROI only writes the cash meter.** A split goes
 to `obs-captured-files/grid/<frame stem>/` — `reels.png` plus `tiles/r1c1.png`,
 1-indexed and row-major — one directory per source frame, so re-splitting a frame
-replaces its own record. Stale tiles from a differently-shaped grid are cleared,
+replaces its own record. A payline check writes its annotated reels into that
+same directory as `paylines/<set>.png`, one per (split, set), because a pay count
+cannot be checked by reading it and re-checking at a new threshold should replace
+its own record too. Stale tiles from a differently-shaped grid are cleared,
 and only names matching a tile's own pattern are touched. ROI's own
 `_SAVED_REGION` writes `cash-meter/<frame>.png` and every other region comes back
 as a data URI only.
