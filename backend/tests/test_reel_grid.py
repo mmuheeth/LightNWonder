@@ -6,9 +6,10 @@ Two things are worth checking here and the rest is shape validation.
 tiles get named after and a silently transposed grid would be labelled wrongly
 everywhere downstream without anything failing.
 
-**The order of the bounds is enforced.** A list of spans that is out of order
-still splits into the right number of tiles, and every one of them is labelled
-wrong -- so it is rejected where it is read rather than a few files later.
+**An even division is not an even pixel division.** Three rows over a 298-pixel
+crop are 99, 100 and 99 tall, so the shared-size step is what keeps a split
+usable -- and the tests for it deliberately use crops that do not divide evenly,
+because one that does cannot catch the bug at all.
 """
 
 from __future__ import annotations
@@ -18,19 +19,10 @@ from typing import Any
 import pytest
 
 from app.utils.image_roi import Roi
-from app.utils.reel_grid import Inset, ReelGrid, ReelGridError, Span
+from app.utils.reel_grid import Inset, ReelGrid, ReelGridError
 
-# FortuneOx's own bounds: five reels with gaps between them, three equal rows.
-FORTUNE_OX: dict[str, Any] = {
-    "col_bounds": [
-        [0.0, 0.193089],
-        [0.20122, 0.395325],
-        [0.403455, 0.596545],
-        [0.604675, 0.79878],
-        [0.806911, 1.0],
-    ],
-    "row_bounds": [[0.0, 0.333333], [0.333333, 0.666667], [0.666667, 1.0]],
-}
+# FortuneOx's own grid: five reels of three symbols.
+FORTUNE_OX: dict[str, Any] = {"rows": 3, "columns": 5}
 
 
 def edges(roi: Roi) -> tuple[float, float, float, float]:
@@ -43,40 +35,30 @@ def edges(roi: Roi) -> tuple[float, float, float, float]:
 
 
 # Round fractions, so a pixel box needs no rounding allowance.
-FIFTHS: dict[str, Any] = {
-    "col_bounds": [[0.0, 0.2], [0.2, 0.4], [0.4, 0.6], [0.6, 0.8], [0.8, 1.0]],
-    "row_bounds": [[0.0, 0.5], [0.5, 1.0]],
-}
+FIFTHS: dict[str, Any] = {"rows": 2, "columns": 5}
 
 
 # --- reading the block ----------------------------------------------------
 
 
-def test_reads_the_shipped_bounds() -> None:
+def test_reads_the_shipped_grid() -> None:
     grid = ReelGrid.from_mapping(FORTUNE_OX)
 
     assert (grid.row_count, grid.column_count) == (3, 5)
-    assert grid.columns[0] == Span(start=0.0, end=0.193089)
-    assert grid.rows[-1] == Span(start=0.666667, end=1.0)
 
 
-def test_a_span_is_the_pair_it_was_declared_as() -> None:
+def test_the_counts_divide_the_crop_into_equal_shares() -> None:
+    """Reel 1 is the first fifth of the crop, reel 5 the last."""
     grid = ReelGrid.from_mapping(FIFTHS)
 
-    assert grid.columns == (
-        Span(0.0, 0.2),
-        Span(0.2, 0.4),
-        Span(0.4, 0.6),
-        Span(0.6, 0.8),
-        Span(0.8, 1.0),
-    )
+    assert edges(grid.tile(1, 1).roi) == pytest.approx((0.0, 0.0, 0.2, 0.5))
+    assert edges(grid.tile(2, 5).roi) == pytest.approx((0.8, 0.5, 1.0, 1.0))
 
 
-def test_integers_are_accepted_as_bounds() -> None:
-    """``[0, 1]`` in JSON decodes to ints, and means what ``[0.0, 1.0]`` means."""
-    grid = ReelGrid.from_mapping({"col_bounds": [[0, 1]], "row_bounds": [[0, 1]]})
+def test_a_single_tile_grid_is_the_whole_crop() -> None:
+    grid = ReelGrid.from_mapping({"rows": 1, "columns": 1})
 
-    assert grid.columns == (Span(0.0, 1.0),)
+    assert edges(grid.tile(1, 1).roi) == pytest.approx((0.0, 0.0, 1.0, 1.0))
 
 
 # --- the matrix ------------------------------------------------------------
@@ -108,7 +90,7 @@ def test_a_tile_is_a_region_of_the_crop() -> None:
 
     tile = grid.tile(2, 3)
 
-    assert tile.roi == Roi(left=0.4, top=0.5, right=0.6, bottom=1.0)
+    assert edges(tile.roi) == pytest.approx((0.4, 0.5, 0.6, 1.0))
     assert (tile.row, tile.column) == (2, 3)
 
 
@@ -143,40 +125,6 @@ def test_zero_and_past_the_end_are_both_outside(position: tuple[int, int]) -> No
         grid.tile(*position)
 
 
-# --- order ----------------------------------------------------------------
-
-
-def test_bounds_out_of_order_are_rejected() -> None:
-    """The index is the reel number, so a shuffled list mislabels every tile."""
-    with pytest.raises(ReelGridError, match=r"does not come after"):
-        ReelGrid.from_mapping(
-            {
-                "col_bounds": [[0.4, 0.6], [0.0, 0.2]],
-                "row_bounds": [[0.0, 1.0]],
-            }
-        )
-
-
-def test_overlapping_bounds_are_allowed() -> None:
-    """A tile may share a few pixels with its neighbour; only order is enforced."""
-    grid = ReelGrid.from_mapping(
-        {
-            "col_bounds": [[0.0, 0.55], [0.45, 1.0]],
-            "row_bounds": [[0.0, 1.0]],
-        }
-    )
-
-    assert grid.column_count == 2
-
-
-def test_duplicate_bounds_are_rejected() -> None:
-    """Two identical spans are two tiles that cannot both be reel 1."""
-    with pytest.raises(ReelGridError, match=r"does not come after"):
-        ReelGrid.from_mapping(
-            {"col_bounds": [[0.0, 0.5], [0.0, 0.5]], "row_bounds": [[0.0, 1.0]]}
-        )
-
-
 # --- malformed blocks -----------------------------------------------------
 
 
@@ -185,61 +133,65 @@ def test_a_block_that_is_not_an_object_is_rejected() -> None:
         ReelGrid.from_mapping([[0.0, 1.0]])
 
 
-@pytest.mark.parametrize("missing", ["col_bounds", "row_bounds"])
+@pytest.mark.parametrize("missing", ["rows", "columns"])
 def test_both_axes_are_required(missing: str) -> None:
     block = dict(FIFTHS)
     del block[missing]
 
-    with pytest.raises(ReelGridError, match=rf"reel_bounds\.{missing}"):
+    with pytest.raises(ReelGridError, match=rf"reel_bounds\.{missing} must say how"):
         ReelGrid.from_mapping(block)
-
-
-def test_an_empty_axis_is_rejected() -> None:
-    """No reels is not a grid with nothing in it; it is an unusable block."""
-    with pytest.raises(ReelGridError, match=r"at least one \[start, end\] pair"):
-        ReelGrid.from_mapping({"col_bounds": [], "row_bounds": [[0.0, 1.0]]})
 
 
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ([[0.0]], r"must be \[start, end\], got 1 numbers"),
-        ([[0.0, 0.5, 1.0]], r"must be \[start, end\], got 3 numbers"),
-        (["0,1"], r"must be an array of two numbers"),
-        ([[0.0, "1"]], r"must contain only numbers"),
-        ([[0.0, True]], r"must contain only numbers"),
-        ([[-0.1, 0.5]], r"start must be a fraction between 0 and 1"),
-        ([[0.5, 1.5]], r"end must be a fraction between 0 and 1"),
-        ([[0.6, 0.4]], r"start \(0.6\) must be less than end \(0.4\)"),
-        ([[0.5, 0.5]], r"start \(0.5\) must be less than end \(0.5\)"),
-        ([[float("nan"), 1.0]], r"start must be a fraction between 0 and 1"),
-        ("0.0,1.0", r"must be an array of \[start, end\] pairs"),
+        (0, r"must be at least 1, got 0"),
+        (-2, r"must be at least 1, got -2"),
+        (2.5, r"must be a whole number, got 2.5"),
+        # A count written as 3.0 is still a float, and refused rather than
+        # rounded: it means the author was measuring, not counting.
+        (3.0, r"must be a whole number, got 3.0"),
+        (True, r"must be a whole number, got True"),
+        ("5", r"must be a whole number, got '5'"),
+        ([5], r"must be a whole number, got \[5\]"),
     ],
 )
-def test_malformed_bounds_are_rejected_with_their_location(
+def test_a_malformed_count_is_rejected_with_its_location(
     value: Any, expected: str
 ) -> None:
-    with pytest.raises(ReelGridError, match=expected):
-        ReelGrid.from_mapping({"col_bounds": value, "row_bounds": [[0.0, 1.0]]})
+    with pytest.raises(ReelGridError, match=rf"reel_bounds\.columns {expected}"):
+        ReelGrid.from_mapping({**FIFTHS, "columns": value})
 
 
-def test_the_error_names_which_pair_was_wrong() -> None:
-    """Which index, not only which axis -- five reels is five places to look."""
-    with pytest.raises(ReelGridError, match=r"reel_bounds\.col_bounds\[2\]"):
-        ReelGrid.from_mapping(
-            {
-                "col_bounds": [[0.0, 0.2], [0.3, 0.5], [0.9, 0.6]],
-                "row_bounds": [[0.0, 1.0]],
-            }
-        )
+# --- the form this block used to take --------------------------------------
+# Spans were replaced by counts. A config still carrying them has to fail: an
+# ignored `col_bounds` would split evenly anyway and look entirely correct,
+# which is the one outcome worse than refusing to split.
+
+
+@pytest.mark.parametrize("old", ["col_bounds", "row_bounds"])
+def test_the_replaced_span_keys_are_refused_not_ignored(old: str) -> None:
+    with pytest.raises(ReelGridError, match=rf"reel_bounds\.{old} is no longer read"):
+        ReelGrid.from_mapping({**FIFTHS, old: [[0.0, 1.0]]})
+
+
+def test_the_refusal_says_what_to_write_instead() -> None:
+    with pytest.raises(ReelGridError, match=r"write 'columns' as a count"):
+        ReelGrid.from_mapping({"col_bounds": [[0.0, 1.0]], "rows": 3})
+
+
+def test_an_unknown_key_is_refused() -> None:
+    """A misspelled setting silently doing nothing is a config that reads as a lie."""
+    with pytest.raises(ReelGridError, match=r"has no gutter setting"):
+        ReelGrid.from_mapping({**FIFTHS, "gutter": 0.01})
 
 
 # --- the border inset -----------------------------------------------------
-# The bounds divide the crop edge to edge, so a tile takes everything between
-# its neighbours -- including the frame a game draws inside a reel to highlight
-# a win. The inset is what trims that, and it is a fraction of the tile rather
-# than of the crop so one number means the same thing for a wide reel and a
-# narrow one.
+# The grid divides the crop evenly, so a tile takes everything up to its
+# neighbour -- including the gap between reel strips and the frame a game draws
+# inside a reel to highlight a win. The inset is what trims that, and it is a
+# fraction of the tile rather than of the crop so one number means the same
+# thing for a wide reel and a narrow one.
 
 
 def test_no_inset_by_default() -> None:
@@ -247,7 +199,7 @@ def test_no_inset_by_default() -> None:
 
     assert grid.inset == Inset()
     assert grid.inset.none
-    assert grid.tile(1, 1).roi == Roi(left=0.0, top=0.0, right=0.2, bottom=0.5)
+    assert edges(grid.tile(1, 1).roi) == pytest.approx((0.0, 0.0, 0.2, 0.5))
 
 
 def test_one_number_trims_every_edge() -> None:
@@ -299,14 +251,13 @@ def test_an_inset_of_zero_is_no_inset() -> None:
     )
 
 
-def test_with_inset_replaces_the_trim_and_keeps_the_bounds() -> None:
-    """A request overriding the trim must not re-read the bounds to do it."""
+def test_with_inset_replaces_the_trim_and_keeps_the_shape() -> None:
+    """A request overriding the trim must not re-read the counts to do it."""
     grid = ReelGrid.from_mapping({**FIFTHS, "inset": 0.1})
 
     replaced = grid.with_inset(Inset(left=0.25))
 
-    assert replaced.columns == grid.columns
-    assert replaced.rows == grid.rows
+    assert (replaced.row_count, replaced.column_count) == (2, 5)
     assert edges(replaced.tile(1, 1).roi) == pytest.approx((0.05, 0.0, 0.2, 0.5))
 
 
@@ -344,37 +295,34 @@ def test_an_inset_that_leaves_nothing_is_rejected_not_clamped() -> None:
 
 
 # --- one size for every tile ----------------------------------------------
-# Rounding each tile's edges on its own is right for a single region and wrong
-# for a grid: FortuneOx's five reels over a 200-pixel crop come out 39, 39, 38,
-# 39, 39 purely from where the boundaries fall. Every test here uses bounds that
-# would vary, because bounds that divide evenly cannot catch this at all.
+# An even division is not an even pixel division: three rows over 298 pixels
+# round to 99, 100, 99 and five reels over 202 to 40, 41, 40, 41, 40, purely
+# from where each boundary falls. Every test here uses a crop that divides
+# unevenly on both axes, because one that divides evenly cannot catch this.
 
 # Deliberately awkward: neither axis divides evenly into the crop below.
-AWKWARD_CROP = (200, 298)
+AWKWARD_CROP = (202, 298)
 
 
 def test_the_shared_tile_size_is_the_smallest_that_fits() -> None:
     """The largest would push the last reel past the crop and need a clamp."""
     grid = ReelGrid.from_mapping(FORTUNE_OX)
 
-    assert grid.tile_size(*AWKWARD_CROP) == (38, 99)
+    assert grid.tile_size(*AWKWARD_CROP) == (40, 99)
 
 
-def test_bounds_that_would_vary_still_place_uniform_tiles() -> None:
+def test_a_division_that_would_vary_still_places_uniform_tiles() -> None:
     grid = ReelGrid.from_mapping(FORTUNE_OX)
 
     natural = {
-        (
-            tile.roi.to_box(*AWKWARD_CROP)[2] - tile.roi.to_box(*AWKWARD_CROP)[0],
-            tile.roi.to_box(*AWKWARD_CROP)[3] - tile.roi.to_box(*AWKWARD_CROP)[1],
-        )
-        for tile in grid.tiles()
+        (box[2] - box[0], box[3] - box[1])
+        for box in (tile.roi.to_box(*AWKWARD_CROP) for tile in grid.tiles())
     }
     placed = {(tile.width, tile.height) for tile in grid.place(*AWKWARD_CROP)}
 
     # The premise of the test, then the guarantee.
     assert len(natural) > 1
-    assert placed == {(38, 99)}
+    assert placed == {(40, 99)}
 
 
 def test_placement_keeps_each_tile_at_its_own_position() -> None:
@@ -383,10 +331,11 @@ def test_placement_keeps_each_tile_at_its_own_position() -> None:
 
     placed = {tile.name: tile.box for tile in grid.place(*AWKWARD_CROP)}
 
-    # Reel 3 starts at 81, not at 2 x 40 -- its own rounded left edge.
-    assert placed["r1c1"] == (0, 0, 38, 99)
-    assert placed["r1c3"] == (81, 0, 119, 99)
-    assert placed["r3c5"] == (161, 199, 199, 298)
+    # Reel 3 starts at 81, not at 2 x 40 -- its own rounded left edge. Row 3
+    # starts at 199, not at 2 x 99, for the same reason.
+    assert placed["r1c1"] == (0, 0, 40, 99)
+    assert placed["r1c3"] == (81, 0, 121, 99)
+    assert placed["r3c5"] == (162, 199, 202, 298)
 
 
 def test_every_placed_tile_is_a_distinct_box() -> None:
@@ -428,7 +377,7 @@ def test_tiles_stay_uniform_at_any_crop_size() -> None:
     """One size per crop, whatever the crop -- not one size that happens to fit."""
     grid = ReelGrid.from_mapping(FORTUNE_OX)
 
-    for width, height in ((200, 298), (383, 189), (1532, 756), (37, 11)):
+    for width, height in ((202, 298), (383, 189), (1532, 756), (37, 11)):
         sizes = {(t.width, t.height) for t in grid.place(width, height)}
         assert len(sizes) == 1, f"{width}x{height} gave {sizes}"
 

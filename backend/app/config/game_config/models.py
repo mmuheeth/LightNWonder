@@ -38,9 +38,6 @@ class GameConfig:
     window-capture source and the config needs to disambiguate them.
     """
 
-    ideck_panel: str | None
-    """Layout the game expects, e.g. ``virtual_oled``. Informational."""
-
     log_path: Path | None
     """The game's own log, when it declares one."""
 

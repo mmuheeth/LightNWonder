@@ -42,9 +42,8 @@ API = "/api/paylines"
 # divide it exactly and no assertion needs a rounding allowance.
 CROP_SIZE = (200, 300)
 TILE_SIZE = (40, 100)
-COLUMNS = [[0.0, 0.2], [0.2, 0.4], [0.4, 0.6], [0.6, 0.8], [0.8, 1.0]]
-ROWS = [[0.0, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 1.0]]
-REEL_BOUNDS = {"col_bounds": COLUMNS, "row_bounds": ROWS}
+GRID_ROWS, GRID_COLUMNS = 3, 5
+REEL_BOUNDS = {"rows": GRID_ROWS, "columns": GRID_COLUMNS}
 REELS = [0.25, 0.25, 0.75, 1.0]
 
 # Near-orthogonal, so two different symbols score about 0.1 and two of the same
@@ -103,8 +102,8 @@ def write_split(root: Path, name: str, grid: list[str]) -> Path:
             crop.paste(
                 tile,
                 (
-                    round(COLUMNS[column - 1][0] * CROP_SIZE[0]),
-                    round(ROWS[row - 1][0] * CROP_SIZE[1]),
+                    round((column - 1) / GRID_COLUMNS * CROP_SIZE[0]),
+                    round((row - 1) / GRID_ROWS * CROP_SIZE[1]),
                 ),
             )
     crop.save(directory / "reels.png")
@@ -610,10 +609,7 @@ async def test_a_split_of_the_wrong_shape_is_a_409(
         {
             "name": "FortuneOx",
             "roi": {"reels": REELS},
-            "reel_bounds": {
-                "col_bounds": COLUMNS[:4],
-                "row_bounds": ROWS,
-            },
+            "reel_bounds": {"rows": GRID_ROWS, "columns": 4},
             "paylines": PAYLINES,
         }
     )

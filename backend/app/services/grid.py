@@ -11,9 +11,9 @@ that the split is written down.
 This is one step past :mod:`app.services.roi`, the way OCR is one step past it in
 the other direction. ROI answers *is this rectangle aimed at the right part of
 the screen*; this answers *and does it divide into the symbols I expect*. Two
-crops, in sequence, and the second set of fractions is measured against the
-first crop -- so a reel window that moved on screen is a change to ``roi.reels``
-alone, and nothing about the tiles needs re-measuring.
+crops, in sequence, and the second divides the first -- so a reel window that
+moved on screen is a change to ``roi.reels`` alone, and a sixth reel a change to
+``reel_bounds.columns`` alone.
 
 **The frame comes off disk, newest first, and the reels are found inside the
 game rather than inside the canvas.** Both are delegated whole to the ROI
@@ -32,21 +32,21 @@ one overwritten one -- and splitting the *same* frame twice is idempotent, which
 is what makes it safe to re-run after editing the bounds.
 
 **Every tile is the same number of pixels.** Rounding each tile's edges on its
-own is right for a single region and wrong for a grid: reel spans of 76.6 pixels
-round to 74, 74, 73, 74, 74 depending only on where each boundary falls, and
-tiles that differ by a pixel cannot be stacked or fed to anything expecting one
-input size. :meth:`app.utils.reel_grid.ReelGrid.place` keeps each tile's own
-rounded position and gives them all one shared size, so nothing drifts off the
-symbol it was aimed at.
+own is right for a single region and wrong for a grid: three rows over a
+298-pixel crop round to 99, 100 and 99 depending only on where each boundary
+falls, and tiles that differ by a pixel cannot be stacked or fed to anything
+expecting one input size. :meth:`app.utils.reel_grid.ReelGrid.place` keeps each
+tile's own rounded position and gives them all one shared size, so nothing
+drifts off the symbol it was aimed at.
 
-**The border trim is part of the tile, not a step after it.** The bounds divide
-the crop edge to edge, so a tile takes everything between its neighbours --
-including the frame the game draws inside a reel to highlight a win, which lies
-across the symbol's own edge rather than in a gap the bounds could have skipped.
-``reel_bounds.inset`` shrinks every tile towards its centre, and a request may
-override it for one split: that is how the number gets found before it is written
-into the config, the same loop OCR's per-request options serve. What a config
-declares is a 500 if it is unusable and what a request asks for is a 400.
+**The border trim is part of the tile, not a step after it.** The grid divides
+the crop evenly, so a tile takes everything up to its neighbour -- the gap
+between the reel strips, and the frame the game draws inside a reel to highlight
+a win, which lies across the symbol's own edge. ``reel_bounds.inset`` shrinks
+every tile towards its centre, and a request may override it for one split: that
+is how the number gets found before it is written into the config, the same loop
+OCR's per-request options serve. What a config declares is a 500 if it is
+unusable and what a request asks for is a 400.
 
 **Stale tiles are cleared, and only tiles.** Re-splitting a frame after adding a
 sixth reel to the config would otherwise leave the old ``r1c5`` behind, looking

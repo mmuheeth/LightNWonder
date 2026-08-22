@@ -41,9 +41,7 @@ FRAME_SIZE = (400, 400)
 REELS = [0.25, 0.25, 0.75, 1.0]
 REELS_BOX = (100, 100, 300, 400)
 
-COLUMNS = [[0.0, 0.2], [0.2, 0.4], [0.4, 0.6], [0.6, 0.8], [0.8, 1.0]]
-ROWS = [[0.0, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 1.0]]
-REEL_BOUNDS = {"col_bounds": COLUMNS, "row_bounds": ROWS}
+REEL_BOUNDS = {"rows": 3, "columns": 5}
 
 BACKGROUND = (10, 20, 30)
 # Bars are pure black, the way OBS pads a canvas round a source. The background
@@ -122,13 +120,13 @@ def write_frame(
         crop_width, crop_height = right - left, bottom - top
         for row in range(1, rows + 1):
             for column in range(1, columns + 1):
-                # Painted from the same fractions the splitter will read, so the
+                # Divided the same way the splitter will divide it, so the
                 # blocks line up with the tiles by construction.
                 box = (
-                    left + round(COLUMNS[column - 1][0] * crop_width),
-                    top + round(ROWS[row - 1][0] * crop_height),
-                    left + round(COLUMNS[column - 1][1] * crop_width),
-                    top + round(ROWS[row - 1][1] * crop_height),
+                    left + round((column - 1) / columns * crop_width),
+                    top + round((row - 1) / rows * crop_height),
+                    left + round(column / columns * crop_width),
+                    top + round(row / rows * crop_height),
                 )
                 image.paste(
                     Image.new(
@@ -334,7 +332,7 @@ async def test_layout_reports_unusable_bounds_as_a_state(
         {
             "name": "Broken",
             "roi": {"reels": REELS},
-            "reel_bounds": {"col_bounds": [[0.6, 0.4]], "row_bounds": [[0.0, 1.0]]},
+            "reel_bounds": {"rows": 0, "columns": 5},
         }
     )
 
@@ -342,7 +340,7 @@ async def test_layout_reports_unusable_bounds_as_a_state(
 
     assert response.status_code == 200
     error = assert_success(response.json())["error"]
-    assert "must be less than end" in error
+    assert "must be at least 1" in error
     # Names the file, so the fix does not start with finding it.
     assert config.name in error
 
@@ -758,15 +756,36 @@ async def test_split_500s_on_a_reels_region_declared_with_bad_numbers(
     assert config.name in payload["message"]
 
 
-async def test_split_500s_on_bounds_declared_out_of_order(
+async def test_split_500s_on_a_count_that_is_not_a_count(
     client: AsyncClient, game, screenshots: Path, captures: Path
 ) -> None:
     game(
         {
-            "name": "Shuffled",
+            "name": "Fractional",
+            "roi": {"reels": REELS},
+            "reel_bounds": {"rows": 3, "columns": 2.5},
+        }
+    )
+    write_frame(screenshots / "shot.png")
+
+    response = await client.post(f"{API}/split", json={})
+
+    assert response.status_code == 500
+    payload = response.json()
+    assert_failure(payload, code="GAME_CONFIG_INVALID")
+    assert "must be a whole number" in payload["message"]
+
+
+async def test_split_500s_on_a_config_still_using_the_replaced_span_keys(
+    client: AsyncClient, game, screenshots: Path, captures: Path
+) -> None:
+    """Ignoring them would split evenly anyway and look entirely correct."""
+    game(
+        {
+            "name": "Spans",
             "roi": {"reels": REELS},
             "reel_bounds": {
-                "col_bounds": [[0.4, 0.6], [0.0, 0.2]],
+                "col_bounds": [[0.0, 0.2], [0.2, 0.4]],
                 "row_bounds": [[0.0, 1.0]],
             },
         }
@@ -778,7 +797,7 @@ async def test_split_500s_on_bounds_declared_out_of_order(
     assert response.status_code == 500
     payload = response.json()
     assert_failure(payload, code="GAME_CONFIG_INVALID")
-    assert "does not come after" in payload["message"]
+    assert "col_bounds is no longer read" in payload["message"]
 
 
 async def test_nothing_is_written_when_the_split_cannot_start(
@@ -1023,19 +1042,12 @@ async def test_layout_reports_an_unusable_inset_as_a_state(
 # uneven grid. These use FortuneOx's real column bounds over a crop that divides
 # into neither five nor three, which is where the pixel goes missing.
 
-# 0.25..0.75 of 400 is 200 wide; 0.25..0.995 of 400 is 298 tall. Five reels over
-# 200 round to 39, 39, 38, 39, 39 and three rows over 298 to 99, 100, 99.
-UNEVEN_REELS = [0.25, 0.25, 0.75, 0.995]
-UNEVEN_BOUNDS = {
-    "col_bounds": [
-        [0.0, 0.193089],
-        [0.20122, 0.395325],
-        [0.403455, 0.596545],
-        [0.604675, 0.79878],
-        [0.806911, 1.0],
-    ],
-    "row_bounds": [[0.0, 1 / 3], [1 / 3, 2 / 3], [2 / 3, 1.0]],
-}
+# 0.25..0.755 of 400 is 202 wide; 0.25..0.995 of 400 is 298 tall. Five reels over
+# 202 round to 40, 41, 40, 41, 40 and three rows over 298 to 99, 100, 99 -- so
+# neither axis divides evenly and both can catch a tile a pixel off its
+# neighbours.
+UNEVEN_REELS = [0.25, 0.25, 0.755, 0.995]
+UNEVEN_BOUNDS = {"rows": 3, "columns": 5}
 
 
 @pytest.fixture
@@ -1060,7 +1072,7 @@ async def test_every_tile_has_the_same_pixel_size(
 
     data = assert_success(response.json())
     sizes = {(tile["width"], tile["height"]) for tile in data["tiles"]}
-    assert sizes == {(38, 99)}
+    assert sizes == {(40, 99)}
 
 
 async def test_the_result_names_the_shared_tile_size_once(
@@ -1072,7 +1084,7 @@ async def test_the_result_names_the_shared_tile_size_once(
     response = await client.post(f"{API}/split", json={})
 
     data = assert_success(response.json())
-    assert (data["tile_width"], data["tile_height"]) == (38, 99)
+    assert (data["tile_width"], data["tile_height"]) == (40, 99)
     assert all(
         (tile["width"], tile["height"]) == (data["tile_width"], data["tile_height"])
         for tile in data["tiles"]
@@ -1094,7 +1106,7 @@ async def test_the_written_tiles_are_all_the_same_size(
         with Image.open(tiles / tile["file_name"]) as image:
             image.load()
             written.add(image.size)
-    assert written == {(38, 99)}
+    assert written == {(40, 99)}
 
 
 async def test_uniform_tiles_keep_their_own_positions(
@@ -1108,10 +1120,11 @@ async def test_uniform_tiles_keep_their_own_positions(
     tiles = {
         tile["name"]: tile["box"] for tile in assert_success(response.json())["tiles"]
     }
-    # Reel 3 sits at its own rounded left edge, not at two times reel 1's width.
-    assert tiles["r1c1"] == [0, 0, 38, 99]
-    assert tiles["r1c3"] == [81, 0, 119, 99]
-    assert tiles["r3c5"] == [161, 199, 199, 298]
+    # Reel 3 and row 3 sit at their own rounded edges, not at two times the
+    # width and height of the first tile.
+    assert tiles["r1c1"] == [0, 0, 40, 99]
+    assert tiles["r1c3"] == [81, 0, 121, 99]
+    assert tiles["r3c5"] == [162, 199, 202, 298]
 
 
 async def test_an_inset_does_not_make_the_tiles_uneven_again(
@@ -1144,7 +1157,7 @@ async def test_tiles_stay_uniform_at_a_bigger_capture_size(
 
     data = assert_success(response.json())
     assert len({(tile["width"], tile["height"]) for tile in data["tiles"]}) == 1
-    assert data["tile_width"] > 38
+    assert data["tile_width"] > 40
 
 
 def _make_newest(path: Path) -> None:

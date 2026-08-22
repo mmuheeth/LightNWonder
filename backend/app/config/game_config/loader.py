@@ -138,12 +138,6 @@ def load_game_config(path: Path) -> GameConfig:
 
     document = _object(raw, where=f"The game config at {path}")
 
-    ideck = _object(document.get("ideck"), where=f"'ideck' in {path}")
-
-    panel = ideck.get("panel")
-    if panel is not None and not isinstance(panel, str):
-        raise GameConfigError(f"'ideck.panel' in {path} must be a string")
-
     log = document.get("log")
     if log is not None and not isinstance(log, str):
         raise GameConfigError(f"'log' in {path} must be a string")
@@ -168,7 +162,6 @@ def load_game_config(path: Path) -> GameConfig:
         path=path,
         process=process,
         obs_window_source=obs_window_source,
-        ideck_panel=panel,
         log_path=Path(log) if log else None,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
         reel_bounds=freeze_mapping(

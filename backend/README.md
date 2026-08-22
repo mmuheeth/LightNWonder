@@ -726,26 +726,26 @@ curl -s -X POST localhost:8001/api/grid/split -H 'content-type: application/json
 }'
 ```
 
-**Two blocks, measured against two different rectangles.** This is the one thing
-to get right:
+**One measurement and two counts.** This is the one thing to get right:
 
 ```json
 "roi": { "reels": [0.35, 0.559722, 0.649219, 0.822222] },
-"reel_bounds": {
-  "col_bounds": [[0.0, 0.193089], [0.20122, 0.395325], [0.403455, 0.596545],
-                 [0.604675, 0.79878], [0.806911, 1.0]],
-  "row_bounds": [[0.0, 0.333333], [0.333333, 0.666667], [0.666667, 1.0]],
-  "inset": 0.03
-}
+"reel_bounds": { "rows": 3, "columns": 5, "inset": 0.03 }
 ```
 
 `roi.reels` is fractions of the **frame**, like every other region and click
-target here. `reel_bounds` is fractions of the **reels crop** — of the rectangle
-`roi.reels` cut out. That is why `row_bounds` reads as thirds and `col_bounds`
-runs `0.0`..`1.0`: the reels fill their own crop by definition, and the gaps
-between the column spans are the gaps between the reel strips. Keeping them
-apart is what makes them independent — move the reel window on screen and only
-`roi.reels` changes; add a sixth reel and only `col_bounds` does.
+target here, and it is the only part anyone has to measure. `reel_bounds` is not
+fractions of anything — it says how many equal shares the **reels crop** divides
+into. The reels fill their own crop by definition, so reel 3 is its third fifth.
+Keeping the two apart is what makes them independent: move the reel window on
+screen and only `roi.reels` changes; add a sixth reel and only `columns` does.
+
+The gaps between the reel strips need no describing — a boundary falls in the
+background between two symbols, and `inset` trims what is left. Earlier configs
+listed a `[start, end]` pair per reel in `col_bounds`/`row_bounds`; those keys
+are now **rejected with a message rather than ignored**, since a config still
+carrying them would split evenly anyway and look entirely correct. The cost of
+the change is that a deck with unequal reel widths can no longer be described.
 
 **Positions are 1-indexed and row-major.** `r1c1` is the top symbol of reel 1,
 the way a paytable reads. Every tile carries its own `row` and `column` rather
@@ -758,11 +758,11 @@ positions: [["r1c1", "r1c2", "r1c3", "r1c4", "r1c5"],
             ["r3c1", "r3c2", "r3c3", "r3c4", "r3c5"]]
 ```
 
-**`inset` trims the border the bounds cannot.** The spans divide the crop edge
-to edge, so a tile takes everything between its neighbours — including the frame
+**`inset` trims the border the division cannot.** An even split gives a tile
+everything up to its neighbour — the gap between the reel strips, and the frame
 the game draws *inside* a reel when it highlights a win, which is a line of gold
-lying across the symbol's own edge rather than a gap the bounds could have
-skipped. An inset shrinks every tile towards its centre:
+lying across the symbol's own edge. An inset shrinks every tile towards its
+centre:
 
 ```json
 "inset": 0.03                    // a fraction off all four edges
@@ -852,9 +852,11 @@ crop that could not be written is a 502 `GRID_SPLIT_FAILED`.
 > capture where the portrait window occupied x [429, 850), and then expressed as
 > fractions of that window rather than of the canvas — which is why it reads
 > `[0.045131, …, 0.954870, …]`, nearly the full width of a game that fills its
-> own window. The `col_bounds` were checked against the same frame and land
-> within a pixel of the reel strips, so only the region needed converting —
-> which is the separation the two blocks exist for.
+> own window. Its five reels were checked against the same frame: an even fifth
+> of that crop falls in the background between two strips every time, so only
+> the region needed converting — which is the separation the two blocks exist
+> for.
+
 ## Checking the paylines
 
 One step past the reel grid, and the reason the grid writes its tiles down: it

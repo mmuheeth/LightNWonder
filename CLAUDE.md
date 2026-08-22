@@ -149,12 +149,16 @@ fractions. **Region values in a game config are therefore fractions of the game,
 not of the canvas** — measuring one off a letterboxed screenshot means
 subtracting the bars first.
 
-**`reel_bounds` is the one exception, deliberately.** Its `col_bounds` and
-`row_bounds` are fractions of the **`roi.reels` crop**, not of the game — which
-is why `row_bounds` reads as thirds and `col_bounds` runs `0.0`..`1.0`. That is
-what keeps the two independent: the reel window moving on screen is a change to
-`roi.reels` alone, and a sixth reel a change to `col_bounds` alone. Don't
-"correct" it to frame fractions. Its optional `inset` is a third rectangle
+**`reel_bounds` is the one exception, deliberately.** It is not fractions of
+anything: it is `rows` and `columns`, counts of how many equal shares the
+**`roi.reels` crop** divides into. The reels fill their own crop by definition,
+so reel 3 is its third fifth and no spans need measuring. That is what keeps the
+two blocks independent: the reel window moving on screen is a change to
+`roi.reels` alone, and a sixth reel a change to `columns` alone. The per-span
+`col_bounds`/`row_bounds` form this replaced is **rejected**, not ignored — a
+config still carrying it would split evenly anyway and look correct. An unequal
+grid (a wider centre reel) can no longer be described; that was the trade.
+Its optional `inset` is a rectangle
 again: a fraction of **each tile**, trimmed off every edge, which is what removes
 the frame a game draws inside a reel to highlight a win. A request may override
 it for one split — config errors are 500, request errors 400 — and a trim that

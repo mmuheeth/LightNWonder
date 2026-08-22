@@ -28,7 +28,6 @@ FULL = {
     "obs": {"window_source": "Game Window"},
     "roi": {"cash_meter": [0.13, 0.75, 0.86, 0.78]},
     "button_targets": {"take_win": [0.124, 0.917]},
-    "ideck": {"panel": "virtual_oled"},
     "events": {
         "rules": [{"event": "jackpot-hit", "pattern": "MoneyLinkOutroSM"}],
         "disable": ["win-collected"],
@@ -51,17 +50,15 @@ def test_every_block_is_read(tmp_path: Path) -> None:
     assert game.name == "ExampleGame"
     assert game.process == "ExampleGame.exe"
     assert game.obs_window_source == "Game Window"
-    assert game.ideck_panel == "virtual_oled"
     assert game.log_path == Path(r"C:\logs\Game\ExampleGame.log")
     assert game.roi["cash_meter"] == [0.13, 0.75, 0.86, 0.78]
     assert game.button_targets["take_win"] == [0.124, 0.917]
 
 
-def test_a_game_without_an_ideck_block_is_not_an_error(tmp_path: Path) -> None:
-    """The deck is addressed by layout key, so a game need declare nothing."""
+def test_a_game_declaring_nothing_but_a_name_is_not_an_error(tmp_path: Path) -> None:
+    """Every block is optional, so a new game starts as one line."""
     game = load_game_config(write(tmp_path, {"name": "Bare"}))
 
-    assert game.ideck_panel is None
     assert game.log_path is None
     assert game.obs_window_source is None
     assert game.roi == {}
@@ -83,8 +80,6 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
     [
         ("{not json", "not valid JSON"),
         ([1, 2, 3], "must be a JSON object"),
-        ({"ideck": []}, "'ideck'.*must be a JSON object"),
-        ({"ideck": {"panel": 3}}, "'ideck.panel'.*must be a string"),
         ({"log": ["a"]}, "'log'.*must be a string"),
         ({"process": ["a"]}, "'process'.*must be a string"),
         ({"obs": []}, "'obs'.*must be a JSON object"),
@@ -110,8 +105,6 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
     ids=[
         "malformed-json",
         "not-an-object",
-        "ideck-not-an-object",
-        "panel-not-a-string",
         "log-not-a-string",
         "process-not-a-string",
         "obs-not-an-object",
@@ -135,7 +128,7 @@ def test_a_malformed_config_says_what_is_wrong(
 
 def test_the_error_names_the_file_that_is_wrong(tmp_path: Path) -> None:
     """One backend, several games: the message has to say which file to fix."""
-    path = write(tmp_path, {"ideck": {"panel": 3}})
+    path = write(tmp_path, {"process": ["a"]})
 
     with pytest.raises(GameConfigError, match=r"ExampleGame\.json"):
         load_game_config(path)

@@ -62,11 +62,10 @@ PANEL_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </PanelConfig>
 """
 
+# The active game exists only so the selection resolves; i-deck reads nothing
+# out of it -- the deck is the cabinet's, not the game's.
 GAME_CONFIG = """{
-  "name": "HuffNPuffLink",
-  "ideck": {
-    "panel": "virtual_oled"
-  }
+  "name": "HuffNPuffLink"
 }
 """
 

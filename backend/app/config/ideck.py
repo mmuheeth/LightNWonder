@@ -37,6 +37,10 @@ class IDeckSettings(BaseSettings):
     # mouse messages, so the physical cursor never moves.
     IDECK_WINDOW_TITLE: str = "Virtual OLED"
     IDECK_WINDOW_CLASS: str = "SDL_app"
+    # Which layout is a property of the cabinet, not of the game: every title
+    # this drives runs on `virtual_oled`, and a game that needed another one
+    # would need a differently-built deck, not a different config file. So the
+    # name lives here, in the one setting that has to name the file anyway.
     IDECK_PANEL_XML: Path = Path(
         r"C:\ssd\cabinet\deployment\cfg\ButtonPanel\virtual_oled.xml"
     )

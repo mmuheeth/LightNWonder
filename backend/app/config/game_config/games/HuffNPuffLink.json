@@ -40,9 +40,6 @@
       0.883
     ]
   },
-  "ideck": {
-    "panel": "virtual_oled"
-  },
   "events": {
     "rules": [
       {

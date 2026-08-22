@@ -182,9 +182,9 @@ def _grid(config: GameConfig) -> reel_grid.ReelGrid:
 
     Read here as well as in :mod:`app.services.grid` because the overlay draws on
     the crop and needs to know where a tile's centre is inside it, which the
-    filenames of a written split cannot say. Reused rather than re-derived: the
-    ``col_bounds`` gaps are where the reel strips actually are, so a centre taken
-    from them lands on the symbol and one taken from an even division does not.
+    filenames of a written split cannot say. Read from the config rather than
+    counted off those filenames so the centre comes out of the same division the
+    tiles were cut with, ``inset`` included.
 
     Raises:
         GridNotConfiguredError: if the game declares no ``reel_bounds``.
