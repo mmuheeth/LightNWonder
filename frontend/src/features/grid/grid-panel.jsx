@@ -1,5 +1,4 @@
 import { Grid3x3, RefreshCw, Scissors } from "lucide-react";
-import { useState } from "react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { StatRow } from "@/components/stat-row";
@@ -12,7 +11,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useGridLayout, useSplitGrid } from "@/features/grid/use-grid";
 import { cn } from "@/lib/utils";
@@ -95,26 +93,14 @@ function TileMatrix({ tiles, columns }) {
  * A game that declares no reels is a state, not an error: the backend reports it
  * as `error` on a 200 and this says so with Split disabled, the same way the ROI
  * panel handles a region with unusable numbers.
- *
- * The trim override is the one piece of client state here, and it exists for a
- * loop rather than for a preference: try a number against a frame that does not
- * move, look at the tiles, then write the winner into the game config. Left
- * blank it sends nothing and the config's own trim applies.
  */
 export function GridPanel() {
   const { data, error, isPending, isFetching, refetch } = useGridLayout();
   const split = useSplitGrid();
 
-  // Blank means "whatever the config says", which is the case that needs no
-  // typing. Held as the raw string so a half-typed "0." is not snapped to 0.
-  const [inset, setInset] = useState("");
-
   const frame = data?.latest_frame ?? null;
   const layoutError = data?.error ?? null;
-  const trimmed = inset.trim();
-  const override = trimmed === "" ? null : Number(trimmed);
-  const insetInvalid = override !== null && !(override >= 0 && override < 0.5);
-  const canSplit = Boolean(frame) && !layoutError && !insetInvalid;
+  const canSplit = Boolean(frame) && !layoutError;
 
   return (
     <Card>
@@ -179,45 +165,19 @@ export function GridPanel() {
 
             <div className="space-y-2 border-t pt-4">
               <div className="flex flex-wrap items-end justify-between gap-2">
-                <div className="space-y-1">
-                  <label
-                    htmlFor="grid-inset"
-                    className="text-muted-foreground block text-[0.65rem] font-semibold tracking-[0.16em] uppercase"
-                  >
-                    Trim override
-                  </label>
-                  <Input
-                    id="grid-inset"
-                    aria-label="Trim override"
-                    inputMode="decimal"
-                    placeholder="from config"
-                    value={inset}
-                    onChange={(event) => setInset(event.target.value)}
-                    className="h-9 w-32 font-mono text-sm"
-                  />
-                </div>
+                <p className="text-muted-foreground text-xs">
+                  Writes to <span className="font-mono">obs-captured-files/grid/</span>
+                </p>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    split.mutate(override === null ? {} : { inset: override })
-                  }
+                  onClick={() => split.mutate({})}
                   disabled={!canSplit || split.isPending}
                 >
                   <Scissors />
                   Split
                 </Button>
               </div>
-              <p className="text-muted-foreground text-xs">
-                A fraction of each tile, trimmed off every edge — for finding the number
-                to write into the game config. Writes to{" "}
-                <span className="font-mono">obs-captured-files/grid/</span>
-              </p>
-              {insetInvalid ? (
-                <p className="text-destructive text-xs">
-                  The trim must be a fraction from 0 up to 0.5.
-                </p>
-              ) : null}
               {layoutError ? (
                 <p className="text-destructive text-xs">{layoutError}</p>
               ) : null}
