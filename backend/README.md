@@ -867,18 +867,19 @@ crop, and every other region leaves it null.
 ```
 
 `app/utils/meter.py` does the image work and knows nothing about game configs;
-`app/services/meter.py` supplies the engine and the per-skin band. Reading never
+`app/services/meter.py` supplies the engine and the per-skin band and field
+windows. Reading never
 fails the crop -- a missing Tesseract or an unreadable strip populates
 `meter.error` and the picture still comes back, because checking that a region is
 aimed correctly must not require anything to be legible inside it.
 
 ### The values are found, not looked up
 
-Fixed pixel boxes do not work. The same 683x29 strip arrives in **three different
-horizontal alignments**, because `roi.cash_meter` is a fraction of the *frame* and
-the game does not fill the canvas identically every launch. A hand-tuned box table
-reads 15 of the 20 saved crops and mangles the rest -- truncating `$996.10` to
-`$996.1`, welding a cell border onto `,$999.12`.
+Fixed pixel boxes do not work. A hand-tuned box table reads 15 of the 20 saved
+crops and mangles the rest -- truncating `$996.10` to `$996.1`, welding a cell
+border onto `,$999.12`. The strip is also not one size: the 20 saved frames catch
+the game window at 412, 421, 459 and 501 px wide, so a table would need one entry
+per window size a developer happens to drag to.
 
 So the digits are located per image: they are the brightest thing in the strip, so
 a lit column is one whose brightest pixel is near the strip's own maximum, and
@@ -893,12 +894,19 @@ confidence 0 to 45, against 79 to 97 for the values. This is not a tuning proble
 so it is not attempted. Each field owns a span of the strip's width instead:
 
 ```json
-"meter": { "windows": { "cash": [0.33, 0.44], "win": [0.47, 0.55], "bet": [0.58, 0.66] } }
+"meter": { "windows": { "cash": [0.27, 0.37], "win": [0.46, 0.56], "bet": [0.64, 0.74] } }
 ```
 
-Those defaults fit **both** shipped skins despite them looking nothing alike,
-because meter bars put these three cells at similar proportions. Declaring
-`windows` is only for a skin that orders its cells differently.
+Fractions of the strip, and the strip is a crop of the **content box** -- so a
+cell centre no longer moves when the simulator is resized, which is what makes a
+measured window worth keeping. Across the four window widths in the saved frames
+FortuneOx's centres hold at cash 0.315-0.343, win 0.500-0.529, bet 0.685-0.702.
+
+`DEFAULT_WINDOWS` in `app/utils/meter.py` is the union of the two measured skins
+and is deliberately loose -- a fallback for a game nobody has measured. **Both
+shipped games declare their own `windows`**, because the union is too wide for
+either: HuffNPuffLink has a fourth cell at 0.644, inside the default `bet` span
+and nowhere near its real bet cell. Measure a new skin rather than inheriting.
 
 Taking the cells left to right instead would need no windows, but **11 of the 20
 saved crops have an empty WIN cell**, so counting would report the bet as the win.
@@ -1018,7 +1026,7 @@ Later wins, and every reading reports what it ended up with:
 3. **The request's `options`** — for one read, which is how a region gets tuned.
 
 ```json
-"roi": { "cash_meter": [0.229264, 0.844468, 0.762349, 0.884554] },
+"roi": { "cash_meter": [0.000000, 0.844468, 1.000000, 0.884554] },
 "ocr": { "cash_meter": { "psm": 11, "char_whitelist": "0123456789.,$" } }
 ```
 

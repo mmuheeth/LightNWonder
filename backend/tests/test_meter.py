@@ -11,9 +11,11 @@ The geometry tests use no engine at all. Where a number *is* on a strip is a
 question about pixels, and answering it with a fake reader would prove only that
 the fake was consulted.
 
-One group of tests uses the real engine over the project's own saved crops, and
+One group of tests uses the real engine over the project's own saved frames, and
 skips when there is neither. Those are the only ones that can catch the thing a
-fake cannot: that the values are *right*.
+fake cannot: that the values are *right*. They crop the frame themselves rather
+than reading a saved crop, so the region and the content box it resolves against
+are under test too -- a strip handed in finished hides both.
 """
 
 from __future__ import annotations
@@ -31,7 +33,8 @@ from app.config.ocr import EXECUTABLE_NAME, discover_executable
 from app.core.config import settings
 from app.schemas.meter import MeterMode
 from app.services import meter as meter_service
-from app.utils import meter, ocr
+from app.services import roi as roi_service
+from app.utils import image_roi, meter, ocr
 
 TSV_HEADER = (
     "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\t"
@@ -130,9 +133,9 @@ def strip(
 # different widths, because the fake engine answers by the width of the crop it is
 # handed -- that is how a test says "the cash cell reads $12.34 and the bet cell
 # reads $0.50" without reaching inside the extractor.
-CASH_CELL = (0.35, 0.42)
+CASH_CELL = (0.28, 0.35)
 WIN_CELL = (0.49, 0.53)
-BET_CELL = (0.60, 0.655)
+BET_CELL = (0.68, 0.735)
 
 
 @pytest.fixture
@@ -400,48 +403,53 @@ def test_a_strip_with_no_area_is_reported_not_raised(
 
 # --- against the real engine, over the project's own crops ------------------
 
-SAVED_CROPS = Path("obs-captured-files") / "cash-meter"
+SAVED_FRAMES = Path("obs-captured-files") / "screenshots"
+
+GAME_CONFIGS = Path("app/config/game_config/games")
 
 
-def _saved(name: str) -> Path:
-    return SAVED_CROPS / name
+def _frame(name: str) -> Path:
+    return SAVED_FRAMES / name
 
 
 real_engine = pytest.mark.skipif(
     discover_executable() is None, reason="no Tesseract installed"
 )
 
+# Verified by eye, both skins, both modes, and a WIN cell that is empty as well as
+# ones that are not. Named by *frame*, not by crop: a saved crop is only as good
+# as the region semantics in force when it was written, and asserting against one
+# would pin the strip's geometry to whenever it was last extracted.
+REAL_STRIPS = [
+    ("screenshot-1787208401603.png", "FortuneOx", "cash", "$", 1001.40, None, 1.76),
+    ("screenshot-1787213890262.png", "FortuneOx", "credits", None, 49883, None, 88),
+    ("screenshot-1787213930188.png", "FortuneOx", "credits", None, 49531, 10, 88),
+    ("screenshot-1787224228160.png", "FortuneOx", "cash", "$", 995.60, 0.75, 0.88),
+    ("screenshot-1787224299454.png", "FortuneOx", "credits", None, 99371, 140, 176),
+    (
+        "screenshot-1787217604256.png",
+        "HuffNPuffLink",
+        "cash",
+        "$",
+        999.00,
+        0.05,
+        1.00,
+    ),
+    (
+        "screenshot-1787223377684.png",
+        "HuffNPuffLink",
+        "credits",
+        None,
+        99210,
+        450,
+        100,
+    ),
+]
 
-@pytest.mark.parametrize(
-    ("name", "game", "mode", "currency", "balance", "win", "bet"),
-    [
-        # Verified by eye against the crops, both skins, both modes, and a WIN
-        # cell that is empty as well as ones that are not.
-        ("screenshot-1787208401603.png", "FortuneOx", "cash", "$", 1001.40, None, 1.76),
-        ("screenshot-1787213890262.png", "FortuneOx", "credits", None, 49883, None, 88),
-        ("screenshot-1787213930188.png", "FortuneOx", "credits", None, 49531, 10, 88),
-        ("screenshot-1787224228160.png", "FortuneOx", "cash", "$", 995.60, 0.75, 0.88),
-        ("screenshot-1787224299454.png", "FortuneOx", "credits", None, 99371, 140, 176),
-        (
-            "screenshot-1787217604256.png",
-            "HuffNPuffLink",
-            "cash",
-            "$",
-            999.00,
-            0.05,
-            1.00,
-        ),
-        (
-            "screenshot-1787223377684.png",
-            "HuffNPuffLink",
-            "credits",
-            None,
-            99210,
-            450,
-            100,
-        ),
-    ],
-)
+REAL_STRIP_FIELDS = ("name", "game", "mode", "currency", "balance", "win", "bet")
+
+
+@pytest.mark.parametrize(REAL_STRIP_FIELDS, REAL_STRIPS)
 @real_engine
 def test_real_strips_read_the_values_that_are_on_them(
     name: str,
@@ -455,10 +463,17 @@ def test_real_strips_read_the_values_that_are_on_them(
 ) -> None:
     """The only tests that can catch a wrong number rather than a wrong shape.
 
-    Verified by eye against the crops. Skipped where the saved crops are not
-    present, since they are gitignored capture output rather than fixtures.
+    Verified by eye. Skipped where the saved frames are not present, since they
+    are gitignored capture output rather than fixtures.
+
+    Cropped here the way the ROI service crops -- from the frame, against its
+    content box -- rather than read off an already-saved strip. A strip is the
+    product of two things that can each be wrong, the region and the box it is
+    resolved against, and a test fed the finished crop can see neither. That is
+    what let the move to content-box fractions leave every field of both shipped
+    skins unread with the suite still green.
     """
-    path = _saved(name)
+    path = _frame(name)
     if not path.is_file():
         pytest.skip(f"{path} is not present")
     monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", None)
@@ -466,11 +481,17 @@ def test_real_strips_read_the_values_that_are_on_them(
     # Through the declared band, which is what the ROI service uses. Fitting one
     # from the frame in hand is the fallback for a game nobody has measured, and
     # is measurably worse -- so it is not what these assertions should ride on.
-    config = load_game_config(Path("app/config/game_config/games") / f"{game}.json")
-    with Image.open(path) as image:
-        values = meter_service.read(
-            image.convert("RGB"), game=game, profile=config.meter
-        )
+    config = load_game_config(GAME_CONFIGS / f"{game}.json")
+    with Image.open(path) as frame:
+        image = frame.convert("RGB")
+        roi = image_roi.named_roi(config.roi, "cash_meter")
+        box, content = roi_service.resolve_box(roi, image)
+        # Both skins put their meter across the full width of the game, so the
+        # strip is exactly as wide as the content box. The one-line check that
+        # would have caught this regression: a canvas-relative region resolves
+        # to a plausible box *inside* the content box, just the wrong one.
+        assert box[2] - box[0] == content.width
+        values = meter_service.read(image.crop(box), game=game, profile=config.meter)
 
     assert values.error is None
     assert values.mode.value == mode
@@ -518,12 +539,23 @@ def test_declared_windows_move_which_field_a_value_lands_in(
     assert claimed.unmapped == []
 
 
-def test_the_shipped_games_declare_a_band_for_their_skin() -> None:
-    """Both skins are measured, so neither depends on the fitting fallback."""
+def test_the_shipped_games_declare_a_band_and_windows_for_their_skin() -> None:
+    """Both skins are measured, so neither depends on a fallback.
+
+    Windows as well as the band: :data:`app.utils.meter.DEFAULT_WINDOWS` is the
+    union of the two skins and is deliberately too loose for either -- one of
+    HuffNPuffLink's own cells sits inside the default ``bet`` span. A shipped game
+    inheriting it would read plausible wrong numbers rather than fail.
+    """
     for game in ("FortuneOx", "HuffNPuffLink"):
-        config = load_game_config(Path("app/config/game_config/games") / f"{game}.json")
+        config = load_game_config(GAME_CONFIGS / f"{game}.json")
         top, bottom = config.meter["band"]
         assert 0.0 <= top < bottom <= 1.0
+
+        windows = config.meter["windows"]
+        assert set(windows) == set(meter.DEFAULT_WINDOWS)
+        for low, high in windows.values():
+            assert 0.0 <= low < high <= 1.0
 
 
 @pytest.mark.parametrize(

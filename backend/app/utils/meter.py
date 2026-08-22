@@ -148,16 +148,29 @@ LADDER: tuple[tuple[tuple[int, float], ...], ...] = (
     ((8, 6.0), (7, 6.0), (8, 10.0), (7, 10.0)),
 )
 
-# Where each field sits, as a fraction of the strip's width. Measured across both
-# known skins, which agree despite looking nothing alike -- cash centres land at
-# 0.373-0.412 and 0.380-0.402, win at 0.502-0.526 and 0.502-0.504, bet at
-# 0.622-0.643 and 0.605-0.616 -- because meter bars put these three cells at
-# similar proportions. The windows clear the junk between them: a game logo at
-# 0.27, inline label brackets at 0.35 and 0.45, a denomination badge at 0.70-0.82.
+# Where each field sits, as a fraction of the strip's width -- and the strip is a
+# crop of the **content box**, not of the canvas, so these are fractions of the
+# game. That distinction is the whole reason this block has the values it has: the
+# numbers below used to be measured off canvas-relative crops, which carried a
+# slab of letterbox on either side and pushed every centre inwards.
+#
+# Re-measured over both known skins after the change -- cash centres land at 0.296
+# and 0.315-0.343, win at 0.520 and 0.500-0.529, bet at 0.747 and 0.685-0.702 --
+# across game windows from 412 to 501 px wide, which is the point of resolving
+# against the content box: the centre no longer moves when the simulator is
+# resized. The windows clear the junk between them: a game logo at 0.04, inline
+# label brackets, a denomination badge at 0.95-0.96.
+#
+# These are the union of the two skins, so they are wide -- a fallback for a game
+# nobody has measured, not a substitute for measuring one. Both shipped games
+# declare their own ``meter.windows`` because the union is too loose for either:
+# HuffNPuffLink has a fourth cell at 0.644, inside the ``bet`` span below and
+# nowhere near its real bet cell. A new skin with a cell in a gap needs its own
+# block the same way.
 DEFAULT_WINDOWS: dict[str, tuple[float, float]] = {
-    "cash": (0.33, 0.44),
-    "win": (0.47, 0.55),
-    "bet": (0.58, 0.66),
+    "cash": (0.26, 0.37),
+    "win": (0.46, 0.57),
+    "bet": (0.63, 0.79),
 }
 
 # A value, with the symbol that may be glued to its left.

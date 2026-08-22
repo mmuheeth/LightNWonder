@@ -4,9 +4,9 @@
   "log": "C:\\logs\\Game\\HuffNPuffLink\\Logs\\HuffNPuffLink_Theme.log",
   "roi": {
     "cash_meter": [
-      0.138889,
+      0.0,
       0.755463,
-      0.869281,
+      1.0,
       0.782518
     ]
   },
@@ -14,7 +14,21 @@
     "band": [
       0.052632,
       0.947368
-    ]
+    ],
+    "windows": {
+      "cash": [
+        0.25,
+        0.35
+      ],
+      "win": [
+        0.47,
+        0.57
+      ],
+      "bet": [
+        0.7,
+        0.8
+      ]
+    }
   },
   "button_targets": {
     "take_win": [
