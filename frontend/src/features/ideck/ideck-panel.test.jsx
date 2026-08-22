@@ -34,13 +34,11 @@ function status(state = "ready") {
   );
 }
 
-/** Three keys is enough to cover both rows and a wide configured key. */
+/** Three keys is enough to cover both rows and a wide key. */
 const BUTTONS = envelope([
   {
-    name: "first_action",
     xml_id: "Line1",
     button_id: 0,
-    aliases: ["first_action"],
     panel_x: 136,
     panel_y: 15,
     width: 106,
@@ -49,10 +47,8 @@ const BUTTONS = envelope([
     client_y: 52,
   },
   {
-    name: "primary_action",
     xml_id: "Rebet",
     button_id: 10,
-    aliases: ["alternate_action", "primary_action"],
     panel_x: 701,
     panel_y: 15,
     width: 138,
@@ -61,10 +57,8 @@ const BUTTONS = envelope([
     client_y: 52,
   },
   {
-    name: "secondary_action",
     xml_id: "Collect",
     button_id: 12,
-    aliases: ["secondary_action"],
     panel_x: 10,
     panel_y: 94,
     width: 106,
@@ -75,7 +69,7 @@ const BUTTONS = envelope([
 ]);
 
 const PRESSED = envelope({
-  button: "primary_action",
+  button: "Rebet",
   xml_id: "Rebet",
   button_id: 10,
   client_x: 770,
@@ -132,13 +126,13 @@ describe("IDeckPanel", () => {
 
     expect(await screen.findByText("ready")).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /^FIRST ACTION$/ }),
+      await screen.findByRole("button", { name: /^LINE1$/ }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+      await screen.findByRole("button", { name: /^REBET$/ }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /^SECONDARY ACTION$/ }),
+      await screen.findByRole("button", { name: /^COLLECT$/ }),
     ).toBeInTheDocument();
   });
 
@@ -147,7 +141,7 @@ describe("IDeckPanel", () => {
     renderWithProviders(<IDeckPanel />);
 
     await userEvent.click(
-      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+      await screen.findByRole("button", { name: /^REBET$/ }),
     );
 
     await waitFor(() => {
@@ -155,7 +149,7 @@ describe("IDeckPanel", () => {
         expect.objectContaining({
           method: "POST",
           url: "/api/ideck/press",
-          data: { button: "primary_action" },
+          data: { button: "Rebet" },
         }),
       );
     });
@@ -171,7 +165,7 @@ describe("IDeckPanel", () => {
     expect(await screen.findByText("access_denied")).toBeInTheDocument();
     expect(await screen.findByText(/Run as administrator/i)).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+      await screen.findByRole("button", { name: /^REBET$/ }),
     ).toBeDisabled();
   });
 
@@ -182,7 +176,7 @@ describe("IDeckPanel", () => {
 
     expect(await screen.findByText("minimized")).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+      await screen.findByRole("button", { name: /^REBET$/ }),
     ).toBeEnabled();
   });
 
@@ -210,7 +204,7 @@ describe("IDeckPanel", () => {
 
     renderWithProviders(<IDeckPanel />);
     await userEvent.click(
-      await screen.findByRole("button", { name: /^PRIMARY ACTION$/ }),
+      await screen.findByRole("button", { name: /^REBET$/ }),
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent(

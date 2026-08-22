@@ -34,21 +34,21 @@ export function getIDeckStatus({ signal } = {}) {
 /**
  * List every key on the deck, in layout order.
  *
+ * `xml_id` is the key's only name and what a press is addressed by.
  * `client_x`/`client_y` are populated only while the panel is open and
- * restored. `aliases` holds every configured name for a key, so one physical
- * key can be labelled with both of the names it answers to.
+ * restored.
  *
  * @param {{signal?: AbortSignal}} [options]
- * @returns {Promise<Array<{name: string, xml_id: string, button_id: number,
- *   aliases: string[], panel_x: number, panel_y: number, width: number,
- *   height: number, client_x: number|null, client_y: number|null}>>}
+ * @returns {Promise<Array<{xml_id: string, button_id: number, panel_x: number,
+ *   panel_y: number, width: number, height: number, client_x: number|null,
+ *   client_y: number|null}>>}
  */
 export function getIDeckButtons({ signal } = {}) {
   return apiRequest({ method: "GET", url: `${IDECK_URL}/buttons`, signal });
 }
 
 /**
- * Press one key, by configured alias or layout name.
+ * Press one key by its layout name, matched case-insensitively.
  *
  * Unless verification is off, this resolves only once the panel's own log shows
  * the press landing.

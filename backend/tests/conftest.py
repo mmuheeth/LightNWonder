@@ -40,7 +40,7 @@ def _clean_obs_state() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _clean_ideck_state() -> Iterator[None]:
-    """Drop the cached panel layout, aliases, and this test's lock."""
+    """Drop the cached panel layout and this test's lock."""
     ideck_service.reset()
     yield
     ideck_service.reset()

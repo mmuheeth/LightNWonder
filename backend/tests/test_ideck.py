@@ -65,17 +65,7 @@ PANEL_XML = """<?xml version="1.0" encoding="UTF-8"?>
 GAME_CONFIG = """{
   "name": "HuffNPuffLink",
   "ideck": {
-    "aliases": {
-      "spin": "Rebet",
-      "repeat_bet": "Rebet",
-      "max_bet": "Maxbet",
-      "collect": "Collect",
-      "service": "Service",
-      "line1": "Line1", "line2": "Line2", "line3": "Line3",
-      "line4": "Line4", "line5": "Line5",
-      "hold1": "Hold1", "hold2": "Hold2", "hold3": "Hold3",
-      "hold4": "Hold4", "hold5": "Hold5"
-    }
+    "panel": "virtual_oled"
   }
 }
 """
@@ -466,10 +456,9 @@ async def test_buttons_lists_the_whole_deck_with_live_coordinates(
     assert len(data) == len(EXPECTED_BUTTONS)
 
     rebet = next(b for b in data if b["xml_id"] == "Rebet")
-    # Both names for the one physical key, and the client point is its centre
-    # because this window shows the panel at exactly its declared size.
-    assert rebet["aliases"] == ["repeat_bet", "spin"]
-    assert rebet["name"] == "spin"
+    # The client point is the key's centre, because this window shows the panel
+    # at exactly its declared size.
+    assert rebet["button_id"] == 10
     assert (rebet["client_x"], rebet["client_y"]) == (770, 52)
 
 
@@ -500,7 +489,7 @@ async def test_press_sends_move_then_down_then_up(
     believed the pointer was.
     """
     data = assert_success(
-        (await client.post("/api/ideck/press", json={"button": "spin"})).json()
+        (await client.post("/api/ideck/press", json={"button": "Rebet"})).json()
     )
     assert panel.kinds() == ["move", "down", "up"]
     assert panel.points("down") == [(770, 52)]
@@ -513,17 +502,17 @@ async def test_press_sends_move_then_down_then_up(
 @pytest.mark.parametrize(
     ("name", "xml_id", "button_id"),
     [
-        ("spin", "Rebet", 10),
-        ("repeat_bet", "Rebet", 10),
-        ("max_bet", "Maxbet", 13),
+        ("Rebet", "Rebet", 10),
+        ("rebet", "Rebet", 10),
+        ("REBET", "Rebet", 10),
+        ("  Rebet  ", "Rebet", 10),
+        ("Maxbet", "Maxbet", 13),
         ("collect", "Collect", 12),
         ("hold1", "Hold1", 5),
         ("line3", "Line3", 2),
-        ("Rebet", "Rebet", 10),
-        ("REBET", "Rebet", 10),
     ],
 )
-async def test_press_resolves_aliases_and_layout_names(
+async def test_press_resolves_layout_names_whatever_their_casing(
     client: AsyncClient,
     ideck_env: None,
     panel: FakePanel,
@@ -553,7 +542,7 @@ async def test_press_scales_to_a_resized_window(
         monkeypatch, FakePanel(panel_log, parse_panel(panel_xml), window=doubled)
     )
     data = assert_success(
-        (await client.post("/api/ideck/press", json={"button": "spin"})).json()
+        (await client.post("/api/ideck/press", json={"button": "Rebet"})).json()
     )
     assert live.points("down") == [(1540, 104)]
     # The fake hit-tests in panel space, so confirmation proves the scaled
@@ -574,7 +563,7 @@ async def test_press_restores_a_minimized_panel_first(
         FakePanel(panel_log, parse_panel(panel_xml), window=MINIMIZED_WINDOW),
     )
     data = assert_success(
-        (await client.post("/api/ideck/press", json={"button": "spin"})).json()
+        (await client.post("/api/ideck/press", json={"button": "Rebet"})).json()
     )
     assert live.kinds() == ["restore", "move", "down", "up"]
     assert data["restored"] is True
@@ -593,7 +582,7 @@ async def test_press_refuses_a_minimized_panel_when_restoring_is_off(
         monkeypatch,
         FakePanel(panel_log, parse_panel(panel_xml), window=MINIMIZED_WINDOW),
     )
-    response = await client.post("/api/ideck/press", json={"button": "spin"})
+    response = await client.post("/api/ideck/press", json={"button": "Rebet"})
     assert response.status_code == 409
     assert_failure(response.json(), code="IDECK_WINDOW_NOT_FOUND")
     assert live.kinds() == []
@@ -607,7 +596,7 @@ async def test_press_rejects_an_unknown_button(
     payload = response.json()
     assert_failure(payload, code="IDECK_BUTTON_NOT_FOUND")
     # The message lists what *is* pressable, so a typo is self-correcting.
-    assert "spin" in payload["message"]
+    assert "Rebet" in payload["message"]
     # Nothing was posted: the name is checked before any window is touched.
     assert panel.kinds() == []
 
@@ -620,7 +609,7 @@ async def test_press_fails_when_the_panel_is_closed(
     panel_xml: Path,
 ) -> None:
     install(monkeypatch, FakePanel(panel_log, parse_panel(panel_xml), window=None))
-    response = await client.post("/api/ideck/press", json={"button": "spin"})
+    response = await client.post("/api/ideck/press", json={"button": "Rebet"})
     assert response.status_code == 409
     assert_failure(response.json(), code="IDECK_WINDOW_NOT_FOUND")
 
@@ -633,7 +622,7 @@ async def test_press_fails_off_windows(
     panel_xml: Path,
 ) -> None:
     install(monkeypatch, FakePanel(panel_log, parse_panel(panel_xml), supported=False))
-    response = await client.post("/api/ideck/press", json={"button": "spin"})
+    response = await client.post("/api/ideck/press", json={"button": "Rebet"})
     assert response.status_code == 503
     assert_failure(response.json(), code="SERVICE_UNAVAILABLE")
 
@@ -653,7 +642,7 @@ async def test_an_ignored_press_is_reported_rather_than_claimed(
         monkeypatch,
         FakePanel(panel_log, parse_panel(panel_xml), accepts=False),
     )
-    response = await client.post("/api/ideck/press", json={"button": "spin"})
+    response = await client.post("/api/ideck/press", json={"button": "Rebet"})
     assert response.status_code == 502
     assert_failure(response.json(), code="IDECK_PRESS_NOT_CONFIRMED")
     # It tried again with the window focused before giving up.
@@ -678,7 +667,7 @@ async def test_a_swallowed_first_click_is_retried_with_focus(
         ),
     )
     data = assert_success(
-        (await client.post("/api/ideck/press", json={"button": "spin"})).json()
+        (await client.post("/api/ideck/press", json={"button": "Rebet"})).json()
     )
     assert data["confirmed"] is True
     assert data["refocused"] is True
@@ -697,7 +686,7 @@ async def test_verification_can_be_waived_per_press(
     data = assert_success(
         (
             await client.post(
-                "/api/ideck/press", json={"button": "spin", "verify": False}
+                "/api/ideck/press", json={"button": "Rebet", "verify": False}
             )
         ).json()
     )
@@ -739,7 +728,7 @@ async def test_confirmation_only_reads_what_arrived_after_the_press(
     panel_log.write_text(press_line(10) + "\n", encoding="utf-8")
     panel.accepts = False
     with pytest.raises(Exception, match="logged nothing"):
-        await ideck_service.press("spin")
+        await ideck_service.press("Rebet")
 
 
 async def test_confirmation_survives_the_log_rotating(
@@ -764,7 +753,7 @@ async def test_verification_without_a_log_is_a_configuration_error(
 ) -> None:
     """Silently degrading would make every press an unprovable claim."""
     monkeypatch.setattr(settings, "IDECK_LOG_PATH", tmp_path / "absent.log")
-    response = await client.post("/api/ideck/press", json={"button": "spin"})
+    response = await client.post("/api/ideck/press", json={"button": "Rebet"})
     assert response.status_code == 500
     assert_failure(response.json(), code="IDECK_CONFIG_INVALID")
 
@@ -779,7 +768,7 @@ async def test_a_sequence_presses_each_button_in_order(
         (
             await client.post(
                 "/api/ideck/sequence",
-                json={"buttons": ["line1", "spin"], "delay_seconds": 0.0},
+                json={"buttons": ["Line1", "Rebet"], "delay_seconds": 0.0},
             )
         ).json()
     )
@@ -792,7 +781,7 @@ async def test_a_sequence_stops_at_the_first_failure(
 ) -> None:
     response = await client.post(
         "/api/ideck/sequence",
-        json={"buttons": ["line1", "nudge", "spin"], "delay_seconds": 0.0},
+        json={"buttons": ["Line1", "nudge", "Rebet"], "delay_seconds": 0.0},
     )
     assert response.status_code == 404
     # Only the first button was ever posted.
@@ -859,7 +848,7 @@ async def test_a_blocked_window_is_diagnosed_not_left_looking_broken(
         monkeypatch,
         FakePanel(panel_log, parse_panel(panel_xml), can_interact=False),
     )
-    response = await client.post("/api/ideck/press", json={"button": "spin"})
+    response = await client.post("/api/ideck/press", json={"button": "Rebet"})
     assert response.status_code == 409
     assert_failure(response.json(), code="IDECK_ACCESS_DENIED")
     assert "elevated" in response.json()["message"]
@@ -923,4 +912,4 @@ async def test_someone_else_pressing_does_not_confirm_our_press(
     monkeypatch.setattr(win32, "post_left_down", interfere)
 
     with pytest.raises(Exception, match="logged nothing"):
-        await ideck_service.press("hold1")
+        await ideck_service.press("Hold1")

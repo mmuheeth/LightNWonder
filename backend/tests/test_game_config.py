@@ -28,7 +28,7 @@ FULL = {
     "obs": {"window_source": "Game Window"},
     "roi": {"cash_meter": [0.13, 0.75, 0.86, 0.78]},
     "button_targets": {"take_win": [0.124, 0.917]},
-    "ideck": {"panel": "virtual_oled", "aliases": {"Primary": "ButtonA"}},
+    "ideck": {"panel": "virtual_oled"},
     "events": {
         "rules": [{"event": "jackpot-hit", "pattern": "MoneyLinkOutroSM"}],
         "disable": ["win-collected"],
@@ -57,20 +57,10 @@ def test_every_block_is_read(tmp_path: Path) -> None:
     assert game.button_targets["take_win"] == [0.124, 0.917]
 
 
-def test_alias_keys_are_casefolded_so_lookups_need_not_be(tmp_path: Path) -> None:
-    """The alias arrives however the config author typed it; a press may not."""
-    game = load_game_config(write(tmp_path, FULL))
-
-    assert game.ideck_aliases["primary"] == "ButtonA"
-    # The target keeps the layout's own casing, which is what gets looked up.
-    assert "Primary" not in game.ideck_aliases
-
-
 def test_a_game_without_an_ideck_block_is_not_an_error(tmp_path: Path) -> None:
-    """Keys can always be pressed by their layout name, so aliases are optional."""
+    """The deck is addressed by layout key, so a game need declare nothing."""
     game = load_game_config(write(tmp_path, {"name": "Bare"}))
 
-    assert game.ideck_aliases == {}
     assert game.ideck_panel is None
     assert game.log_path is None
     assert game.obs_window_source is None
@@ -94,8 +84,6 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         ("{not json", "not valid JSON"),
         ([1, 2, 3], "must be a JSON object"),
         ({"ideck": []}, "'ideck'.*must be a JSON object"),
-        ({"ideck": {"aliases": "spin"}}, "'ideck.aliases'.*must be a JSON object"),
-        ({"ideck": {"aliases": {"spin": 5}}}, "must map strings to strings"),
         ({"ideck": {"panel": 3}}, "'ideck.panel'.*must be a string"),
         ({"log": ["a"]}, "'log'.*must be a string"),
         ({"process": ["a"]}, "'process'.*must be a string"),
@@ -123,8 +111,6 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         "malformed-json",
         "not-an-object",
         "ideck-not-an-object",
-        "aliases-not-an-object",
-        "alias-target-not-a-string",
         "panel-not-a-string",
         "log-not-a-string",
         "process-not-a-string",
@@ -149,7 +135,7 @@ def test_a_malformed_config_says_what_is_wrong(
 
 def test_the_error_names_the_file_that_is_wrong(tmp_path: Path) -> None:
     """One backend, several games: the message has to say which file to fix."""
-    path = write(tmp_path, {"ideck": {"aliases": {"spin": 5}}})
+    path = write(tmp_path, {"ideck": {"panel": 3}})
 
     with pytest.raises(GameConfigError, match=r"ExampleGame\.json"):
         load_game_config(path)

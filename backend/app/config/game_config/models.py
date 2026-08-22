@@ -38,13 +38,6 @@ class GameConfig:
     window-capture source and the config needs to disambiguate them.
     """
 
-    ideck_aliases: Mapping[str, str]
-    """Friendly name -> layout key mapping from the selected game.
-
-    Keys are casefolded, so a lookup is case-insensitive without every caller
-    remembering to fold. Values keep the layout's own casing.
-    """
-
     ideck_panel: str | None
     """Layout the game expects, e.g. ``virtual_oled``. Informational."""
 

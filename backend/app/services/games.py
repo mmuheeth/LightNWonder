@@ -17,7 +17,6 @@ from app.core.logging import get_logger
 from app.exceptions.base import GameConfigInvalidError, GameNotFoundError
 from app.schemas.games import ActiveGame, GameCatalog, GameOption
 from app.services import game_input as game_input_service
-from app.services import ideck as ideck_service
 
 logger = get_logger("games")
 
@@ -87,7 +86,8 @@ def select(game: str) -> ActiveGame:
     # Layouts and window settings are deployment-level data; only the cached
     # per-game metadata needs dropping when the selector changes. Every service
     # that caches a GameConfig has to be told, or it keeps serving the old game.
-    ideck_service.reset_game_config()
+    # i-deck is not one of them -- it addresses the deck by layout key, which is
+    # the cabinet's, not the game's.
     game_input_service.reset_game_config()
     logger.info("Active game changed to %s", name)
 

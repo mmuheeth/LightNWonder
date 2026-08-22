@@ -8,7 +8,7 @@ Three failure shapes recur:
 
 - **409 ``IDECK_WINDOW_NOT_FOUND``** -- the panel is not open, or is minimized
   with restoring disabled. Fixed by launching it, not by retrying.
-- **404 ``IDECK_BUTTON_NOT_FOUND``** -- no alias or layout key by that name.
+- **404 ``IDECK_BUTTON_NOT_FOUND``** -- the layout has no key by that name.
 - **502 ``IDECK_PRESS_NOT_CONFIRMED``** -- the press was posted but the panel
   never logged it. Worth retrying.
 """
@@ -67,7 +67,7 @@ async def get_status() -> ApiResponse[IDeckStatus]:
     "/buttons",
     response_model=ApiResponse[list[IDeckButton]],
     summary="List i-deck buttons",
-    responses={500: {"description": "The layout or game config is unreadable"}},
+    responses={500: {"description": "The panel layout is unreadable"}},
 )
 async def get_buttons() -> ApiResponse[list[IDeckButton]]:
     """Every key on the deck, in layout order.
@@ -87,7 +87,7 @@ async def get_buttons() -> ApiResponse[list[IDeckButton]]:
     responses=PRESS_ERRORS,
 )
 async def press(payload: PressRequest) -> ApiResponse[PressResult]:
-    """Press a key by configured alias or by layout name.
+    """Press a key by its layout name, matched case-insensitively.
 
     Unless verification is turned off, this only succeeds once the panel's own
     log shows the press landing.

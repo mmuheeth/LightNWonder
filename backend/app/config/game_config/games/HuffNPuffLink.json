@@ -41,24 +41,7 @@
     ]
   },
   "ideck": {
-    "panel": "virtual_oled",
-    "aliases": {
-      "spin": "Rebet",
-      "repeat_bet": "Rebet",
-      "max_bet": "Maxbet",
-      "collect": "Collect",
-      "service": "Service",
-      "line1": "Line1",
-      "line2": "Line2",
-      "line3": "Line3",
-      "line4": "Line4",
-      "line5": "Line5",
-      "hold1": "Hold1",
-      "hold2": "Hold2",
-      "hold3": "Hold3",
-      "hold4": "Hold4",
-      "hold5": "Hold5"
-    }
+    "panel": "virtual_oled"
   },
   "events": {
     "rules": [

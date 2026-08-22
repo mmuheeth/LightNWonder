@@ -71,8 +71,8 @@ backend/
     │   ├── event_capture.py Event Based Capture runtime settings
     │   ├── ocr.py           Tesseract OCR settings, and finding the engine
     │   ├── paylines.py      match threshold, default line set, overlay size
-    │   └── game_config/     active selection plus per-game aliases, process,
-    │                         logs, ROIs, reel bounds, paylines and targets
+    │   └── game_config/     active selection plus per-game process, logs,
+    │                         ROIs, reel bounds, paylines and targets
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -1262,9 +1262,10 @@ PUT  /api/games/active        switch the active game for this backend process
 The dashboard uses these endpoints to select a game without editing `.env` or
 restarting the backend. The initial selection is stored in
 `app/config/game_config/active_game.json`, and the selection endpoint updates
-that file. The selected config is reloaded for i-deck aliases and OBS retargets
+that file. Every service caching per-game metadata drops it, and OBS retargets
 its window source when OBS is connected; if OBS is closed, it will retarget on
-the next connection.
+the next connection. i-deck needs no reload: it addresses the deck by layout
+key, which belongs to the cabinet rather than to the game.
 
 ## Virtual OLED i-deck
 
@@ -1275,7 +1276,7 @@ which exposes no API — it listens on no port and speaks CORBA internally.
 ```
 GET  /api/ideck/status           panel state; always 200
 GET  /api/ideck/buttons          every key, in layout order
-POST /api/ideck/press            press one configured key {"button": "<alias>"}
+POST /api/ideck/press            press one key {"button": "<layout key>"}
 POST /api/ideck/sequence         press several in order
 POST /api/ideck/probe            capability check, no side effects
 ```
@@ -1287,28 +1288,19 @@ Five things worth knowing:
   is not optional: SDL takes a click's position from the last motion event, not
   from the button message.
 
-- **Geometry is read, not guessed.** `IDECK_PANEL_XML` points at the layout file
-  the panel service itself renders from, so key positions have one source of
-  truth. Only the friendly names come from
-  `app/config/game_config/games/<game>.json`:
-
-  ```json
-  "ideck": { "aliases": { "friendly_name": "LayoutKey" } }
-  ```
-
-  The initial game is selected with
-  `app/config/game_config/active_game.json`, or changed from the dashboard.
-  After that, aliases, process metadata, game log path, screen regions and
-  in-game targets all come from
-  `app/config/game_config/games/<game>.json`. The API accepts any alias in that
-  file or any key name from the panel layout.
+- **Geometry and names are read, not guessed.** `IDECK_PANEL_XML` points at the
+  layout file the panel service itself renders from, so key positions *and* key
+  names have one source of truth. A key is addressed by its layout id —
+  `Rebet`, `Maxbet`, `Collect`, `Service`, `Line1`..`Line5`, `Hold1`..`Hold5` —
+  matched case-insensitively. Nothing per-game has to be kept in step with the
+  deck, and `GET /api/ideck/buttons` lists exactly what is pressable.
 
 - **A key on the deck is not always a key the game uses.** The layout belongs to
-  the cabinet, not the theme, so an alias can name a key the running game binds
-  nothing to: the press lands, the panel confirms it, and the game does nothing.
-  FortuneOx binds only its bottom row — `bet_per_unit_1`..`bet_per_unit_5`,
-  which publish `BetsPerUnitSelectButtonMsg` — and the large key, `spin`, which
-  publishes `SpinButtonMsg`. Its top row (`line1`..`line5`) and `max_bet` stay
+  the cabinet, not the theme, so a key the panel confirms may be one the running
+  game binds nothing to: the press lands, the panel confirms it, and the game
+  does nothing. FortuneOx binds only its bottom row — `Hold1`..`Hold5`, which
+  publish `BetsPerUnitSelectButtonMsg` — and the large key, `Rebet`, which
+  publishes `SpinButtonMsg`. Its top row (`Line1`..`Line5`) and `Maxbet` stay
   inert even in `PanelStateIdleWithCredits` with the bet below maximum. Only the
   game's own log separates the two cases, because a confirmed press proves the
   panel saw it, not that the game acted on it.

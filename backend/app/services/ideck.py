@@ -11,9 +11,9 @@ Two facts make this reliable rather than hopeful:
 
 **Geometry is not guessed.** The panel service renders from a layout file and
 logs which one it chose. :mod:`app.utils.panel_xml` reads that same file, so key
-positions have one source of truth and a re-layout needs no edit here. The
-friendly names that map onto those layout keys come from the per-game config in
-:mod:`app.config.game_config`.
+positions have one source of truth and a re-layout needs no edit here. It is
+also the only source of key *names*: a key is addressed by the id the layout
+gives it, so nothing per-game has to be kept in step with the deck.
 
 **Presses are proven, not assumed.** Every press the panel accepts writes a
 switch transition to its log within milliseconds. Each press captures the log's
@@ -30,7 +30,7 @@ State is module-level, like the other services here, and callers use the
 namespace rather than the functions::
 
     from app.services import ideck as ideck_service
-    await ideck_service.press("configured_alias")
+    await ideck_service.press("Rebet")
 """
 
 from __future__ import annotations
@@ -38,14 +38,8 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Mapping
 
-from app.config.game_config import (
-    ActiveGameSelectionError,
-    GameConfig,
-    GameConfigError,
-    load_game_config,
-)
+from app.config.game_config import ActiveGameSelectionError
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
@@ -71,7 +65,6 @@ from app.utils.panel_xml import PanelButton, PanelLayout, PanelXmlError, parse_p
 logger = get_logger("ideck")
 
 _layout: PanelLayout | None = None
-_game: GameConfig | None = None
 _lock: asyncio.Lock | None = None
 
 # Restoring a window is asynchronous: the client rect stays 0x0 for a frame or
@@ -119,36 +112,6 @@ def _layout_or_raise() -> PanelLayout:
     return _layout
 
 
-def _game_or_raise() -> GameConfig:
-    """Load the selected game's config once and keep it.
-
-    Raises:
-        IDeckConfigError: if the config cannot be read or is malformed.
-    """
-    global _game
-    if _game is None:
-        try:
-            active_game = settings.ideck_active_game
-            _game = load_game_config(settings.ideck_game_config_path_for(active_game))
-        except ActiveGameSelectionError as exc:
-            raise IDeckConfigError(str(exc)) from exc
-        except GameConfigError as exc:
-            raise IDeckConfigError(f"Config for game {active_game!r}: {exc}") from exc
-    return _game
-
-
-def _aliases() -> Mapping[str, str]:
-    """The game's friendly-name map, keyed by casefolded alias.
-
-    Empty when the game declares no ``ideck`` block -- keys can always be pressed
-    by their layout name.
-
-    Raises:
-        IDeckConfigError: if the game config cannot be read or is malformed.
-    """
-    return _game_or_raise().ideck_aliases
-
-
 def _log() -> LogTail:
     """A cursor over the panel service's log.
 
@@ -159,20 +122,15 @@ def _log() -> LogTail:
 
 
 def _resolve_button(name: str) -> PanelButton:
-    """Map a caller-supplied name onto a key in the layout.
-
-    Accepts either a configured alias or a layout key name, both
-    case-insensitively.
+    """Map a caller-supplied name onto a key in the layout, case-insensitively.
 
     Raises:
-        IDeckButtonNotFoundError: if the name matches neither.
+        IDeckButtonNotFoundError: if the layout has no key by that name.
     """
     layout = _layout_or_raise()
-    wanted = name.strip()
-    target = _aliases().get(wanted.casefold(), wanted)
-    button = layout.by_xml_id(target)
+    button = layout.by_xml_id(name.strip())
     if button is None:
-        known = sorted({*_aliases(), *(b.xml_id for b in layout.buttons)})
+        known = sorted(b.xml_id for b in layout.buttons)
         raise IDeckButtonNotFoundError(
             f"No i-deck button named {name!r}. Known names: {', '.join(known)}"
         )
@@ -302,15 +260,6 @@ def _require_log_for_verification() -> None:
         )
 
 
-def _primary_alias(xml_id: str, aliases: Mapping[str, str]) -> str | None:
-    """First configured alias for a key, in config order."""
-    wanted = xml_id.casefold()
-    return next(
-        (alias for alias, target in aliases.items() if target.casefold() == wanted),
-        None,
-    )
-
-
 # --- public API -----------------------------------------------------------
 
 
@@ -335,9 +284,6 @@ async def status() -> IDeckStatus:
     try:
         base["game"] = settings.ideck_active_game
         layout = _layout_or_raise()
-        # Loaded but unused here: it surfaces a broken game config as a reported
-        # state rather than letting the first press be the thing that finds out.
-        _game_or_raise()
     except ActiveGameSelectionError as exc:
         logger.warning("i-deck active-game selection is unusable: %s", exc)
         return IDeckStatus(state=IDeckWindowState.NOT_FOUND, **base)
@@ -383,10 +329,9 @@ async def buttons() -> list[IDeckButton]:
     with the panel closed.
 
     Raises:
-        IDeckConfigError: if the layout or game config cannot be read.
+        IDeckConfigError: if the layout cannot be read.
     """
     layout = _layout_or_raise()
-    aliases = _aliases()
 
     window: win32.WindowInfo | None = None
     if win32.is_supported():
@@ -399,17 +344,10 @@ async def buttons() -> list[IDeckButton]:
     resolved: list[IDeckButton] = []
     for button in layout.buttons:
         point = _client_point(button, window) if window is not None else None
-        matching = sorted(
-            alias
-            for alias, target in aliases.items()
-            if target.casefold() == button.xml_id.casefold()
-        )
         resolved.append(
             IDeckButton(
-                name=_primary_alias(button.xml_id, aliases) or button.xml_id,
                 xml_id=button.xml_id,
                 button_id=button.button_id,
-                aliases=matching,
                 panel_x=button.x,
                 panel_y=button.y,
                 width=button.width,
@@ -432,7 +370,7 @@ async def press(
     Raises:
         ServiceUnavailableError: if this build cannot reach the Win32 API.
         IDeckWindowNotFoundError: if the panel window is absent or unusable.
-        IDeckButtonNotFoundError: if the name matches no alias or layout key.
+        IDeckButtonNotFoundError: if the layout has no key by that name.
         IDeckConfigError: if verification is on but the panel log is missing.
         IDeckPressNotConfirmedError: if the press was posted but never appeared
             in the panel log.
@@ -596,19 +534,15 @@ async def probe() -> ProbeResult:
 
 
 def reset() -> None:
-    """Drop the cached layout, game config and lock without touching any window.
+    """Drop the cached layout and lock without touching any window.
 
     Mirrors ``obs_service.reset()``: tests call it between cases. Clearing the
-    lock matters as much as clearing the config -- the next test builds one bound
+    lock matters as much as clearing the layout -- the next test builds one bound
     to its own event loop.
+
+    There is no per-game state to drop: the deck is addressed by layout key, so
+    switching games changes nothing this service caches.
     """
-    global _layout, _game, _lock
+    global _layout, _lock
     _layout = None
-    _game = None
     _lock = None
-
-
-def reset_game_config() -> None:
-    """Drop only the cached per-game metadata after a runtime game switch."""
-    global _game
-    _game = None

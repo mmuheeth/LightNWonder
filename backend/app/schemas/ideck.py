@@ -5,9 +5,9 @@ coordinates come from the layout file and never change; *client* coordinates are
 where a key currently sits inside the live window, and shift whenever the panel
 is resized. Presses are addressed in client coordinates.
 
-Buttons are named twice, too: ``name`` is the friendly alias from the game
-config, while ``xml_id`` is what the panel layout calls the same key. Several
-aliases may point at one key.
+A key has one name, ``xml_id``: what the panel layout calls it. The layout
+belongs to the cabinet rather than to any game, so that name is the same
+whichever game is running.
 """
 
 from __future__ import annotations
@@ -38,14 +38,9 @@ class IDeckWindowState(StrEnum):
 class IDeckButton(BaseModel):
     """One key on the deck, in both coordinate spaces."""
 
-    name: str = Field(description="Friendly alias from the game config.")
-    xml_id: str = Field(description="Key name in the panel layout.")
+    xml_id: str = Field(description="Key name in the panel layout; press by this.")
     button_id: int = Field(
         ge=0, description="Hardware switch number; the panel logs it in hex."
-    )
-    aliases: list[str] = Field(
-        default_factory=list,
-        description="Every configured name for this key; several may share one.",
     )
     panel_x: int = Field(description="Left edge in panel coordinates.")
     panel_y: int = Field(description="Top edge in panel coordinates.")
@@ -81,9 +76,9 @@ class IDeckStatus(BaseModel):
     panel_height: int | None = Field(
         default=None, description="Height the layout declares."
     )
-    game: str = Field(description="Game config supplying the button aliases.")
+    game: str = Field(description="Game currently selected for this backend.")
     button_count: int = Field(
-        default=0, ge=0, description="Number of aliases currently resolvable."
+        default=0, ge=0, description="Number of keys the layout declares."
     )
     panel_xml: str = Field(description="Layout file the geometry was read from.")
     log_path: str = Field(description="Panel log used to confirm presses.")
@@ -98,7 +93,7 @@ class PressRequest(BaseModel):
     button: str = Field(
         min_length=1,
         max_length=64,
-        description="Alias from the game config, or a layout key name.",
+        description="Layout key name, matched case-insensitively.",
     )
     verify: bool | None = Field(
         default=None,
@@ -118,7 +113,7 @@ class SequenceRequest(BaseModel):
     buttons: list[str] = Field(
         min_length=1,
         max_length=32,
-        description="Aliases to press, in order. The run stops at the first failure.",
+        description="Key names to press, in order. The run stops at the first failure.",
     )
     delay_seconds: float = Field(
         default=0.5, ge=0.0, le=30.0, description="Pause between presses."
@@ -136,8 +131,8 @@ class PressResult(BaseModel):
     endpoint fails, rather than reporting a success that did not happen.
     """
 
-    button: str = Field(description="Alias that was pressed.")
-    xml_id: str = Field(description="Layout key the alias resolved to.")
+    button: str = Field(description="Name as the caller spelled it.")
+    xml_id: str = Field(description="Layout key it resolved to.")
     button_id: int = Field(description="Hardware switch number that was driven.")
     client_x: int = Field(description="Client X the press was aimed at.")
     client_y: int = Field(description="Client Y the press was aimed at.")

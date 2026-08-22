@@ -24,15 +24,6 @@ def _object(raw: Any, *, where: str) -> Mapping[str, Any]:
     return raw
 
 
-def _string_map(raw: Any, *, where: str) -> dict[str, str]:
-    """Narrow a decoded JSON value to a flat string -> string map."""
-    mapping = _object(raw, where=where)
-    for key, value in mapping.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise GameConfigError(f"{where} must map strings to strings")
-    return dict(mapping)
-
-
 def _ocr(raw: Any, *, path: Path) -> dict[str, Mapping[str, Any]]:
     """Read the optional ``ocr`` block: option overrides per named region.
 
@@ -125,8 +116,8 @@ def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, 
 def load_game_config(path: Path) -> GameConfig:
     """Read and validate one game config.
 
-    An absent ``ideck`` block is not an error -- keys can always be pressed by
-    their layout name -- but an unreadable or malformed file is.
+    Every block is optional -- a config declaring nothing but a name is valid --
+    but an unreadable or malformed file is an error.
 
     Raises:
         GameConfigError: if the file is missing, is not valid JSON, is not an
@@ -148,7 +139,6 @@ def load_game_config(path: Path) -> GameConfig:
     document = _object(raw, where=f"The game config at {path}")
 
     ideck = _object(document.get("ideck"), where=f"'ideck' in {path}")
-    aliases = _string_map(ideck.get("aliases"), where=f"'ideck.aliases' in {path}")
 
     panel = ideck.get("panel")
     if panel is not None and not isinstance(panel, str):
@@ -178,9 +168,6 @@ def load_game_config(path: Path) -> GameConfig:
         path=path,
         process=process,
         obs_window_source=obs_window_source,
-        ideck_aliases=freeze_mapping(
-            {alias.casefold(): target for alias, target in aliases.items()}
-        ),
         ideck_panel=panel,
         log_path=Path(log) if log else None,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),

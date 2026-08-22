@@ -60,7 +60,7 @@ function useIDeckMutation(mutationFn) {
   });
 }
 
-/** Press one key by alias or layout name. */
+/** Press one key by its layout name. */
 export function usePressIDeckButton() {
   return useIDeckMutation(pressIDeckButton);
 }

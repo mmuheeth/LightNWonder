@@ -24,22 +24,6 @@ function formatCapturedAt(value) {
 }
 
 /**
- * The part of the frame the game filled, which the region's fractions were
- * resolved against.
- *
- * Worth a line of its own: OBS writes every frame at its canvas size and fits
- * the game window inside it, so a resized simulator arrives as a different
- * rectangle of an identical-looking file. When a crop looks misplaced this is
- * the number that says whether the region is wrong or the detection is.
- */
-function formatContentBox(box, letterboxed) {
-  if (!Array.isArray(box) || box.length !== 4) return "—";
-  const [left, top, right, bottom] = box;
-  const size = `${right - left}×${bottom - top}`;
-  return letterboxed ? `${size} at [${box.join(", ")}]` : `${size} · whole frame`;
-}
-
-/**
  * Cut a configured region out of the latest screenshot and show it.
  *
  * The regions come from the active game's `roi` block, so the dropdown is
@@ -172,20 +156,6 @@ export function RoiPanel() {
 
             {extract.data ? (
               <div className="space-y-2 border-t pt-4">
-                <StatRow label="Crop">
-                  <span className="font-mono text-xs">
-                    {extract.data.width}×{extract.data.height} at [
-                    {extract.data.box.join(", ")}]
-                  </span>
-                </StatRow>
-                <StatRow label="Game area">
-                  <span className="font-mono text-xs">
-                    {formatContentBox(
-                      extract.data.content_box,
-                      extract.data.letterboxed,
-                    )}
-                  </span>
-                </StatRow>
                 <img
                   src={extract.data.image_data}
                   alt={`Crop of roi.${extract.data.region}`}

@@ -46,9 +46,9 @@ const STATE_HINTS = {
     "level than the backend. Restart the backend elevated (Run as administrator).",
 };
 
-/** Turn a configured alias into a compact, readable button label. */
-function keyLabel({ name, xml_id }) {
-  return (name || xml_id).replace(/_/g, " ").toUpperCase();
+/** Turn a layout key name into a compact, readable button label. */
+function keyLabel({ xml_id }) {
+  return xml_id.replace(/_/g, " ").toUpperCase();
 }
 
 /**
@@ -154,10 +154,8 @@ export function IDeckPanel() {
                         style={{ flexGrow: key.width, flexBasis: 0 }}
                         className="min-w-0 px-1 text-[0.65rem] font-semibold"
                         disabled={busy || !canPress}
-                        onClick={() => press.mutate({ button: key.name })}
-                        title={`${key.xml_id} — switch ${key.button_id}${
-                          key.aliases.length ? ` (${key.aliases.join(", ")})` : ""
-                        }`}
+                        onClick={() => press.mutate({ button: key.xml_id })}
+                        title={`${key.xml_id} — switch ${key.button_id}`}
                       >
                         <span className="truncate">{keyLabel(key)}</span>
                       </Button>

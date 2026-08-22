@@ -102,8 +102,10 @@ override behaviour with
 by building new settings. `app/core/config.py` is a re-export shim.
 
 **Per-game data is separate from env config.** `app/config/game_config/games/<Game>.json`
-ships with the code and carries the process name, log path, i-deck aliases,
-OBS window source, ROIs, reel bounds, paylines, click targets and event rules.
+ships with the code and carries the process name, log path, OBS window source,
+ROIs, reel bounds, paylines, click targets and event rules. The i-deck is not
+in that list: a key is pressed by the id the panel layout gives it, so the deck
+needs nothing per-game.
 `active_game.json` holds the current selection and is rewritten atomically by
 `PUT /api/games/active` — no restart, no `.env` edit. Adding a game is adding a
 JSON file.
