@@ -1,38 +1,56 @@
 #Requires -Version 5.1
 <#
-Starts the backend (FastAPI, port 8001) and frontend (Vite, port 3001) dev servers.
+Starts the backend (FastAPI, port 8001) and frontend (Vite, port 3001) dev servers,
+each in its own window via Start-Process.
 
-The backend is launched *elevated* and the frontend is not, which is why this is
-two windows rather than two tabs in one: Windows Terminal cannot mix integrity
-levels inside a single window, so an elevated tab cannot join an unelevated one.
+IMPORTANT -- run this from the VS Code integrated terminal.
 
-Why the backend needs elevation: the Virtual OLED i-deck is an SDL window owned by
-OledPanelSvc.exe, which the cabinet's ProcessManager.exe launches elevated. Presses
-are delivered by posting mouse messages to that window, and User Interface Privilege
-Isolation drops input sent from a lower integrity level to a higher one -- even as
-the same user. A medium-integrity backend therefore has every press silently
-discarded, and GET /api/ideck/status reports "access_denied".
+The backend needs High integrity to drive the i-deck and click the game (Windows
+UIPI drops input sent from a lower integrity level to a higher one, and the whole
+cabinet -- OledPanelSvc.exe and the game -- is auto-elevated to High here). On
+these managed workstations the developer is a standard user with no "Run as
+administrator", and Avecto does NOT auto-elevate python.exe. What it DOES
+auto-elevate (silently, no prompt) is VS Code. A child process inherits its
+parent's integrity, so a backend started from the elevated VS Code terminal
+inherits High and the i-deck works -- with no prompt and no admin. That is exactly
+how the sibling GameplayScript app works; nothing in either app's code bypasses
+UIPI. See docs/elevation.md.
 
-Pass -NoAdmin for a single window with two tabs. Everything except i-deck presses
-works fine that way.
+`Start-Process pwsh` (used below) creates a child of THIS shell, so run from the
+elevated VS Code terminal the two servers inherit its High integrity. A Windows
+Terminal (`wt`) tab is deliberately NOT used: a wt tab is hosted by the separate,
+usually-Medium WindowsTerminal.exe broker rather than by your elevated shell, so it
+would come up Medium and every i-deck press would be refused.
+
+If you start this from a plain (Medium) window instead, the backend runs Medium and
+only i-deck / game-input presses are refused (OBS, OCR, event capture, ROI, grid,
+paylines all still work). GET /api/ideck/status reports "ready" when the backend
+can drive the panel and "access_denied" when it cannot. To force elevation from a
+plain window, use -Elevate.
+
+-NoAdmin is accepted as a deprecated alias for the default.
 #>
 
 [CmdletBinding()]
 param(
-    # Start the backend unelevated, in the same window as the frontend. i-deck
-    # presses will be refused; OBS, OCR and event capture are unaffected.
+    # Force the backend elevated via a UAC/Avecto prompt (its own elevated window).
+    # For when you are NOT starting from an already-elevated shell.
+    [switch]$Elevate,
+
+    # Deprecated: the default already starts the backend unelevated and lets it
+    # inherit High from the (elevated) VS Code terminal it is launched from.
     [switch]$NoAdmin
 )
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
-if (-not (Get-Command wt -ErrorAction SilentlyContinue)) {
-    throw "Windows Terminal (wt) is not on PATH. Install it, or start the two servers by hand -- see README.md."
+if ($NoAdmin) {
+    Write-Warning '-NoAdmin is deprecated and has no effect: the default already starts the backend unelevated (it inherits integrity from the shell you run this in). Ignoring it.'
 }
 
-# Depended on directly below instead of activating the venv, so check it here
-# rather than letting pwsh report a missing relative path from inside a new tab.
+# Depended on directly instead of activating the venv, so check it here rather than
+# letting pwsh report a missing relative path from inside a new window.
 $venvPython = Join-Path $root 'backend\.venv\Scripts\python.exe'
 if (-not (Test-Path $venvPython)) {
     throw "No virtualenv at $venvPython. Create it and install backend\requirements.txt -- see backend\README.md."
@@ -45,38 +63,34 @@ if (Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyCont
     Write-Warning "Port 8001 is already in use. Stop the running backend first, or the one this starts will fail to bind."
 }
 
-# NO SEMICOLONS IN THESE TWO. Windows Terminal splits its tab commandline on ';'
-# to separate tabs, and it does that *after* stripping the quotes PowerShell put
-# on the argument -- so a "Set-Location x; npm run dev" payload has ' npm run dev'
-# torn off and launched as an executable, which fails with 0x80070002. The working
-# directory therefore comes from wt's own -d, and the venv is used by path rather
-# than activated, which would have needed a second statement.
-$backendTabCommand = '.\.venv\Scripts\python.exe -m app'
-$frontendTabCommand = 'npm run dev'
+# Start-Process (unlike a wt tab) hands the payload to pwsh without re-parsing it,
+# so the ';' between Set-Location and the launch is safe. `python -m app` must run
+# from backend\, and the venv python is used by absolute path rather than activated.
+$backendCommand = "Set-Location '$root\backend'; & '$venvPython' -m app"
+$frontendCommand = "Set-Location '$root\frontend'; npm run dev"
 
-if ($NoAdmin) {
-    Write-Host 'Starting backend (unelevated -- i-deck presses will be refused) and frontend...'
-    wt -w 0 new-tab --title 'backend' -d "$root\backend" pwsh -NoExit -Command $backendTabCommand `; new-tab --title 'frontend' -d "$root\frontend" pwsh -NoExit -Command $frontendTabCommand
+if ($Elevate) {
+    Write-Host 'Starting the backend elevated -- accept the UAC/Avecto prompt.'
+    # Its own elevated window by necessity. Start-Process joins -ArgumentList with
+    # spaces without quoting the parts, so the payload is wrapped in double quotes
+    # to stay ONE argument even if $root holds a space.
+    try {
+        Start-Process -FilePath 'pwsh' -Verb RunAs -ArgumentList '-NoExit', '-Command', "`"$backendCommand`""
+    }
+    catch {
+        throw "The backend was not started -- the elevation prompt was dismissed. Re-run, or start it from the elevated VS Code terminal instead (see docs/elevation.md)."
+    }
+    Write-Host 'Starting the frontend...'
+    Start-Process -FilePath 'pwsh' -ArgumentList '-NoExit', '-Command', $frontendCommand
     return
 }
 
-Write-Host 'Starting the backend elevated -- accept the UAC prompt.'
-# Its own window by necessity: see the comment at the top of this file. Start-Process
-# hands the payload to pwsh without re-parsing it, so unlike the wt tabs above this
-# one may use a semicolon -- and it sets the working directory explicitly rather
-# than trusting -WorkingDirectory to survive the elevation.
-try {
-    $elevatedCommand = "Set-Location '$root\backend'; .\.venv\Scripts\python.exe -m app"
-    # Wrapped in double quotes so the payload stays ONE argument. Start-Process
-    # joins -ArgumentList with spaces without quoting the parts, so an unquoted
-    # payload reaches pwsh as five separate args -- which happens to work only
-    # because -Command rejoins them, and stops working the moment $root holds a
-    # space.
-    Start-Process -FilePath 'pwsh' -Verb RunAs -ArgumentList '-NoExit', '-Command', "`"$elevatedCommand`""
-}
-catch {
-    throw "The backend was not started -- the UAC prompt was dismissed. Re-run this script, or pass -NoAdmin to start it unelevated without i-deck presses."
-}
-
-Write-Host 'Starting the frontend...'
-wt -w 0 new-tab --title 'frontend' -d "$root\frontend" pwsh -NoExit -Command $frontendTabCommand
+# Default: backend and frontend each in their own pwsh window, inheriting the
+# integrity of THIS shell. Run from the elevated VS Code terminal so the backend
+# comes up High and the i-deck works; from a plain window it runs Medium and only
+# i-deck/game-input presses are refused (GET /api/ideck/status then reports
+# "access_denied" rather than "ready").
+Write-Host 'Starting backend and frontend (each in its own window, inheriting this shell''s integrity).'
+Write-Host 'For i-deck: run this from the elevated VS Code terminal. If presses are refused, see docs/elevation.md (or use -Elevate).'
+Start-Process -FilePath 'pwsh' -ArgumentList '-NoExit', '-Command', $backendCommand
+Start-Process -FilePath 'pwsh' -ArgumentList '-NoExit', '-Command', $frontendCommand

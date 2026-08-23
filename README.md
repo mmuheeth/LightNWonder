@@ -224,9 +224,18 @@ request succeeds — a press that did not land returns a 502 rather than a
 cheerful lie.
 
 One gotcha worth knowing up front: Windows refuses input sent from a lower
-integrity level to a higher one, so **if the panel was launched elevated, the
-backend must be started elevated too**. The card says `access_denied` when that
-is the case. See
+integrity level to a higher one, so because the panel is launched elevated, **the
+backend must run elevated too**. The card says `access_denied` when that is the
+case. You are a standard user without "Run as administrator", but a
+child process inherits its launcher's integrity — and on these managed
+workstations BeyondTrust/Avecto silently elevates **VS Code**. So **start the
+backend from the VS Code integrated terminal** and it inherits High integrity with
+no prompt (this is exactly how the sibling GameplayScript app works). `.\start.ps1`
+run from that terminal does the same via `Start-Process`; a Windows Terminal tab
+would *not* (it is hosted by the separate Medium `wt` broker, not your elevated
+shell). Confirm from the i-deck card / `GET /api/ideck/status` (`ready` vs
+`access_denied`); if it is refused, use `.\start.ps1 -Elevate`. Full detail in
+[docs/elevation.md](docs/elevation.md). See
 [backend/README.md](backend/README.md#virtual-oled-i-deck) for the endpoints and
 the settings.
 

@@ -25,13 +25,26 @@ and current; read the relevant one before changing an integration.
 
 ## Commands
 
-`.\start.ps1` from the repo root launches both dev servers — the backend
-**elevated** (Windows Terminal cannot mix integrity levels in one window, hence
-two windows) and the frontend not. `-NoAdmin` gives one window with two tabs and
-i-deck presses refused; everything else works. Read the comments in `start.ps1`
-before editing it: the `wt` tab payloads must contain **no semicolons**, because
-Windows Terminal splits its commandline on `;` after PowerShell has stripped the
-quotes.
+`.\start.ps1` from the repo root launches the backend and frontend **each in its
+own window via `Start-Process pwsh`** (not Windows Terminal tabs), and **must be
+run from the VS Code integrated terminal**. The backend needs High integrity to
+drive the i-deck and click the game (UIPI drops Medium→High input; the whole
+cabinet is auto-elevated to High here). On these managed workstations Avecto does
+**not** auto-elevate `python.exe` — it silently elevates **VS Code**, and a child
+process inherits its parent's integrity, so a backend started from the elevated
+VS Code terminal inherits High with no prompt. That is why `start.ps1` uses
+`Start-Process` (children inherit the launching shell) and deliberately **not** a
+`wt` tab (a tab is hosted by the separate, usually-Medium `WindowsTerminal.exe`
+broker, not your shell, so it comes up Medium and every press is refused). This
+mirrors the sibling `C:\Workspace\GameplayScript` app, which is started from the
+VS Code terminal and inherits High the same way — nothing in either app's code
+bypasses UIPI. Started from a plain (Medium) window the backend runs Medium and
+only i-deck/game-input presses are refused; `-Elevate` forces a UAC/Avecto prompt
+(its own elevated window), and `-NoAdmin` is a deprecated no-op alias. Confirm
+from `GET /api/ideck/status`: `ready` means the backend can drive the panel,
+`access_denied` means it cannot. Full detail in `docs/elevation.md`. Unlike the
+old `wt` approach, `Start-Process` payloads may contain `;`, so the launch strings
+use `Set-Location …; & $venvPython -m app`.
 
 Backend commands **must run from `backend/`** — `app` is imported from the
 working directory, not installed into site-packages.

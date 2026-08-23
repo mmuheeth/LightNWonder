@@ -1314,10 +1314,17 @@ Five things worth knowing:
   skip this; the result is then honestly marked `confirmed: false`.
 
 - **Integrity levels matter.** Windows (UIPI) drops input sent from a lower
-  integrity level to a higher one. If the panel was launched elevated, this
-  backend must be started elevated too — otherwise every press is refused, and
-  the symptoms look like unrelated bugs. `GET /api/ideck/status` reports
-  `access_denied` in that case rather than leaving you to guess.
+  integrity level to a higher one. The panel is launched elevated (High
+  integrity), so this backend must run elevated too — otherwise every press is
+  refused, and the symptoms look like unrelated bugs. `GET /api/ideck/status`
+  reports `state: access_denied` when the backend cannot drive the panel. On a
+  managed workstation where you are a standard user, "Run as administrator" is not
+  available — instead a child
+  process inherits its launcher's integrity, and BeyondTrust/Avecto silently
+  elevates VS Code, so **launching the backend from the VS Code integrated
+  terminal** makes it inherit High with no prompt (`Start-Process`/`start.ps1`
+  inherit; a `wt` tab does not, being hosted by the separate Medium broker). See
+  [`docs/elevation.md`](../docs/elevation.md).
 
 Start with `POST /api/ideck/probe`: it posts a mouse move and nothing else, so
 it proves input reaches the panel without touching game state.
@@ -1408,7 +1415,8 @@ So the coordinate stays, and two things keep it honest:
 Nothing moves your cursor, and the same **integrity level** rule as the i-deck
 applies — the game runs elevated on these machines, so the backend must be too.
 `GET /api/game-input/status` reports `access_denied` rather than leaving you to
-guess.
+guess. Elevate the backend by launching it from the VS Code terminal — see
+[`docs/elevation.md`](../docs/elevation.md).
 
 ## Logging
 
