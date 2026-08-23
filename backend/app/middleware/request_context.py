@@ -1,8 +1,5 @@
-"""Request correlation, timing and access logging.
-
-Written as raw ASGI rather than ``BaseHTTPMiddleware`` so that response headers
-can be injected without buffering the body, and so the request-id context var
-is set on the same task the rest of the stack runs on.
+"""Request correlation, timing and access logging. Raw ASGI (not
+``BaseHTTPMiddleware``) so headers can be injected without buffering the body.
 """
 
 from __future__ import annotations
@@ -27,18 +24,8 @@ PROCESS_TIME_HEADER = "X-Process-Time"
 
 
 class RequestContextMiddleware:
-    """Assign a request id, time the request, and emit one access log line.
-
-    An inbound ``X-Request-ID`` is trusted and reused so a correlation id can
-    span services; otherwise a fresh one is generated. The id is echoed back on
-    the response and included in every log record produced while handling it.
-
-    Args:
-        app: The downstream ASGI application.
-        header_name: Header carrying the correlation id.
-        quiet_paths: Paths logged at DEBUG instead of INFO, to keep probe
-            traffic out of the access log.
-    """
+    """Assign a request id (reusing an inbound ``X-Request-ID`` if present),
+    time the request, and emit one access log line."""
 
     def __init__(
         self,

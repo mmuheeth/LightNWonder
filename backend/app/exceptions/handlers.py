@@ -1,14 +1,6 @@
-"""Exception handlers.
-
-These are the only place in the codebase that builds an error response, which
-is what guarantees a uniform error contract. Four cases are covered:
-
-1. :class:`~app.exceptions.base.AppException` -- our own deliberate failures.
-2. :class:`~fastapi.exceptions.RequestValidationError` -- bad input.
-3. :class:`~starlette.exceptions.HTTPException` -- raised by Starlette/FastAPI
-   internals and third-party dependencies (404 for unknown routes, 405, ...).
-4. Anything else -- logged with a traceback and reported as a generic 500 so
-   internals never leak to the client.
+"""Exception handlers: the only place that builds an error response, covering
+our own AppException, validation errors, framework HTTPExceptions, and anything
+else (logged and reported as an opaque 500).
 """
 
 from __future__ import annotations
@@ -38,12 +30,8 @@ def _error_code_for_status(status_code: int) -> str:
 
 
 def _resolve_request_id(request: Request) -> str | None:
-    """Read the correlation id from the scope, falling back to the context var.
-
-    The scope is authoritative here: unhandled exceptions are rendered by
-    Starlette's outermost middleware, by which point the context var has been
-    reset as the request unwound.
-    """
+    """Read the correlation id from the scope (authoritative once the request
+    has unwound and the context var is reset), falling back to the context var."""
     scoped = request.scope.get(REQUEST_ID_SCOPE_KEY)
     return scoped if isinstance(scoped, str) else get_request_id()
 

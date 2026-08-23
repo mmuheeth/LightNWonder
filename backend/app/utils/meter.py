@@ -1,53 +1,13 @@
-"""Reading the numbers off a game's meter strip.
-
-A meter strip is the bar across the bottom of a slot game carrying its balance,
-its last win and its current bet -- what :mod:`app.utils.image_roi` cuts out as
-``roi.cash_meter``. This module turns that picture into those numbers. It takes an
-image and a path to the engine; where the image came from and which game it
-belongs to are the caller's business, like every other module in this package.
-
-Four things measured on this project's own captures decide everything here, and
-each one rules out a simpler design.
-
-**The values are found, not looked up.** Fixed pixel boxes cannot work: the same
-683x29 strip arrives in three different horizontal alignments, because
-``roi.cash_meter`` is a fraction of the *frame* and the game does not fill the
-canvas identically every launch. A hand-tuned box table reads 15 of 20 strips and
-mangles the rest -- truncating ``$996.10`` to ``$996.1``, welding a cell border
-onto ``,$999.12``. So the digits are located per image instead: they are the
-brightest thing in the strip, so a column carrying ink is one whose brightest
-pixel is close to the strip's own maximum, and neighbouring lit columns group into
-one number. Relative to each image, so a change of skin, palette or background
-costs nothing.
-
-**Which number is which comes from position, because the labels are unreadable.**
-``CASH``, ``WIN`` and ``BET`` are printed 8px tall and letter-spaced over
-artwork. Tight crops at 10x return ``'LA'``, ``'C'``, ``'CREOS'`` -- confidence 0
-to 45, against 79 to 97 for the values. Reading them is not a tuning problem, it
-is not possible, so it is not attempted. Each field owns a window of the strip's
-width instead. Detecting the *cells* and taking them in order would avoid the
-windows, but a cell full of bright digits splits into fragments while an empty
-cell stays whole, and 11 of 20 strips have an empty WIN cell -- so ordering
-cannot be established from geometry either.
-
-**The row band is per skin, so it is fitted rather than assumed.** One game prints
-its labels *below* the cells and another *inside* them, so there is no band that
-suits both: read the full height of the first and its values collapse into
-``4000.07`` and ``30.88``, while the second is unharmed. The band cannot be
-derived from the image's shape, but it can be *chosen* -- the row-ink profile
-offers two or three candidate bands and the one that reads with the most
-confidence wins. :func:`fit_band` does that; the caller caches the answer.
-
-**One reading is usually enough, and the confident one wins.** psm 7 reads
-``49531`` as ``49331``; psm 8 gets that right but turns ``75`` into ``75.``; and
-one skin's orange WIN value is read by psm 13 alone, every other mode returning
-nothing at all for it. So a field is read at psm 8 first and escalated only while
-it is still unconvincing, and the reading the engine was *surest* of is taken --
-not the most popular one. Where those two rules disagreed on this project's
-strips, confident was right and popular was wrong every time: ``0.88`` over
-``0.83``, ``75`` over ``5``, ``99371`` over ``99374``. Escalating rather than
-always reading nine ways is what keeps a strip at roughly six engine calls
-instead of twenty-seven, which matters because each one costs about 200ms.
+"""Reads the numbers off a game's meter strip (``roi.cash_meter``: balance,
+last win, current bet). Four things measured on real captures shape the
+design: digits are located per image (brightest columns) rather than by fixed
+box, since the strip isn't aligned identically every launch; which number is
+which comes from a per-field width window, since the ``CASH``/``WIN``/``BET``
+labels are too small to OCR and cell detection can't order an empty cell;
+the row band is fitted per skin via :func:`fit_band` rather than assumed,
+since labels sit below cells on one game and inside them on another; and a
+field is read at psm 8 first, escalating only while unconvincing, taking the
+engine's most *confident* reading rather than the most popular one.
 """
 
 from __future__ import annotations
@@ -80,68 +40,50 @@ class MeterError(ValueError):
     """The strip is unusable -- no area, or nothing bright enough to read."""
 
 
-# The digits, their separators, and the currency symbols these games draw. A hint
-# rather than a rule under the LSTM engine, but it keeps a cell border from
-# arriving as a letter.
+# Digits, separators and currency symbols these games draw -- a hint to the LSTM
+# engine, keeping a cell border from arriving as a letter.
 WHITELIST = "0123456789.,$¥"
 
-# How bright a column must be, as a fraction of the strip's own brightest pixel,
-# to count as carrying a glyph. Swept over this project's strips: at 0.62 the
-# groups swallow the cell borders, which psm 8 then collapses -- 49883 arrives as
-# 43 -- and at 0.68 nine strips of twenty disagree with themselves. 0.82 hugs the
-# glyphs.
+# Brightness (as a fraction of the strip's own max) for a column to count as a
+# glyph. Swept over saved strips: 0.62 swallows cell borders into the group; 0.82
+# hugs the glyphs cleanly.
 INK_LEVEL = 0.82
 
-# Columns of slack around a located group. Two: enough that a glyph's dimmest edge
-# is not shaved off, few enough that the cell border stays out.
+# Slack columns around a located group -- enough to not shave a glyph's dim edge,
+# few enough to keep the cell border out.
 CLUSTER_PAD = 2
 
-# How far apart two lit column runs must be to be different numbers, as a share of
-# the band's height. Scaled to the glyphs rather than to the strip's width, because
-# what has to be told apart is the gap *inside* a number from the gap *between*
-# cells, and both scale with the text.
-#
-# Swept against the 20 saved strips, scoring on values that are wrong rather than
-# only on values that are missing -- a wrong number looks like an answer and a
-# missing one does not:
-#   0.45, 0.50  ->  one wrong  (a balance read as 10.0)
-#   0.55        ->  none wrong, one missing
-#   0.60        ->  none wrong, three missing
-# So 0.55: tight enough to keep a decimal point from splitting `$1.76` into `$1`
-# and `76`, loose enough that the ~19px cell separations stay separate.
+# Gap (as a share of band height) that splits two lit runs into different numbers.
+# Swept against 20 saved strips scoring on wrong (not just missing) values; 0.55
+# is tight enough to keep a decimal point from splitting `$1.76`, loose enough to
+# keep ~19px cell separations apart.
 GAP_SHARE = 0.55
 
-# Narrower than this and it is a cell corner or a speck of artwork, not a value.
+# Narrower than this and it's a cell corner or artwork speck, not a value.
 MIN_GROUP_WIDTH = 10
 
-# A bright core thinner than this is a border highlight or a stray lit row, not
-# a line of text.
+# A bright core thinner than this is a border highlight, not a line of text.
 MIN_CORE_ROWS = 3
 
-# How far to grow a core to reach the glyph's dimmer top and bottom, as a share of
-# the core's own height. 0.35 turns the cores measured on both known skins into the
-# bands that were hand-tuned for them -- (6, 16) becomes (2, 19) against a measured
-# (3, 20), and (0, 13) becomes (0, 18) against a measured (1, 18).
+# Share of a core's height to grow it by, to reach the glyph's dimmer top/bottom.
+# 0.35 reproduces the hand-tuned bands measured on both known skins.
 BAND_PAD_SHARE = 0.35
 
-# A meter strip holds a handful of numbers, so this caps the pool rather than
-# sizing it -- there is never a reason to run more engines than there are cells.
+# Caps the thread pool -- never a reason to run more engines than there are cells.
 MAX_WORKERS = 4
 
-# How many fields a candidate band must read before its confidence is allowed to
-# end the search. A meter strip has three cells and the middle one is empty
-# between spins, so two is "as many as there usually are".
+# Fields a candidate band must read before its confidence can end the search. A
+# strip has three cells and the middle (WIN) is often empty between spins.
 ENOUGH_FIELDS = 2
 
-# Stop escalating once a field reads this well, and ignore a reading below the
-# floor entirely. Every value verified correct on this project's strips scored 79
-# or better.
+# Stop escalating once a field reads this well; ignore a reading below the floor.
+# Every value verified correct on saved strips scored 79 or better.
 CONFIDENT = 90.0
 FLOOR = 40.0
 
-# Read at the first rung, then add rungs only while the field is unconvincing.
-# psm 8 is "one word", 7 is "one text line", 13 is "one raw line" with layout
-# analysis switched off -- the only mode that reads one skin's WIN value.
+# Read at the first rung, adding rungs only while unconvincing. psm 8 is "one
+# word", 7 is "one text line", 13 is "one raw line" with layout analysis off --
+# the only mode that reads one skin's WIN value.
 LADDER: tuple[tuple[tuple[int, float], ...], ...] = (
     ((8, 8.0),),
     ((7, 8.0), (13, 8.0)),
@@ -149,24 +91,10 @@ LADDER: tuple[tuple[tuple[int, float], ...], ...] = (
 )
 
 # Where each field sits, as a fraction of the strip's width -- and the strip is a
-# crop of the **content box**, not of the canvas, so these are fractions of the
-# game. That distinction is the whole reason this block has the values it has: the
-# numbers below used to be measured off canvas-relative crops, which carried a
-# slab of letterbox on either side and pushed every centre inwards.
-#
-# Re-measured over both known skins after the change -- cash centres land at 0.296
-# and 0.315-0.343, win at 0.520 and 0.500-0.529, bet at 0.747 and 0.685-0.702 --
-# across game windows from 412 to 501 px wide, which is the point of resolving
-# against the content box: the centre no longer moves when the simulator is
-# resized. The windows clear the junk between them: a game logo at 0.04, inline
-# label brackets, a denomination badge at 0.95-0.96.
-#
-# These are the union of the two skins, so they are wide -- a fallback for a game
-# nobody has measured, not a substitute for measuring one. Both shipped games
-# declare their own ``meter.windows`` because the union is too loose for either:
-# HuffNPuffLink has a fourth cell at 0.644, inside the ``bet`` span below and
-# nowhere near its real bet cell. A new skin with a cell in a gap needs its own
-# block the same way.
+# crop of the content box, not the canvas, so these track the game regardless of
+# resize. Union of both known skins, so wide: a fallback for an unmeasured game,
+# not a substitute for measuring one -- both shipped games declare their own
+# ``meter.windows`` since the union is too loose for either.
 DEFAULT_WINDOWS: dict[str, tuple[float, float]] = {
     "cash": (0.26, 0.37),
     "win": (0.46, 0.57),
@@ -202,13 +130,9 @@ class MeterField:
 
 @dataclass(frozen=True)
 class Unmapped:
-    """A confident number that belongs to no field.
-
-    Reported rather than pushed into the nearest window. A meter strip from a skin
-    that orders its cells differently reads perfectly well and means something
-    else entirely, and a value silently filed under the wrong name is worse than
-    one that arrives asking to be looked at.
-    """
+    """A confident number that belongs to no field -- reported rather than
+    pushed into the nearest window, since a value silently filed under the
+    wrong name is worse than one that arrives asking to be looked at."""
 
     value: Decimal
     centre: float
@@ -230,13 +154,8 @@ class MeterScan:
     @property
     def score(self) -> float:
         """Mean confidence of the fields that read, for comparing two bands.
-
-        The mean and not the sum. A band that takes in the label rows reads *more*
-        things -- junk among them, at around 84 -- and a sum rewards it for the
-        extra noise: it beat the right band, which read two fields at 96 and
-        correctly left an empty WIN cell empty. Averaging asks the question that
-        matters instead, which is how well what was read was read.
-        """
+        Mean, not sum -- a sum rewards a band that reads extra junk from the
+        label rows over one that correctly leaves an empty cell empty."""
         read = [f.confidence for f in self.fields.values() if f.value is not None]
         return sum(read) / len(read) if read else 0.0
 
@@ -247,35 +166,20 @@ class MeterScan:
 
 
 def _grey(image: Image.Image) -> np.ndarray:
-    """The strip as a float greyscale array.
-
-    Raises:
-        MeterError: if the image has no area to read.
-    """
+    """The strip as a float greyscale array."""
     if image.width <= 0 or image.height <= 0:
         raise MeterError("the strip must have a non-zero width and height")
     return np.asarray(image.convert("L"), dtype=float)
 
 
 def row_bands(image: Image.Image) -> tuple[Band, ...]:
-    """Candidate row bands, from the strip's own ink profile.
-
-    Two thresholds, because no single one does both jobs. The strict level that
-    finds the *columns* also finds each line of text's bright core -- ``(6, 16)``
-    for the values and ``(19, 27)`` for the labels on this project's fire skin, a
-    clean separation. But a core is only the middle of a glyph: reading rows 6 to
-    16 of a fourteen-row digit turns ``$1.76`` into ``76`` and ``$1,000.07`` into
-    ``41000.07``. Lowering the threshold to catch the glyph's dimmer top and bottom
-    merges the values into the labels and loses the separation entirely -- measured
-    at every level from 0.3 to 0.7.
-
-    So the core locates the line and is then padded outwards by a share of its own
-    height, stopping short of the neighbouring core. That reproduces the bands
-    measured by hand on both known skins, at any capture size.
-
-    Which core holds the values still cannot be told from the profile -- on one
-    strip the label rows carry *more* ink than the digits -- so every candidate is
-    offered and :func:`fit_band` picks by reading.
+    """Candidate row bands, from the strip's own ink profile. The strict
+    ink threshold finds each text line's bright core, but a core alone crops
+    off a glyph's dimmer top/bottom -- so each core is padded outward by a
+    share of its own height instead of lowering the threshold, which would
+    merge values into labels. Which core holds the values can't be told from
+    the profile alone, so every candidate is offered and :func:`fit_band`
+    picks by reading.
     """
     grey = _grey(image)
     height = grey.shape[0]
@@ -299,27 +203,21 @@ def row_bands(image: Image.Image) -> tuple[Band, ...]:
     candidates: list[Band] = []
     for index, (top, bottom) in enumerate(cores):
         pad = max(1, round((bottom - top) * BAND_PAD_SHARE))
-        # Never grow into the next line of text: that is the separation the strict
-        # threshold was used to find, and giving it away undoes the whole point.
+        # Never grow into the next line of text -- that's the separation the
+        # strict threshold exists to find.
         floor = cores[index - 1][1] if index > 0 else 0
         ceil_ = cores[index + 1][0] if index + 1 < len(cores) else height
         candidates.append((max(floor, top - pad), min(ceil_, bottom + pad)))
 
-    # The whole strip, last and only as a fallback. It is the widest band and so
-    # the tempting one to try first, but on a skin with labels below the cells it
-    # reads the balance confidently and everything else as junk -- which looks like
-    # success and ends the search. The cores the profile found go first.
+    # The whole strip, last: it's the widest band and would end the search early
+    # by reading confidently on a skin with labels below the cells. Cores go first.
     if (0, height) not in candidates:
         candidates.append((0, height))
     return tuple(dict.fromkeys(candidates))
 
 
 def ink_groups(image: Image.Image, band: Band) -> tuple[Band, ...]:
-    """Column ranges holding numbers, one per cell that has something in it.
-
-    Raises:
-        MeterError: if the strip has no area.
-    """
+    """Column ranges holding numbers, one per cell that has something in it."""
     grey = _grey(image)
     top, bottom = band
     window = grey[top:bottom, :]
@@ -349,11 +247,9 @@ def ink_groups(image: Image.Image, band: Band) -> tuple[Band, ...]:
 
 
 def _token(text: str) -> tuple[Decimal | None, str]:
-    """The value and its symbol out of raw engine text.
-
-    Takes the longest number-shaped token rather than the first, because a cell
-    border sometimes arrives as a leading ``1`` or ``,`` welded to the value.
-    """
+    """The value and its symbol out of raw engine text. Takes the longest
+    number-shaped token rather than the first, since a cell border sometimes
+    arrives as a leading digit or comma welded to the value."""
     best = ""
     for match in _TOKEN.finditer(text):
         if len(match.group()) > len(best):
@@ -367,11 +263,8 @@ def read_group(
     image: Image.Image, box: Band, band: Band, *, executable: Path
 ) -> MeterField:
     """Read one number, escalating only while the reading is unconvincing.
-
-    Never raises for a failed read: a field the engine could not manage comes back
-    empty beside the ones that worked, which is the same treatment
-    :mod:`app.services.ocr` gives a region it cannot read.
-    """
+    Never raises for a failed read -- an unreadable field comes back empty
+    beside the ones that worked."""
     crop = image.crop(
         (
             max(0, box[0] - CLUSTER_PAD),
@@ -421,24 +314,13 @@ def extract(
     band: Band,
     windows: dict[str, tuple[float, float]] | None = None,
 ) -> MeterScan:
-    """Read every number in ``band`` and file each one under its field.
-
-    Args:
-        image: The meter strip, at whatever size it was cropped.
-        executable: Path to ``tesseract``.
-        band: Rows the values sit in -- see :func:`fit_band`.
-        windows: Field name to the span of the strip's width it owns. Defaults to
-            :data:`DEFAULT_WINDOWS`.
-
-    Raises:
-        MeterError: if the strip has no area to read.
-    """
+    """Read every number in ``band`` and file each one under its field
+    (``windows`` maps field name to the span of the strip's width it owns,
+    defaulting to :data:`DEFAULT_WINDOWS`)."""
     spans = DEFAULT_WINDOWS if windows is None else windows
     boxes = ink_groups(image, band)
-    # Concurrently, because each read is a Tesseract subprocess at roughly 200ms
-    # and a strip has three or four of them -- `subprocess.run` releases the GIL
-    # while it waits, so threads are the right shape here and the engine is a
-    # separate process per call with no state to share.
+    # Concurrent: each read is a ~200ms Tesseract subprocess, and `subprocess.run`
+    # releases the GIL while it waits, so threads fit here.
     if boxes:
         with ThreadPoolExecutor(max_workers=min(len(boxes), MAX_WORKERS)) as pool:
             results = list(
@@ -460,9 +342,8 @@ def extract(
     fields: dict[str, MeterField] = {}
     claimed: set[int] = set()
     for name, (low, high) in spans.items():
-        # Several groups can share a window -- an inline label bracket sits inside
-        # the cash cell's on one skin. The one the engine was surest of is the
-        # value; the bracket reads as no number at all and never gets here.
+        # Several groups can share a window (e.g. an inline label bracket) --
+        # the one the engine was surest of is the value.
         best_index: int | None = None
         for index, (centre, reading) in enumerate(readings):
             if not low <= centre <= high:
@@ -498,31 +379,21 @@ def fit_band(
     windows: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[Band, MeterScan]:
     """Choose the row band that reads best, and return it with its scan.
-
-    The candidates come from the strip's ink profile rather than from a sweep of
-    every plausible pair of edges, so this costs two or three scans rather than
-    twenty. Callers are expected to remember the answer: the band is a property of
-    the skin, not of the frame.
-
-    Raises:
-        MeterError: if the strip has no area, or no candidate produced a reading.
-    """
+    Candidates come from the strip's ink profile, not a sweep of every
+    plausible edge pair, so this costs two or three scans. Callers should
+    cache the answer -- the band is a property of the skin, not the frame."""
     best: tuple[Band, MeterScan] | None = None
     for candidate in row_bands(image):
         scan = extract(image, executable=executable, band=candidate, windows=windows)
-        # Mean confidence first, then how much was read: between two bands the
-        # engine is equally sure of, the one that found more fields is better.
+        # Mean confidence first, then read count as the tiebreaker.
         if best is None or (scan.score, scan.read_count) > (
             best[1].score,
             best[1].read_count,
         ):
             best = (candidate, scan)
         if scan.read_count >= ENOUGH_FIELDS and scan.score >= CONFIDENT:
-            # Several fields, all read confidently: nothing left to beat, and each
-            # further candidate is a fistful of 200ms engine calls. The count
-            # matters as much as the confidence -- a band that reads one field
-            # perfectly and misses two is not a good band, and stopping on it is
-            # how the whole-strip fallback used to win.
+            # Several fields read confidently: nothing left to beat, and each
+            # further candidate costs more 200ms engine calls.
             break
     if best is None:
         raise MeterError("the strip has no rows bright enough to read")

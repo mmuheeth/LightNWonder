@@ -1,8 +1,5 @@
-"""Virtual OLED i-deck runtime settings.
-
-The i-deck service also consumes per-game data from
-:mod:`app.config.game_config`. This module contains only deployment-specific
-settings: the panel window, its files, and the press/verification behavior.
+"""Virtual OLED i-deck runtime settings: the panel window, its files, and
+press/verification behavior. Per-game data lives in app.config.game_config.
 """
 
 from __future__ import annotations
@@ -32,40 +29,31 @@ def normalize_game_name(value: str, *, label: str = "game") -> str:
 class IDeckSettings(BaseSettings):
     """Runtime options for the virtual OLED panel integration."""
 
-    # The emulated button deck for a game running in a simulator is served by
-    # OledPanelSvc.exe as an SDL window. Presses are posted to that window as
+    # OledPanelSvc.exe serves the deck as an SDL window; presses are posted as
     # mouse messages, so the physical cursor never moves.
     IDECK_WINDOW_TITLE: str = "Virtual OLED"
     IDECK_WINDOW_CLASS: str = "SDL_app"
-    # Which layout is a property of the cabinet, not of the game: every title
-    # this drives runs on `virtual_oled`, and a game that needed another one
-    # would need a differently-built deck, not a different config file. So the
-    # name lives here, in the one setting that has to name the file anyway.
+    # Property of the cabinet, not the game: every title drives `virtual_oled`.
     IDECK_PANEL_XML: Path = Path(
         r"C:\ssd\cabinet\deployment\cfg\ButtonPanel\virtual_oled.xml"
     )
 
-    # The panel service's own log. Every press it accepts appears here as
-    # "Button Pressed ID=<hex>", which is how a press is confirmed.
+    # The panel service's own log; a press is confirmed by "Button Pressed ID=<hex>".
     IDECK_LOG_PATH: Path = Path(r"C:\logs\OledPanelSvc.log")
 
-    # Game configs ship with the code, so this is anchored to the package, not
-    # to the working directory. An override may be absolute, or relative to
-    # the `app` package. The selected filename is stored beside this directory
-    # in `game_config/active_game.json`.
+    # Anchored to the package (game configs ship with the code), not the cwd.
+    # The active selection is stored beside this dir in `active_game.json`.
     IDECK_GAME_CONFIG_DIR: Path = PACKAGE_ROOT / "config" / "game_config" / "games"
 
-    # Hold between button-down and button-up. A real press measures ~200ms in
-    # the panel log; well short of that still registers.
+    # A real press measures ~200ms in the panel log; well short of that still registers.
     IDECK_PRESS_HOLD_SECONDS: float = 0.12
-    # With verification off, a press reports success as soon as it is posted.
     IDECK_VERIFY_PRESSES: bool = True
     IDECK_VERIFY_TIMEOUT_SECONDS: float = 2.0
-    # A minimized window has no client area to aim at, so it is restored first
-    # -- without activating it, so focus is left alone.
+    # A minimized window has no client area to aim at; restored without
+    # activating, so focus is left alone.
     IDECK_RESTORE_IF_MINIMIZED: bool = True
-    # SDL can swallow the first click on an unfocused window. When a press goes
-    # unconfirmed, foreground the panel and try once more. Still no cursor move.
+    # SDL can swallow the first click on an unfocused window; on an unconfirmed
+    # press, foreground the panel and retry once (still no cursor move).
     IDECK_FOCUS_ON_RETRY: bool = True
 
     @property

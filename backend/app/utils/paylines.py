@@ -1,42 +1,10 @@
-"""Read the ``paylines`` block of a game config.
-
-A game config says where the reels are, then how they divide into symbol
-positions, and then which sequences of those positions pay::
-
-    "paylines": {
-      "5": {
-        "1": [[2,1],[2,2],[2,3],[2,4],[2,5]],
-        "4": [[1,1],[2,2],[3,3],[2,4],[1,5]]
-      },
-      "20": { ... },
-      "40": { ... }
-    }
-
-**The outer keys are bet configurations, not indices.** A cabinet that can be
-played for five lines, twenty or forty ships all three, and line 4 of the
-five-line set is not line 4 of the forty-line set even where the coordinates
-happen to agree. So a set is looked up by name and evaluated on its own, and
-:func:`set_names` is what offers the choice.
-
-**A position is ``[row, column]``, both 1-indexed, in the same numbering as a
-tile's name.** ``[2,1]`` is ``r2c1``, the middle symbol of the leftmost reel --
-which is why :func:`app.utils.reel_grid.position_name` is what turns one into a
-string here rather than an f-string of its own. Row first matches how the matrix
-is read and how the tiles are written; getting it the other way round on a 3x5
-grid gives coordinates that are still in range, so it is worth being deliberate
-about.
-
-**Columns must strictly increase along a line.** A payline is evaluated from the
-left, one adjacent pair at a time, and "adjacent" only means anything if the
-positions are in reel order. Requiring it rejects a line that repeats or
-backtracks a reel -- a real possibility as a typo in forty hand-written lines,
-and one that would otherwise compare a tile against itself and score a perfect
-match.
-
-Nothing here knows about pictures, similarity, or the size of the grid the
-coordinates land on. It takes the decoded block and hands back ordered
-positions; checking they fit a particular grid is :meth:`PaylineSet.within`,
-which the caller invokes once it knows what was split.
+"""Read the ``paylines`` block of a game config: named bet configurations
+(``"5"``, ``"20"``, ``"40"``), each a set of lines of ``[row, column]``
+positions (1-indexed, row first, same numbering as a tile's name). A set is
+looked up by name since line 4 of the five-line set isn't line 4 of the
+forty-line set. Columns must strictly increase along a line -- a payline is
+compared left to right one adjacent pair at a time, and a repeated/backtracked
+reel would otherwise compare a tile against itself and score a perfect match.
 """
 
 from __future__ import annotations
@@ -73,14 +41,8 @@ class PaylineError(ValueError):
 
 
 def _sort_key(name: str) -> tuple[int, int, str]:
-    """Order names numerically when they are numbers, alphabetically otherwise.
-
-    The keys are written as numbers -- ``"5"``, ``"20"``, ``"40"`` for the sets
-    and ``"1"`` through ``"40"`` for the lines -- and sorting those as strings
-    puts 20 before 5, and line 10 before line 2. A non-numeric name sorts after
-    the numbers rather than raising, because a game that names a set
-    ``"lines_5"`` is unusual, not broken.
-    """
+    """Order names numerically when they are numbers (sorting as strings would
+    put 20 before 5), alphabetically after that otherwise."""
     return (0, int(name), "") if name.isdigit() else (1, 0, name.casefold())
 
 
@@ -133,15 +95,9 @@ class PaylineSet:
         return len(self.lines)
 
     def within(self, rows: int, columns: int) -> None:
-        """Check every position lands on a grid of this shape.
-
-        Separate from parsing, because the shape is not the config block's to
-        know: one set is correct for the grid the game declares now and wrong for
-        a split written before a sixth reel was added, and only a caller holding
-        both can say which of the two it is looking at.
-
-        Raises:
-            PaylineError: naming the first line and position that does not fit.
+        """Check every position lands on a grid of this shape. Separate from
+        parsing since the grid shape isn't the config block's to know -- a set
+        can be correct for the game's current grid and wrong for an old split.
         """
         for line in self.lines:
             for position in line.positions:
@@ -170,13 +126,8 @@ def _block(value: Any, *, where: str) -> Mapping[str, Any]:
 
 
 def _coordinate(value: Any, *, where: str) -> int:
-    """One coordinate: a whole number of at least 1.
-
-    ``bool`` is an ``int`` in Python and ``true`` as a row is a mistake rather
-    than a 1, so it is rejected the way the rest of this project rejects it. A
-    float that is whole (``2.0``, which is what a JSON writer may emit) is
-    accepted; ``2.5`` is not.
-    """
+    """One coordinate: a whole number of at least 1. A whole float (``2.0``,
+    as a JSON writer may emit) is accepted; ``2.5`` is not."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PaylineError(f"{where} must contain only numbers, got {value!r}")
     if float(value) != int(value):
@@ -223,26 +174,14 @@ def _line(name: str, value: Any, *, where: str) -> Payline:
 
 
 def set_names(block: Any, *, where: str = "paylines") -> tuple[str, ...]:
-    """The bet configurations the block declares, in numeric order.
-
-    Reads only the keys, so listing the choices for a panel does not depend on
-    all forty lines of every set being well-formed -- a typo in the forty-line
-    set should not stop the five-line one being offered.
-
-    Raises:
-        PaylineError: if the block is not an object, or declares no sets.
-    """
+    """The bet configurations the block declares, in numeric order. Reads only
+    the keys, so a typo in the forty-line set can't stop the five-line one
+    from being offered."""
     return tuple(sorted(_block(block, where=where), key=_sort_key))
 
 
 def read_set(block: Any, name: str, *, where: str = "paylines") -> PaylineSet:
-    """Parse one named bet configuration out of the block.
-
-    Raises:
-        PaylineError: if the block or the named set is malformed, if there is no
-            set by that name, or if any line is not a left-to-right sequence of
-            at least two 1-indexed positions.
-    """
+    """Parse one named bet configuration out of the block."""
     sets = _block(block, where=where)
     if name not in sets:
         offered = ", ".join(sorted(sets, key=_sort_key))

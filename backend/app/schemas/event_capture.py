@@ -1,11 +1,5 @@
-"""Event Based Capture payloads.
-
-A run is stored on disk as a ``run.json`` manifest beside its screenshots, and
-these models are the shape of that file as well as of the API responses. One
-model for both is deliberate: the manifest is the record, and an endpoint that
-reshaped it on the way out would give the UI and the folder two different
-truths about the same run.
-"""
+"""Event capture payloads; also the shape of the ``run.json`` manifest
+written to disk, deliberately shared so the UI and the folder never disagree."""
 
 from __future__ import annotations
 
@@ -20,8 +14,7 @@ class CaptureRunState(StrEnum):
 
     RUNNING = "running"
     COMPLETED = "completed"
-    INTERRUPTED = "interrupted"
-    """The backend shut down while the run was going."""
+    INTERRUPTED = "interrupted"  # backend shut down while the run was going
 
 
 class CapturedEvent(BaseModel):
@@ -74,11 +67,7 @@ class CaptureRunDetail(CaptureRunSummary):
 
 
 class CaptureStatus(BaseModel):
-    """What the dashboard card polls.
-
-    Always returned, running or not, so the card never has to branch on an
-    error to work out whether tracking is on.
-    """
+    """What the dashboard card polls; always returned, running or not."""
 
     active: bool = Field(description="Whether a run is in progress.")
     run_id: str | None = Field(default=None, description="Active run, if any.")

@@ -83,11 +83,8 @@ def select(game: str) -> ActiveGame:
     except ActiveGameSelectionError as exc:
         raise GameConfigInvalidError(str(exc)) from exc
 
-    # Layouts and window settings are deployment-level data; only the cached
-    # per-game metadata needs dropping when the selector changes. Every service
-    # that caches a GameConfig has to be told, or it keeps serving the old game.
-    # i-deck is not one of them -- it addresses the deck by layout key, which is
-    # the cabinet's, not the game's.
+    # i-deck addresses keys by layout id (the cabinet's, not the game's), so it
+    # doesn't need a reset here — only services caching a GameConfig do.
     game_input_service.reset_game_config()
     logger.info("Active game changed to %s", name)
 

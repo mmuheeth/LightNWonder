@@ -1,36 +1,13 @@
 """Virtual OLED i-deck control.
 
-The emulated button deck for a game running in a simulator is an SDL window
-owned by ``OledPanelSvc.exe``. There is no API on it -- the service listens on
-no port and speaks CORBA internally -- so a press is delivered the only other
-way that does not disturb the user: as mouse messages posted straight to that
-window. ``PostMessage`` never touches the physical cursor, so nothing visibly
-moves on the desktop.
-
-Two facts make this reliable rather than hopeful:
-
-**Geometry is not guessed.** The panel service renders from a layout file and
-logs which one it chose. :mod:`app.utils.panel_xml` reads that same file, so key
-positions have one source of truth and a re-layout needs no edit here. It is
-also the only source of key *names*: a key is addressed by the id the layout
-gives it, so nothing per-game has to be kept in step with the deck.
-
-**Presses are proven, not assumed.** Every press the panel accepts writes a
-switch transition to its log within milliseconds. Each press captures the log's
-size beforehand and then reads only what was appended, so a press that did not
-land is reported as a failure instead of a cheerful lie. SDL can swallow the
-first click on an unfocused window, so an unconfirmed press is retried once with
-the window foregrounded -- still without moving the cursor.
-
-What is left in this module is the orchestration. The formats it depends on live
-next to each other in :mod:`app.utils`: ``panel_xml`` reads the layout,
-``panel_log`` matches the log lines, ``log_tail`` follows the file.
-
-State is module-level, like the other services here, and callers use the
-namespace rather than the functions::
-
-    from app.services import ideck as ideck_service
-    await ideck_service.press("Rebet")
+``OledPanelSvc.exe`` owns an SDL window with no API of its own, so a press is
+delivered as mouse messages ``PostMessage``d straight to it -- never touching
+the physical cursor. Key geometry comes from the same layout file the panel
+service renders from (:mod:`app.utils.panel_xml`), which is also the only
+source of key names. A press is confirmed by reading what was appended to the
+panel's log (:mod:`app.utils.panel_log`/:mod:`app.utils.log_tail`) after it, and
+retried once with the window foregrounded if unconfirmed, since SDL can swallow
+a first click on an unfocused window.
 """
 
 from __future__ import annotations
@@ -77,12 +54,8 @@ _POLL_SECONDS = 0.05
 
 
 def _get_lock() -> asyncio.Lock:
-    """Return the module lock, created inside whichever loop is running.
-
-    Built lazily rather than at import time because ``tests/conftest.py`` makes a
-    fresh event loop per test, and a lock holding waiters from a dead loop is a
-    hazard. :func:`reset` clears it, so each test gets its own.
-    """
+    """Return the module lock, created lazily (not at import time) since each
+    test gets a fresh event loop and :func:`reset` clears it between tests."""
     global _lock
     if _lock is None:
         _lock = asyncio.Lock()
@@ -90,11 +63,7 @@ def _get_lock() -> asyncio.Lock:
 
 
 def _layout_or_raise() -> PanelLayout:
-    """Parse the panel layout once and keep it.
-
-    Raises:
-        IDeckConfigError: if the layout file is missing or malformed.
-    """
+    """Parse the panel layout once and keep it."""
     global _layout
     if _layout is None:
         try:
@@ -113,20 +82,13 @@ def _layout_or_raise() -> PanelLayout:
 
 
 def _log() -> LogTail:
-    """A cursor over the panel service's log.
-
-    Built per call rather than cached: the path is a setting, and the tests move
-    it between cases.
-    """
+    """A cursor over the panel service's log. Built per call, not cached, since
+    tests move the path between cases."""
     return LogTail(settings.ideck_log_path, poll_seconds=_POLL_SECONDS)
 
 
 def _resolve_button(name: str) -> PanelButton:
-    """Map a caller-supplied name onto a key in the layout, case-insensitively.
-
-    Raises:
-        IDeckButtonNotFoundError: if the layout has no key by that name.
-    """
+    """Map a caller-supplied name onto a key in the layout, case-insensitively."""
     layout = _layout_or_raise()
     button = layout.by_xml_id(name.strip())
     if button is None:
@@ -160,14 +122,7 @@ def _access_denied() -> IDeckAccessDeniedError:
 
 async def _ready_window() -> tuple[win32.WindowInfo, bool]:
     """Locate the panel window and make sure it has a client area to aim at.
-
-    Returns the window and whether it had to be un-minimized to get there.
-
-    Raises:
-        ServiceUnavailableError: if this build cannot reach the Win32 API.
-        IDeckWindowNotFoundError: if the panel is absent, or is minimized and
-            restoring it is disabled.
-    """
+    Returns the window and whether it had to be un-minimized to get there."""
     if not win32.is_supported():
         raise ServiceUnavailableError(
             "i-deck control needs the Windows API, which is not available in "
@@ -183,9 +138,8 @@ async def _ready_window() -> tuple[win32.WindowInfo, bool]:
             f"{settings.IDECK_WINDOW_CLASS!r}. Is OledPanelSvc running?"
         )
 
-    # Checked before anything else is attempted: when UIPI is blocking us every
-    # later call fails too, but with symptoms that look like unrelated bugs --
-    # a restore that does nothing, a press that vanishes.
+    # Checked first: a UIPI block otherwise surfaces later as unrelated-looking
+    # bugs -- a restore that does nothing, a press that vanishes.
     if not win32.can_post(window.hwnd):
         raise _access_denied()
 
@@ -223,23 +177,15 @@ async def _await_client_area(hwnd: int) -> win32.WindowInfo | None:
 
 
 async def _watch_log(pattern: re.Pattern[str], offset: int) -> str | None:
-    """Wait for a line matching ``pattern`` to appear after ``offset``.
-
-    Returns the matching line, or ``None`` once the verification timeout
-    elapses.
-    """
+    """Wait for a line matching ``pattern`` after ``offset``, or ``None`` on timeout."""
     return await _log().wait_for(
         pattern, offset=offset, timeout=settings.IDECK_VERIFY_TIMEOUT_SECONDS
     )
 
 
 async def _post_press(hwnd: int, x: int, y: int, hold_seconds: float) -> None:
-    """Post one complete click at a client-area point.
-
-    The move is not optional: SDL takes a click's position from the last motion
-    event it saw, not from the button message, so without it the press would
-    land wherever the panel last thought the pointer was.
-    """
+    """Post one complete click at a client-area point. The move is not optional:
+    SDL takes a click's position from the last motion event, not the button message."""
     win32.post_mouse_move(hwnd, x, y)
     win32.post_left_down(hwnd, x, y)
     await asyncio.sleep(hold_seconds)
@@ -247,11 +193,8 @@ async def _post_press(hwnd: int, x: int, y: int, hold_seconds: float) -> None:
 
 
 def _require_log_for_verification() -> None:
-    """Fail loudly when confirmation is on but the log cannot be read.
-
-    Degrading to unverified silently would turn every press into an unprovable
-    claim, which is exactly what verification exists to prevent.
-    """
+    """Fail loudly when confirmation is on but the log cannot be read -- silently
+    degrading to unverified would defeat the point of verification."""
     if not _log().exists():
         raise IDeckConfigError(
             f"IDECK_VERIFY_PRESSES is on but no panel log exists at "
@@ -264,11 +207,8 @@ def _require_log_for_verification() -> None:
 
 
 async def status() -> IDeckStatus:
-    """Report what the service can see of the panel.
-
-    Never raises: a closed panel, a missing layout file and a non-Windows host
-    are all states worth reporting rather than failed requests.
-    """
+    """Report what the service can see of the panel. Never raises -- a closed
+    panel, missing layout file, or non-Windows host are states, not failures."""
     base = {
         "window_title": settings.IDECK_WINDOW_TITLE,
         "window_class": settings.IDECK_WINDOW_CLASS,
@@ -305,8 +245,8 @@ async def status() -> IDeckStatus:
         return IDeckStatus(state=IDeckWindowState.NOT_FOUND, **base)
 
     if not win32.can_post(window.hwnd):
-        # Worth surfacing here rather than only on the first press: the window
-        # looks perfectly healthy until something actually tries to drive it.
+        # Surfaced here, not just on the first press -- the window looks healthy
+        # until something actually tries to drive it.
         state = IDeckWindowState.ACCESS_DENIED
     elif window.minimized:
         state = IDeckWindowState.MINIMIZED
@@ -322,15 +262,8 @@ async def status() -> IDeckStatus:
 
 
 async def buttons() -> list[IDeckButton]:
-    """Every key on the deck, in layout order.
-
-    Client coordinates are filled in when the panel is open and not minimized,
-    and left null otherwise, so this is still useful for inspecting the layout
-    with the panel closed.
-
-    Raises:
-        IDeckConfigError: if the layout cannot be read.
-    """
+    """Every key on the deck, in layout order. Client coordinates are filled in
+    only when the panel is open and not minimized."""
     layout = _layout_or_raise()
 
     window: win32.WindowInfo | None = None
@@ -362,19 +295,8 @@ async def buttons() -> list[IDeckButton]:
 async def press(
     name: str, *, verify: bool | None = None, hold_seconds: float | None = None
 ) -> PressResult:
-    """Press one key and confirm the panel registered it.
-
-    Presses serialise on the module lock, so two callers never interleave a
-    button-down and a button-up on the same panel.
-
-    Raises:
-        ServiceUnavailableError: if this build cannot reach the Win32 API.
-        IDeckWindowNotFoundError: if the panel window is absent or unusable.
-        IDeckButtonNotFoundError: if the layout has no key by that name.
-        IDeckConfigError: if verification is on but the panel log is missing.
-        IDeckPressNotConfirmedError: if the press was posted but never appeared
-            in the panel log.
-    """
+    """Press one key and confirm the panel registered it. Presses serialise on
+    the module lock, so two callers never interleave a down and up."""
     started = time.monotonic()
     should_verify = settings.IDECK_VERIFY_PRESSES if verify is None else verify
     hold = settings.IDECK_PRESS_HOLD_SECONDS if hold_seconds is None else hold_seconds
@@ -397,9 +319,8 @@ async def press(
 
         refocused = False
         if should_verify and evidence is None and settings.IDECK_FOCUS_ON_RETRY:
-            # SDL can treat the first click on an unfocused window as the click
-            # that focuses it and swallow it. Foregrounding costs the user their
-            # focus for a moment but still never moves the cursor.
+            # SDL can swallow the first click on an unfocused window as the one
+            # that focuses it -- foregrounding costs focus but never the cursor.
             logger.info(
                 "Press of %r went unconfirmed; retrying with the panel focused", name
             )
@@ -449,11 +370,8 @@ async def press(
 async def press_sequence(
     names: list[str], *, delay_seconds: float = 0.5, verify: bool | None = None
 ) -> list[PressResult]:
-    """Press several keys in order, pausing between them.
-
-    Stops at the first failure and lets it propagate, so a half-finished
-    sequence is never reported as a success.
-    """
+    """Press several keys in order, pausing between them. Stops at the first
+    failure, so a half-finished sequence is never reported as a success."""
     results: list[PressResult] = []
     for index, name in enumerate(names):
         if index:
@@ -463,15 +381,9 @@ async def press_sequence(
 
 
 async def probe() -> ProbeResult:
-    """Check the panel reacts to posted input, without pressing anything.
-
-    Posts a mouse *move* to the middle of the panel and watches for SDL logging
-    the pointer crossing its edge. That exercises the whole path -- our message,
-    the panel's event loop, its log -- while leaving game state untouched, which
-    makes it the safe thing to run first.
-
-    Never raises: a failed probe is a result, not an error.
-    """
+    """Check the panel reacts to posted input, without pressing anything --
+    posts a mouse move and watches the log for SDL noticing it cross the panel's
+    edge. Never raises: a failed probe is a result, not an error."""
     if not win32.is_supported():
         return ProbeResult(
             supported=False,
@@ -534,15 +446,8 @@ async def probe() -> ProbeResult:
 
 
 def reset() -> None:
-    """Drop the cached layout and lock without touching any window.
-
-    Mirrors ``obs_service.reset()``: tests call it between cases. Clearing the
-    lock matters as much as clearing the layout -- the next test builds one bound
-    to its own event loop.
-
-    There is no per-game state to drop: the deck is addressed by layout key, so
-    switching games changes nothing this service caches.
-    """
+    """Drop the cached layout and lock without touching any window. No per-game
+    state to drop -- the deck is addressed by layout key, not by game."""
     global _layout, _lock
     _layout = None
     _lock = None

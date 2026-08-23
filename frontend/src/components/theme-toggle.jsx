@@ -1,4 +1,4 @@
-import { Monitor, Moon, Sun } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { THEMES, useUiStore } from "@/store/ui-store";
@@ -6,14 +6,13 @@ import { THEMES, useUiStore } from "@/store/ui-store";
 const ICONS = {
   [THEMES.LIGHT]: Sun,
   [THEMES.DARK]: Moon,
-  [THEMES.SYSTEM]: Monitor,
 };
 
-/** Cycles light → dark → system. */
+/** Toggles light ↔ dark. */
 export function ThemeToggle() {
   const theme = useUiStore((state) => state.theme);
   const cycleTheme = useUiStore((state) => state.cycleTheme);
-  const Icon = ICONS[theme] ?? Monitor;
+  const Icon = ICONS[theme] ?? Sun;
 
   return (
     <Button

@@ -1,66 +1,20 @@
-"""Checking a split reel grid against the patterns that pay.
+"""Checks a split reel grid against the patterns that pay.
 
-One step past :mod:`app.services.grid`, and the step it takes is the reason the
-grid writes its tiles down. ROI answers *is this rectangle aimed at the right
-part of the screen*; grid answers *and does it divide into the symbols I expect*;
-this answers *and do those symbols line up*. Each reads the previous one's
-output rather than redoing it.
-
-**The input is a written split, not a screenshot.** Nothing here resolves a
-frame, finds a content box or crops a region -- it opens a directory the grid
-already wrote, which is what makes a check repeatable: the same split checked
-twice at the same threshold gives the same answer, and re-checking after
-adjusting the threshold does not depend on the simulator still showing the same
-spin. Which split, and what is in it, is
-:func:`app.services.grid.resolve_split` and :func:`app.services.grid.read_split`
--- that module named the directory and the files, so it is the one that reads
-them back.
-
-**Two symbols are "the same" by cosine similarity, and the threshold is the whole
-game.** The same pot of gold on two reels is never the same pixels: a slot game
-glows, pulses and scales its symbols continuously, so an exact comparison says
-"different" for every pair and a naive difference says "different" for a bright
-frame. Cosine similarity treats brightness as vector length rather than
-direction, which is exactly the invariance wanted -- see
-:mod:`app.utils.similarity`, which also explains why the scores cluster high.
-The cut between the clusters is per-game, so every result carries the
-distribution it measured -- ``matched_min`` and ``rejected_max`` -- so
-``PAYLINE_MATCH_THRESHOLD`` can be tuned from evidence rather than intuition.
-
-**A line is read from the left, one adjacent pair at a time, and stops at the
-first pair that does not match.** That is how a slot pays: three pots on reels
-1-3 pay whatever a pot pays for three, and a fourth pot on reel 5 with something
-else on reel 4 pays nothing extra. So the pay count is the length of the *leading*
-run of like symbols -- 0 if reels 1 and 2 differ, otherwise 2 or more. The
-comparison chains, tile to tile rather than every tile back to the first: A~B and
-B~C is taken as A~B~C, which is what makes a slow drift across five reels
-possible in principle and is worth knowing when a run looks one longer than it
-should.
-
-**Every adjacent pair is scored, including the ones after the run broke.** They
-cost nothing -- the pair is compared once and cached across the lines that share
-it -- and a line that pays 2 is much easier to trust when the two scores that
-follow are visibly low. The verdict uses only the counted ones; the rest are
-evidence.
-
-**The picture is part of the answer, and there are two kinds of it.** A pay
-count cannot be checked by reading it, so the reels come back once as a combined
-overlay with every *paying* line drawn on it, written to disk beside the tiles
-it was computed from -- and once more per line, paying or not, as
-``image_data`` on that line's own entry, so a line that pays nothing still shows
-where its run stopped. Only the second kind carries the red break ring: the
-combined picture is several lines at once, and "here is where this one broke" is
-a question about one of them, which is what its own picture is for. The palette
-is :mod:`app.utils.payline_overlay`'s, and each line's colour travels in the
-result so a swatch in the panel matches the drawing.
-
-Like :mod:`app.services.roi` and :mod:`app.services.grid` this service holds no
-state -- no client, no lock, no cache -- so it has no ``reset()`` and
-``tests/conftest.py`` has nothing to clean up between tests. Callers use the
-namespace::
-
-    from app.services import paylines as paylines_service
-    await paylines_service.check(PaylineCheckRequest())
+One step past :mod:`app.services.grid`: grid asks *does it divide into the
+symbols expected*, this asks *do those symbols line up*. Reads a written split
+(via :func:`app.services.grid.resolve_split`/:func:`read_split`), never a
+screenshot directly, so a check is repeatable at a new threshold without the
+simulator still showing the same spin. Two tiles are "the same" by cosine
+similarity (invariant to the brightness pulsing/glowing symbols add — see
+:mod:`app.utils.similarity`); the per-game cut between match/no-match clusters
+is why every result reports ``matched_min``/``rejected_max`` alongside
+``PAYLINE_MATCH_THRESHOLD``. A line reads left to right and stops at the first
+non-matching adjacent pair, so ``pays`` is the length of that *leading* run (0,
+or 2+) — every pair is still scored (``counted`` marks which ones the run
+reached) since the pairs after a break are evidence the break was real. Each
+line gets its own picture with a break marker, paying or not; the combined
+overlay draws only paying lines and never the break ring, since several lines
+share it. Holds no state, so no ``reset()``.
 """
 
 from __future__ import annotations
@@ -101,14 +55,11 @@ from app.utils import paylines as payline_config
 
 logger = get_logger("paylines")
 
-# Where an annotated picture lands inside the split's own directory. Beside the
-# tiles it was computed from rather than in a directory of its own, because the
-# three -- crop, tiles, overlay -- are one record of one frame.
+# Beside the tiles it was computed from, since crop/tiles/overlay are one record.
 _OUTPUT_DIR = "paylines"
 
-# The fewest positions a line has to match to have paid anything. Two, not
-# three: what pays what is the game's paytable and not this service's business,
-# and reporting a two-reel run as "pays 2" leaves the paytable to whoever has it.
+# What pays what is the game's paytable, not this service's business -- so the
+# floor for "paying" is 2, and reporting it is left to whoever has the paytable.
 _MIN_PAYING = 2
 
 
@@ -128,12 +79,7 @@ def _active_config() -> tuple[str, GameConfig]:
 
 
 def _set_names(config: GameConfig) -> tuple[str, ...]:
-    """The bet configurations the game declares.
-
-    Raises:
-        PaylinesNotConfiguredError: if it declares none.
-        GameConfigInvalidError: if the block is not an object.
-    """
+    """The bet configurations the game declares."""
     if not config.paylines:
         raise PaylinesNotConfiguredError(
             f"The game config for {config.name!r} declares no 'paylines' block, "
@@ -146,25 +92,14 @@ def _set_names(config: GameConfig) -> tuple[str, ...]:
 
 
 def _default_set(names: tuple[str, ...]) -> str:
-    """Which set a request that names none is asking for.
-
-    ``PAYLINE_DEFAULT_SET`` when the game declares it, and otherwise the first --
-    which :func:`app.utils.paylines.set_names` has already sorted numerically, so
-    it is the five-line set rather than whichever key JSON happened to list
-    first. A configured set the game does not have falls back rather than
-    failing: the setting is deployment-wide and the games are not all the same.
-    """
+    """Which set a request that names none is asking for: ``PAYLINE_DEFAULT_SET``
+    when the game declares it, else the first (already sorted numerically)."""
     wanted = settings.PAYLINE_DEFAULT_SET.strip()
     return wanted if wanted in names else names[0]
 
 
 def _read_set(config: GameConfig, name: str) -> payline_config.PaylineSet:
-    """Parse one bet configuration out of the active game's block.
-
-    Raises:
-        PaylinesNotConfiguredError: if the game declares no set by that name.
-        GameConfigInvalidError: if the set it declares is malformed.
-    """
+    """Parse one bet configuration out of the active game's block."""
     names = _set_names(config)
     if name not in names:
         raise PaylinesNotConfiguredError(
@@ -178,18 +113,9 @@ def _read_set(config: GameConfig, name: str) -> payline_config.PaylineSet:
 
 
 def _grid(config: GameConfig) -> reel_grid.ReelGrid:
-    """The reel grid of the active game, for the tile geometry the lines need.
-
-    Read here as well as in :mod:`app.services.grid` because the overlay draws on
-    the crop and needs to know where a tile's centre is inside it, which the
-    filenames of a written split cannot say. Read from the config rather than
-    counted off those filenames so the centre comes out of the same division the
-    tiles were cut with, ``inset`` included.
-
-    Raises:
-        GridNotConfiguredError: if the game declares no ``reel_bounds``.
-        GameConfigInvalidError: if it declares one that cannot be read.
-    """
+    """The reel grid of the active game, for the tile geometry the lines need —
+    read from the config (``inset`` included) rather than counted off filenames,
+    since only the config gives a tile's true centre."""
     if not config.reel_bounds:
         raise GridNotConfiguredError(
             f"The game config for {config.name!r} declares no 'reel_bounds' "
@@ -205,34 +131,20 @@ def _grid(config: GameConfig) -> reel_grid.ReelGrid:
 
 
 def _vectors(split: grid_service.SplitOnDisk) -> dict[str, np.ndarray]:
-    """Every tile as a flat vector, converted once.
-
-    Once per tile rather than once per comparison: a forty-line set compares each
-    pair several times over, and converting fifteen pictures beats converting a
-    hundred and sixty.
-    """
+    """Every tile as a flat vector, converted once rather than once per comparison."""
     return {name: similarity.vector(tile) for name, tile in split.tiles.items()}
 
 
 class _Scores:
-    """Cosine similarity between tiles of one split, computed on demand.
-
-    Cached on the unordered pair, because cosine is symmetric and the sets share
-    their lines: every one of FortuneOx's three sets starts with the same middle
-    row, and the diagonals overlap heavily. Forty lines of four steps is a
-    hundred and sixty questions about at most a hundred and five distinct pairs.
-    """
+    """Cosine similarity between tiles of one split, cached on the unordered pair
+    since cosine is symmetric and lines within a set share many pairs."""
 
     def __init__(self, vectors: dict[str, np.ndarray]) -> None:
         self._vectors = vectors
         self._cache: dict[tuple[str, str], float] = {}
 
     def between(self, left: str, right: str) -> float:
-        """How alike the two named tiles are.
-
-        Raises:
-            PaylineCheckFailedError: if either name is not a tile of the split.
-        """
+        """How alike the two named tiles are."""
         key = (left, right) if left <= right else (right, left)
         if key not in self._cache:
             try:
@@ -260,14 +172,8 @@ def _evaluate(
     line: payline_config.Payline, scores: _Scores, threshold: float
 ) -> tuple[list[PaylineStep], int, str | None]:
     """One line's steps, how many positions it pays on, and where it broke.
-
-    Every step is scored; ``counted`` marks the ones the left-to-right read
-    actually reached. The run ends at the first counted step that does not match,
-    so the pay count is ``matched adjacent pairs + 1`` while they hold and 0 once
-    the first pair fails. The break position is that step's right-hand tile --
-    the first one that did not continue the match -- or None when the whole line
-    paid and nothing broke.
-    """
+    ``counted`` marks the steps the left-to-right read actually reached; the run
+    ends at the first counted step that doesn't match."""
     steps: list[PaylineStep] = []
     running = True
     run = 0
@@ -290,9 +196,7 @@ def _evaluate(
             else:
                 running = False
                 break_position = right.name
-    # A run of matched pairs covers one more position than it has pairs, and no
-    # matched pair at all covers none: a line that fails on reels 1 and 2 pays
-    # nothing, not one.
+    # A run of N matched pairs covers N+1 positions; zero matched pairs covers none.
     pays = run + 1 if run else 0
     return steps, pays, break_position
 
@@ -303,16 +207,8 @@ def _evaluate(
 def _placed_tiles(
     grid: reel_grid.ReelGrid, split: grid_service.SplitOnDisk
 ) -> dict[str, reel_grid.PlacedTile]:
-    """Every tile of the grid, positioned on this split's own crop.
-
-    From :meth:`app.utils.reel_grid.ReelGrid.place` against the crop that was
-    written, so a tile's box here is the exact box it was cut out with -- the
-    overlay's borders line up with the symbol they are drawn around rather than
-    with an independently-rounded approximation of it.
-
-    Raises:
-        PaylineCheckFailedError: if the crop leaves no room for tiles.
-    """
+    """Every tile of the grid, positioned on this split's own crop — the exact
+    box each tile was cut out with, so overlay borders line up with the symbol."""
     try:
         placed = grid.place(split.crop.width, split.crop.height)
     except reel_grid.ReelGridError as exc:
@@ -334,16 +230,8 @@ def _line_drawing(
     break_position: str | None,
     tiles: dict[str, reel_grid.PlacedTile],
 ) -> payline_overlay.DrawnLine:
-    """One line, as the overlay wants it -- paying or not.
-
-    ``points`` is the confirmed run and nothing more: empty when ``pays`` is 0,
-    because a line whose very first pair failed confirmed nothing. The tile
-    boxes that go with it -- green for the confirmed run, red for the one that
-    ended it -- are what a line's own picture borders; nothing past a break is
-    bordered, and the combined overlay ignores all of it via ``detailed=False``.
-    No text is drawn on either picture -- the line's name is already on the
-    response, in ``PaylineLine.label``, and the picture is the path.
-    """
+    """One line, as the overlay wants it -- paying or not. ``points`` is the
+    confirmed run and nothing more, empty when ``pays`` is 0."""
     boxes = {position.name: tiles[position.name].box for position in line.positions}
     centres = {name: _centre(box) for name, box in boxes.items()}
 
@@ -360,11 +248,7 @@ def _line_drawing(
 
 
 def _write(image: Image.Image, directory: Path, file_name: str) -> Path:
-    """Write the annotated picture into the split's own directory.
-
-    Raises:
-        PaylineCheckFailedError: if it could not be written.
-    """
+    """Write the annotated picture into the split's own directory."""
     destination = directory / file_name
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -377,12 +261,7 @@ def _write(image: Image.Image, directory: Path, file_name: str) -> Path:
 
 
 def _encode(image: Image.Image) -> str:
-    """One picture as a PNG data URI, as this feature's own failure.
-
-    Translated rather than reimplemented, the same way :mod:`app.services.grid`
-    translates it: the encoding belongs in one place and ROI's error name would
-    read as the wrong feature here.
-    """
+    """One picture as a PNG data URI, translating ROI's error into this feature's own."""
     try:
         return roi_service.encode_png(image)
     except RoiExtractFailedError as exc:
@@ -409,22 +288,16 @@ def _describe(split: grid_service.SplitOnDisk) -> PaylineSource:
 
 
 def _summarise(lines: list[PaylineLine]) -> str:
-    """The result as the sentence a person would say.
-
-    ``Line 1 pays 2, Line 3 pays 4`` -- paying lines only, in the order they are
-    numbered, because that is the order they are read in.
-    """
+    """The result as a sentence, e.g. ``Line 1 pays 2, Line 3 pays 4`` — paying
+    lines only, in reading order."""
     paying = [f"{line.label} pays {line.pays}" for line in lines if line.paying]
     return ", ".join(paying) if paying else "No line pays"
 
 
 def _stats(lines: list[PaylineLine], scores: _Scores, threshold: float) -> PaylineStats:
-    """The run as a whole, including how well its scores separated.
-
-    ``matched_min`` and ``rejected_max`` are the two numbers a working threshold
-    sits between. Both are counted over the *distinct* pairs rather than over the
-    steps, so a pair two lines share is not weighted twice.
-    """
+    """The run as a whole, including how well its scores separated. ``matched_min``
+    and ``rejected_max`` are counted over distinct pairs, not steps, so a pair
+    two lines share isn't weighted twice."""
     measured = scores.measured
     matched = [score for score in measured if score >= threshold]
     rejected = [score for score in measured if score < threshold]
@@ -455,9 +328,7 @@ def _layout() -> PaylineLayout:
         names = _set_names(config)
         grid = _grid(config)
     except (PaylinesNotConfiguredError, GridNotConfiguredError) as exc:
-        # Reported rather than raised, like the grid panel's own unconfigured
-        # state: a game without the block is a choice someone made, not a
-        # request that went wrong.
+        # Reported rather than raised: an unconfigured game isn't a broken panel.
         return PaylineLayout(game=name, threshold=threshold, error=exc.message)
 
     directory = grid_service.latest_split()
@@ -469,8 +340,7 @@ def _layout() -> PaylineLayout:
         try:
             source = _describe(grid_service.read_split(directory))
         except (PaylineSourceNotFoundError, RoiExtractFailedError) as exc:
-            # A half-written or hand-edited directory is a state to report, not a
-            # failure: the panel's job here is to say why Check is disabled.
+            # Reported, not raised — the panel's job is to say why Check is disabled.
             error = exc.message
 
     return PaylineLayout(
@@ -486,17 +356,9 @@ def _layout() -> PaylineLayout:
 
 
 async def layout() -> PaylineLayout:
-    """The sets the active game declares, and the split a check would read.
-
-    What the panel renders before anything is checked. A game that declares no
-    paylines, or no reel grid to place them on, and a checkout that has split
-    nothing yet, all come back with ``error`` set on a 200 rather than as failed
-    requests.
-
-    Raises:
-        GameConfigInvalidError: if the active game's config cannot be loaded, or
-            declares a ``paylines`` or ``reel_bounds`` block that cannot be read.
-    """
+    """The sets the active game declares, and the split a check would read. An
+    unconfigured game or a checkout with nothing split yet comes back with
+    ``error`` set on a 200, not as a failed request."""
     return await asyncio.to_thread(_layout)
 
 
@@ -514,10 +376,7 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
 
     split = grid_service.read_split(grid_service.resolve_split(request.split))
     if (split.rows, split.columns) != (grid.row_count, grid.column_count):
-        # The split and the config disagree about the shape of the reels, so the
-        # coordinates in the payline block do not describe these tiles. A
-        # conflict rather than a 500: the config may well be right and the split
-        # merely old, which is fixed by splitting again.
+        # A conflict, not a 500 — the config may be right and the split merely old.
         raise PaylineSourceStaleError(
             f"{split.name} is a {split.rows}x{split.columns} split but "
             f"{name} now declares a {grid.row_count}x{grid.column_count} grid -- "
@@ -541,14 +400,9 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
         drawing = _line_drawing(index, line, pays, break_position, tiles)
         paying = pays >= _MIN_PAYING
         if paying:
-            # Just the path on the combined picture: no tags, no tile borders,
-            # no break -- several lines share it, and one line's own picture
-            # (below) is where all of that belongs.
+            # Just the path on the combined picture -- several lines share it.
             paying_drawings.append(dataclasses.replace(drawing, detailed=False))
 
-        # Every line gets its own picture -- unlike the combined overlay, which
-        # only draws the ones that paid -- because a line that pays nothing is
-        # exactly the one whose break is worth seeing on its own.
         line_image = (
             payline_overlay.draw(split.crop, [drawing], scale=scale)
             if request.include_images
@@ -601,22 +455,5 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
 
 
 async def check(request: PaylineCheckRequest) -> PaylineCheckResult:
-    """Evaluate one bet configuration's lines against one split reel grid.
-
-    Raises:
-        BadRequestError: if a named split is not a bare directory name.
-        PaylinesNotConfiguredError: if the active game declares no ``paylines``,
-            or no set by the requested name.
-        GridNotConfiguredError: if it declares no ``reel_bounds`` to place them
-            on.
-        GameConfigInvalidError: if the config cannot be loaded, or either block
-            is declared with unusable numbers.
-        PaylineSourceNotFoundError: if there is no split to check, or the one
-            named is incomplete.
-        PaylineSourceStaleError: if the split's shape is not the one the game now
-            declares.
-        RoiExtractFailedError: if the crop or a tile is not a readable image.
-        PaylineCheckFailedError: if a line runs through a tile the split does not
-            hold, or the annotated picture could not be written or encoded.
-    """
+    """Evaluate one bet configuration's lines against one split reel grid."""
     return await asyncio.to_thread(_check, request)

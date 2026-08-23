@@ -1,12 +1,6 @@
-"""Request and response models for the payline check.
-
-Three things travel back and none of them is optional to understanding the
-others: what each line paid, the similarity score behind every comparison that
-produced it, and one picture of the lines drawn over the reels they were read
-from. A pay count on its own cannot be checked -- "line 3 pays 4" is the same
-sentence whether four pots really line up or the threshold is too low -- so the
-result carries the evidence beside the verdict, and the panel shows both.
-"""
+"""Request and response models for the payline check. Results carry the
+similarity evidence beside the pay verdict, since a pay count alone can't be
+checked against a config or a screenshot."""
 
 from __future__ import annotations
 
@@ -52,32 +46,19 @@ class PaylineSource(BaseModel):
 
 
 class PaylineStep(BaseModel):
-    """One adjacent pair on a line, and how alike the two tiles are.
-
-    Both ``matched`` and ``counted`` are here because they answer different
-    questions. ``matched`` is whether these two tiles are the same symbol.
-    ``counted`` is whether the left-to-right read got this far: once a pair does
-    not match the line stops paying, and every step after it is reported for
-    information rather than as part of the verdict.
-    """
+    """One adjacent pair on a line. ``matched`` is whether the tiles are the
+    same symbol; ``counted`` is whether the leading run got this far."""
 
     left: str = Field(description="Position name of the left tile, e.g. 'r2c1'.")
     right: str = Field(description="Position name of the right tile, e.g. 'r2c2'.")
     similarity: float = Field(
         description=(
-            "Cosine similarity of the two tiles, in [-1, 1]. Non-negative pixel "
-            "channels put unrelated symbols around 0.6-0.9 and two crops of one "
-            "symbol above 0.96, so read it against the run's own distribution "
-            "rather than as a fraction."
+            "Cosine similarity of the two tiles, in [-1, 1]. Read it against "
+            "the run's matched_min/rejected_max, not as a plain fraction."
         )
     )
     matched: bool = Field(description="Whether the score reached the threshold.")
-    counted: bool = Field(
-        description=(
-            "Whether the left-to-right read reached this step. False for every "
-            "step after the first that did not match."
-        )
-    )
+    counted: bool = Field(description="Whether the leading run reached this step.")
 
 
 class PaylineLine(BaseModel):
@@ -99,32 +80,21 @@ class PaylineLine(BaseModel):
     matched_positions: list[str] = Field(
         description="The leading run of positions that pays, empty when none does."
     )
-    color: str = Field(
-        description=(
-            "Hex colour this line is drawn in on the overlay. Reported so a "
-            "swatch beside the line matches the picture."
-        )
-    )
+    color: str = Field(description="Hex colour this line is drawn in on the overlay.")
     steps: list[PaylineStep] = Field(
-        description=(
-            "Every adjacent pair on the line, left to right -- including the "
-            "ones after the run broke, so the whole line's scores can be read."
-        )
+        description="Every adjacent pair on the line, left to right."
     )
     break_position: str | None = Field(
         default=None,
         description=(
-            "Position name where the leading run stopped -- the first tile that "
-            "did not continue the match. Null when the whole line paid, since "
-            "there is nothing to mark as a break."
+            "Position where the leading run stopped; null when the whole line paid."
         ),
     )
     image_data: str | None = Field(
         default=None,
         description=(
-            "Base64 data URI of this one line drawn over the reels, with a "
-            "marker at 'break_position' when the run stopped early. Null when "
-            "the request asked for files only."
+            "Base64 data URI of this line drawn over the reels, marked at "
+            "'break_position'. Null when the request asked for files only."
         ),
     )
 
@@ -151,21 +121,15 @@ class PaylineStats(BaseModel):
     rejected_max: float | None = Field(
         default=None,
         description=(
-            "Highest score that was not counted as a match. Together with "
-            "matched_min this is the gap the threshold sits in -- a threshold "
-            "between the two is separating the symbols, one outside is not."
+            "Highest score not counted as a match; with matched_min, the gap "
+            "a working threshold sits in."
         ),
     )
 
 
 class PaylineLayout(BaseModel):
-    """What the panel needs before anything is checked.
-
-    A game that declares no paylines, and a game that has never been split, are
-    both reported as states on a 200 rather than as failures: only some games
-    have the block and a fresh checkout has split nothing, and neither is
-    something to recover from by retrying.
-    """
+    """What the panel needs before anything is checked; a game with no
+    paylines or nothing split reports as a state (``error`` set) on a 200."""
 
     game: str = Field(description="Game the paylines belong to.")
     sets: list[PaylineSetOption] = Field(
@@ -221,8 +185,8 @@ class PaylineCheckRequest(BaseModel):
         min_length=1,
         max_length=40,
         description=(
-            "Bet configuration to check, as the game config keys it -- '5', '20' "
-            "or '40'. Omit for PAYLINE_DEFAULT_SET, or the smallest declared."
+            "Bet configuration key, e.g. '5', '20'. Omit for "
+            "PAYLINE_DEFAULT_SET, or the smallest declared."
         ),
     )
     threshold: float | None = Field(

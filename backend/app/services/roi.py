@@ -1,66 +1,17 @@
-"""Cutting a configured region out of a captured frame.
+"""Cuts a configured region out of a captured frame.
 
-Every piece this joins up already existed. The active game config names the
-parts of the screen worth looking at, :mod:`app.utils.image_roi` cuts one out of
-a frame at whatever resolution the frame turned out to be, and the OBS service
-already writes screenshots into a directory. What is left here is the part that
-is about this project: which frame is meant by "the latest one", and what a
-region looks like once it has been cut out.
-
-This is the same joinery :mod:`app.services.ocr` does, stopping one step short.
-OCR crops a region and hands the crop to Tesseract; this crops a region and
-hands back the picture. That step is worth having on its own, because the two
-questions fail independently -- a meter that reads as punctuation is either
-aimed at the wrong rectangle or preprocessed badly, and only one of those is
-visible in the crop. Checking the rectangle needs no engine installed.
-
-**The frame comes off disk, newest first.** The dashboard's Screenshot button
-writes into :attr:`settings.obs_dashboard_screenshot_dir`, so an extraction with
-no ``file_name`` means the shot that was just taken. Nothing here asks OBS for a
-frame: a region is checked against evidence that is still on disk to be looked
-at again, and a live capture would make "the same crop, extracted twice" mean
-two different pictures.
-
-**Nothing is written.** The crop goes back as a data URI, like OCR's own
-``include_crop``. A folder of crops of crops is litter, and the source frame is
-already saved. The cash meter is the one exception, kept on disk for a record of
-what the meter read over time.
-
-**The cash meter is also read.** That one region hands its crop to
-:mod:`app.services.meter` and returns the numbers beside the picture, because
-cropping the meter and reading it are one action from the panel's point of view --
-and cropping separately for each would let two extractions of the same strip
-disagree. Reading cannot fail the extraction: the failure arrives as an ``error``
-on the reading, so a host with no Tesseract still gets its crop.
-
-**A region is aimed at the game, not at the canvas.** OBS writes every frame at
-its canvas size and fits the window capture inside it, so a portrait simulator
-arrives with black bars down both sides -- and their width is a property of the
-window's shape at that moment, which means a region measured against the canvas
-comes unaimed the moment the simulator is resized. :func:`content_box` finds the
-part of the frame the game fills and :func:`resolve_box` resolves a region
-against that, so the same four fractions describe the same part of the game at
-every window size. :mod:`app.utils.letterbox` is where the detection and its
-guardrails are documented.
-
-**The frame plumbing is public, and :mod:`app.services.grid` and
-:mod:`app.services.ocr` share it.** :func:`resolve_frame`, :func:`open_frame`,
-:func:`content_box`, :func:`resolve_box`, :func:`describe`,
-:func:`describe_path` and :func:`encode_png` are the answer to "which shot, what
-was in it, and where does a region land on it", and this module is where that
-answer is documented -- so the grid splitter and the reader call them rather than
-growing a second reading of "the latest screenshot" or a second reading of a
-letterboxed frame. They raise
-:class:`~app.exceptions.base.RoiFrameNotFoundError` and
-:class:`~app.exceptions.base.RoiExtractFailedError` whoever the caller is,
-because the thing that is missing or unreadable is the frame either way.
-
-Unlike its neighbours this service holds no state -- no client, no lock, no
-cached engine -- so it has no ``reset()`` and ``tests/conftest.py`` has nothing
-to clean up between tests. Callers still use the namespace::
-
-    from app.services import roi as roi_service
-    await roi_service.extract(RoiExtractRequest(region="cash_meter"))
+Same joinery as :mod:`app.services.ocr`, one step short: OCR hands the crop to
+Tesseract, this hands back the picture — checking a region's aim needs no engine.
+The frame comes off disk (newest in ``obs_dashboard_screenshot_dir``), never a
+live OBS capture, so the same crop extracted twice is the same picture. Crops
+return as data URIs and nothing is written, except ``cash_meter``, which is also
+kept on disk and read via :mod:`app.services.meter`. Regions resolve against
+:func:`content_box` (the game's content, not the canvas), since letterbox bars
+change width as the window resizes — see :mod:`app.utils.letterbox`.
+:func:`resolve_frame`/:func:`open_frame`/:func:`content_box`/:func:`resolve_box`/
+:func:`describe`/:func:`describe_path`/:func:`encode_png` are public so
+:mod:`app.services.grid` and :mod:`app.services.ocr` share this reading instead of
+re-deriving it. Holds no state, so no ``reset()``.
 """
 
 from __future__ import annotations
@@ -95,14 +46,11 @@ from app.utils import image_roi, letterbox, paths
 
 logger = get_logger("roi")
 
-# What OBS can be asked to write, which is what may turn up in the directory.
-# A stray .txt or .json alongside the frames is skipped rather than offered as a
-# frame and then failing to open.
+# Frame candidates in the screenshot dir; a stray .txt/.json is skipped rather
+# than offered as a frame and failing to open.
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".webp"})
 
-# The one region whose crop is also kept on disk, for a running record of what
-# the meter read over time rather than only the single latest crop the API
-# returns.
+# The one region whose crop is also kept on disk, for a running record over time.
 _SAVED_REGION = "cash_meter"
 _SAVED_REGION_DIR = "cash-meter"
 
@@ -140,11 +88,7 @@ def _frame_dir() -> Path:
 
 
 def latest_path() -> Path | None:
-    """Newest image in the screenshots directory, or None if there is none.
-
-    Modification time rather than name: the names carry a timestamp today, but
-    sorting pictures by string is a bug waiting for the day they do not.
-    """
+    """Newest image in the screenshots directory, by mtime (not filename), or None."""
     directory = _frame_dir()
     if not directory.is_dir():
         return None
@@ -159,12 +103,7 @@ def latest_path() -> Path | None:
 
 
 def _named_path(file_name: str) -> Path:
-    """Resolve a caller-supplied frame name inside the screenshots directory.
-
-    Raises:
-        BadRequestError: if the name is not a bare filename.
-        RoiFrameNotFoundError: if no such frame is there.
-    """
+    """Resolve a caller-supplied frame name inside the screenshots directory."""
     try:
         path = paths.resolve_within(_frame_dir(), file_name)
     except paths.UnsafeNameError as exc:
@@ -179,12 +118,7 @@ def _named_path(file_name: str) -> Path:
 
 
 def resolve_frame(file_name: str | None) -> Path:
-    """The frame to crop: the one that was named, or the newest one.
-
-    Raises:
-        BadRequestError: if a named frame is not a bare filename.
-        RoiFrameNotFoundError: if the named frame, or any frame at all, is gone.
-    """
+    """The frame to crop: the one that was named, or the newest one."""
     if file_name is not None:
         return _named_path(file_name)
     latest = latest_path()
@@ -197,13 +131,7 @@ def resolve_frame(file_name: str | None) -> Path:
 
 
 def open_frame(path: Path) -> Image.Image:
-    """Read one frame fully, so the crop outlives the file handle.
-
-    Raises:
-        RoiExtractFailedError: if the file is not a readable image. Pillow's
-            ``UnidentifiedImageError`` is an ``OSError``, so "not an image" and
-            "unreadable" arrive by one door.
-    """
+    """Read one frame fully, so the crop outlives the file handle."""
     try:
         with Image.open(path) as image:
             image.load()
@@ -216,16 +144,7 @@ def open_frame(path: Path) -> Image.Image:
 
 def content_box(image: Image.Image) -> letterbox.ContentBox:
     """The part of one frame the game fills, which is what regions are aimed at.
-
-    OBS writes every frame at its canvas size and fits the window capture inside
-    it, so a portrait simulator arrives with black bars whose width is a property
-    of the window's shape at that moment. Resolving a region against this box
-    rather than against the canvas is what makes the same four fractions right
-    for every window size -- see :mod:`app.utils.letterbox`.
-
-    ``FRAME_LETTERBOX_TRIM=false`` turns it off, which puts every region back to
-    fractions of the whole canvas.
-    """
+    ``FRAME_LETTERBOX_TRIM=false`` disables detection, reverting to canvas fractions."""
     if not settings.FRAME_LETTERBOX_TRIM:
         return letterbox.ContentBox.whole(image.width, image.height)
     return letterbox.content_box(
@@ -238,23 +157,11 @@ def content_box(image: Image.Image) -> letterbox.ContentBox:
 def resolve_box(
     roi: image_roi.Roi, image: Image.Image
 ) -> tuple[tuple[int, int, int, int], letterbox.ContentBox]:
-    """Where one region lands on one frame, in the frame's own pixels.
-
-    The single answer to "which pixels is this region" for ROI, OCR and the reel
-    grid alike, so the three cannot drift on how a letterboxed frame is read.
-    The content box comes back beside the pixel box because it is what explains
-    it: a crop that looks misplaced is either a bad region or a misdetected box,
-    and only the pair tells them apart.
-
-    Reading several regions off one frame should find the box once with
-    :func:`content_box` and resolve each region with
-    :meth:`app.utils.image_roi.Roi.to_box_within`; this is the single-region
-    shorthand for the two calls.
-
-    Raises:
-        image_roi.RoiError: if the content box has no area, which needs a frame
-            with none.
-    """
+    """Where one region lands on one frame, in the frame's own pixels — the box
+    comes back too, since a misplaced crop is either a bad region or a misdetected
+    box, and only the pair says which. For several regions on one frame, call
+    :func:`content_box` once and :meth:`image_roi.Roi.to_box_within` per region
+    instead."""
     content = content_box(image)
     return roi.to_box_within(content.box), content
 
@@ -270,12 +177,7 @@ def describe(path: Path, image: Image.Image) -> RoiFrame:
 
 
 def describe_path(path: Path) -> RoiFrame:
-    """Describe a frame without decoding it.
-
-    ``Image.open`` reads only the header, so listing the newest frame in the
-    catalog costs a header read rather than a full decode of an image nobody has
-    asked to crop yet.
-    """
+    """Describe a frame without decoding it — ``Image.open`` reads only the header."""
     try:
         with Image.open(path) as image:
             return describe(path, image)
@@ -286,11 +188,7 @@ def describe_path(path: Path) -> RoiFrame:
 
 
 def _save_crop(crop: Image.Image, source: Path) -> None:
-    """Write a cash meter crop to disk, named after the frame it came from.
-
-    Raises:
-        RoiExtractFailedError: if the crop could not be written.
-    """
+    """Write a cash meter crop to disk, named after the frame it came from."""
     directory = settings.obs_capture_dir / _SAVED_REGION_DIR
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"{source.stem}.png"
@@ -316,9 +214,8 @@ def _catalog() -> RoiCatalog:
         try:
             roi = image_roi.named_roi(config.roi, region)
         except image_roi.RoiError as exc:
-            # Listed with its reason rather than dropped: a region missing from
-            # the dropdown looks like a config that never declared it, which
-            # sends whoever is looking to the wrong file.
+            # Listed with its reason rather than dropped, so it isn't mistaken
+            # for a region the config never declared.
             summaries.append(
                 RoiRegionSummary(
                     region=region,
@@ -345,30 +242,14 @@ def _catalog() -> RoiCatalog:
 
 
 async def catalog() -> RoiCatalog:
-    """The active game's regions, and the frame an extraction would use.
-
-    What the panel renders before anything is extracted: the dropdown's options
-    and the name of the shot they would be cut out of.
-
-    Raises:
-        GameConfigInvalidError: if the active game's config cannot be loaded.
-        RoiRegionNotFoundError: if it declares no regions.
-        RoiExtractFailedError: if the newest screenshot is not a readable image.
-    """
+    """The active game's regions, and the frame an extraction would use."""
     return await asyncio.to_thread(_catalog)
 
 
 def encode_png(crop: Image.Image) -> str:
-    """The crop as a PNG data URI.
-
-    PNG regardless of the source format: a crop of a meter is about to be looked
-    at closely, and re-encoding it as JPEG would add exactly the artefacts that
-    make a region look badly aimed.
-
-    Raises:
-        RoiExtractFailedError: if the crop could not be encoded. Unlike OCR's
-            equivalent this is fatal, because here the picture *is* the answer.
-    """
+    """The crop as a PNG data URI — PNG regardless of source format, since JPEG
+    artefacts would make a region look badly aimed. Unlike OCR's equivalent, an
+    encode failure is fatal here: the picture *is* the answer."""
     buffer = io.BytesIO()
     try:
         crop.save(buffer, format="PNG")
@@ -392,14 +273,9 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
     frame = open_frame(path)
     try:
         roi = image_roi.named_roi(config.roi, request.region)
-        # Against the game rather than the canvas: the bars round a window
-        # capture change width when the window is resized, and the region is
-        # aimed at what is inside them.
         box, content = resolve_box(roi, frame)
         crop = frame.crop(box)
     except image_roi.RoiError as exc:
-        # The region is declared but unusable. A config problem, so it names the
-        # file it came out of rather than only the region.
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
 
     logger.info(
@@ -431,15 +307,5 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
 
 
 async def extract(request: RoiExtractRequest) -> RoiExtractResult:
-    """Cut one region out of one frame and hand back the picture.
-
-    Raises:
-        BadRequestError: if a named frame is not a bare filename.
-        GameConfigInvalidError: if the config cannot be loaded, or the region is
-            declared with unusable numbers.
-        RoiRegionNotFoundError: if the active game declares no such region.
-        RoiFrameNotFoundError: if the frame to crop is not on disk.
-        RoiExtractFailedError: if the frame is not a readable image, or the crop
-            could not be encoded.
-    """
+    """Cut one region out of one frame and hand back the picture."""
     return await asyncio.to_thread(_extract, request)

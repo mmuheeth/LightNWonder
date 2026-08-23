@@ -1,24 +1,8 @@
-"""Reader for the button-panel layout that ``OledPanelSvc`` itself renders from.
-
-The panel service parses an XML layout at startup and logs the file it chose::
-
-    root=C:\\ssd\\cabinet\\deployment\\cfg\\ButtonPanel\\ file=virtual_oled.xml
-
-Reading that same file is what keeps this integration honest: button geometry
-has exactly one source of truth, and a panel re-layout does not need a matching
-edit here.
-
-A button's *outer* size is not stated directly. It comes from the referenced
-``ButtonTemplate``: the ``TextBox`` extent grown by the bezel on each side::
-
-    <ButtonTemplate id="small_button" bezel_width="5">
-      <TextBox x="5" y="5" width="96" height="64" />
-    </ButtonTemplate>
-
-    -> 96 + 2*5 = 106 wide, 64 + 2*5 = 74 tall
-
-which reproduces the ``POS: x=.. y=.. w=106 h=74`` lines the service logs while
-parsing. A template may also state ``width``/``height`` outright, and those win.
+"""Reader for the button-panel layout XML that ``OledPanelSvc`` itself renders
+from, so button geometry has one source of truth and a panel re-layout needs
+no matching edit here. A button's outer size comes from its ``ButtonTemplate``
+(the ``TextBox`` extent grown by the bezel), unless the template states
+``width``/``height`` outright.
 """
 
 from __future__ import annotations
@@ -70,16 +54,9 @@ class PanelLayout:
     def to_client(
         self, button: PanelButton, *, client_width: int, client_height: int
     ) -> tuple[int, int]:
-        """Where a key's centre sits in a window showing this panel.
-
-        The layout states a fixed panel size; a window may be showing it at a
-        different scale, so the centre is mapped through the ratio of the two
-        rather than used raw.
-
-        The result is clamped into the window: a rounded edge case could land one
-        pixel outside, and a press must fall inside the window it is addressed
-        to.
-        """
+        """Where a key's centre sits in a window showing this panel at a
+        possibly different scale, clamped inside the window (a rounded edge
+        case could land one pixel outside)."""
         x, y = button.center
         if self.width > 0 and self.height > 0:
             x = round(x * client_width / self.width)

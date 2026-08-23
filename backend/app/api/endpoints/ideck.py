@@ -1,17 +1,6 @@
-"""Virtual OLED i-deck control endpoints.
-
-Thin wrappers over :mod:`app.services.ideck`. Which window to drive, where the
-layout lives and how presses are confirmed all come from the environment, never
-from the request body, so a caller cannot aim this at an arbitrary window.
-
-Three failure shapes recur:
-
-- **409 ``IDECK_WINDOW_NOT_FOUND``** -- the panel is not open, or is minimized
-  with restoring disabled. Fixed by launching it, not by retrying.
-- **404 ``IDECK_BUTTON_NOT_FOUND``** -- the layout has no key by that name.
-- **502 ``IDECK_PRESS_NOT_CONFIRMED``** -- the press was posted but the panel
-  never logged it. Worth retrying.
-"""
+"""Virtual OLED i-deck control endpoints, thin wrappers over
+:mod:`app.services.ideck`. Window, layout and confirmation all come from the
+environment, never the request body."""
 
 from __future__ import annotations
 
@@ -32,9 +21,7 @@ from app.services import ideck as ideck_service
 
 router = APIRouter()
 
-# Shared across the press routes, so declared once. The alias matches the
-# signature FastAPI expects for `responses=`.
-ResponseSpec = dict[int | str, dict[str, Any]]
+ResponseSpec = dict[int | str, dict[str, Any]]  # matches FastAPI's `responses=`
 
 NO_WINDOW: ResponseSpec = {
     409: {"description": "The Virtual OLED window is not usable"}
@@ -52,11 +39,8 @@ PRESS_ERRORS: ResponseSpec = {**NO_WINDOW, **NO_BUTTON, **NOT_CONFIRMED}
     summary="i-deck panel status",
 )
 async def get_status() -> ApiResponse[IDeckStatus]:
-    """Report whether the panel can be pressed.
-
-    Always 200: a closed panel is a state to report, not a failed request. Check
-    ``data.state`` rather than the status code.
-    """
+    """Report whether the panel can be pressed; always 200 -- check
+    ``data.state``, not the status code."""
     state = await ideck_service.status()
     return ApiResponse[IDeckStatus].ok(
         data=state, message=f"The i-deck is {state.state.value}"

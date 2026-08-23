@@ -57,19 +57,14 @@ logger = get_logger("obs")
 _client: simpleobsws.WebSocketClient | None = None
 _lock: asyncio.Lock | None = None
 
-# OBS flips the record output asynchronously: a status read taken immediately
-# after StartRecord or StopRecord still reports the previous value. Measured on
-# OBS 32: starting lands in ~0.1s, stopping in ~1.2s as the file is finalised.
-# These bound how long we wait for the real state before answering, well inside
-# the frontend's 15s request timeout.
+# OBS flips the record output asynchronously (measured on OBS 32: ~0.1s to
+# start, ~1.2s to stop) -- these bound how long to wait for the real state,
+# well inside the frontend's 15s request timeout.
 _SETTLE_ATTEMPTS = 30
 _SETTLE_DELAY_SECONDS = 0.1
 
-# OBS's Windows capture plugin stores a window as ``title:class:executable``.
-# The identifier is never built from the process name alone: an empty class
-# component matches no window, so the source binds to nothing and renders 0x0.
-# That is a blank screenshot rather than a reported failure, which is why the
-# value is read back from OBS's own window list instead.
+# Never built from the process name alone: an empty window class matches
+# nothing and renders 0x0, which is why the value is read from OBS's own list.
 _WINDOW_CAPTURE_KIND_PREFIX = "window_capture"
 _WINDOW_PRIORITY_EXE = 2
 _WINDOW_PROPERTY = "window"
@@ -80,12 +75,8 @@ _WINDOW_IDENTIFIER_PARTS = 3
 
 
 def _get_lock() -> asyncio.Lock:
-    """Return the module lock, created inside whichever loop is running.
-
-    Built lazily rather than at import time because ``tests/conftest.py`` makes a
-    fresh event loop per test, and a lock holding waiters from a dead loop is a
-    hazard. :func:`reset` clears it, so each test gets its own.
-    """
+    """Return the module lock, created lazily (not at import time) since each
+    test gets a fresh event loop and :func:`reset` clears it between tests."""
     global _lock
     if _lock is None:
         _lock = asyncio.Lock()
@@ -105,12 +96,7 @@ def _new_client() -> simpleobsws.WebSocketClient:
 
 
 async def _identify(client: simpleobsws.WebSocketClient) -> None:
-    """Run the connect and identify handshake.
-
-    Raises:
-        ObsConnectionError: if OBS is unreachable, closes the socket, or does not
-            identify before ``OBS_CONNECT_TIMEOUT_SECONDS`` elapses.
-    """
+    """Run the connect and identify handshake."""
     try:
         await client.connect()
         # TimeoutError subclasses OSError, so the handler below covers a
@@ -132,12 +118,7 @@ async def _identify(client: simpleobsws.WebSocketClient) -> None:
 
 
 async def _ensure_connected() -> simpleobsws.WebSocketClient:
-    """Return an identified client, re-handshaking once if the socket dropped.
-
-    Raises:
-        ObsNotConnectedError: if a connection has never been established.
-        ObsConnectionError: if the dropped socket could not be re-identified.
-    """
+    """Return an identified client, re-handshaking once if the socket dropped."""
     client = _client
     if client is None:
         raise ObsNotConnectedError(
@@ -152,16 +133,8 @@ async def _ensure_connected() -> simpleobsws.WebSocketClient:
 async def _call(
     request_type: str, data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Send one request to OBS and return its response data.
-
-    The single chokepoint for every OBS interaction. Calls serialise on the
-    module lock, so one socket is never multiplexed.
-
-    Raises:
-        ObsNotConnectedError: if a connection has never been established.
-        ObsConnectionError: if the session is gone and cannot be re-established.
-        ObsRequestError: if OBS rejected the request or did not answer in time.
-    """
+    """Send one request to OBS and return its response data. The single
+    chokepoint for every OBS interaction; calls serialise on the module lock."""
     async with _get_lock():
         client = await _ensure_connected()
         try:
@@ -228,17 +201,9 @@ def _resolve_output_dir(root: Path, output_dir: str | None) -> Path:
 def _resolve_capture_path(
     file_name: str, image_format: str, output_dir: str | None
 ) -> Path:
-    """Resolve a caller-supplied filename inside the screenshot output root.
-
-    Callers pass a bare filename, never a path. Without this the screenshot
-    endpoint would let any client write a file anywhere the OBS process can
-    reach. The check itself lives in :func:`app.utils.paths.resolve_within`;
-    what happens here is turning its refusal into the HTTP contract.
-
-    Raises:
-        BadRequestError: if the name carries a path separator or a parent
-            reference, or the output directory escapes its configured root.
-    """
+    """Resolve a caller-supplied filename inside the screenshot output root —
+    a bare filename only, or the endpoint would let a client write anywhere
+    the OBS process can reach."""
     root = _resolve_output_dir(settings.obs_screenshot_dir, output_dir)
     try:
         return resolve_within(root, file_name, default_suffix=image_format)
@@ -253,14 +218,8 @@ def _resolve_capture_path(
 
 
 async def _current_scene() -> str:
-    """Name of the active program scene.
-
-    obs-websocket exposes no dedicated "program output" source, so capturing
-    everything currently on screen means capturing the program scene by name.
-
-    Raises:
-        ObsRequestError: if OBS reports no current scene.
-    """
+    """Name of the active program scene -- obs-websocket exposes no dedicated
+    "program output" source, so capturing the screen means capturing this by name."""
     data = await _call("GetCurrentProgramScene")
     name = _as_str(data.get("sceneName"))
     if not name:
@@ -283,21 +242,13 @@ def _active_game() -> GameConfig:
 
 def _decode_obs_window_component(value: str) -> str:
     """Decode one component of OBS's colon-delimited window identifier.
-
-    ``#3A`` is expanded before ``#22``: the other order would turn an encoded
-    literal ``#3A`` (stored as ``#223A``) into a separator.
-    """
+    ``#3A`` expands before ``#22``, or an encoded literal ``#3A`` would become a separator."""
     return value.replace("#3A", ":").replace("#22", "#")
 
 
 def _window_identifier_parts(identifier: str) -> tuple[str, str, str] | None:
-    """Split an OBS ``title:class:executable`` identifier into decoded parts.
-
-    Returns ``None`` for anything that is not a three-component identifier, such
-    as the empty value OBS lists for "Select a window to capture". Splitting on
-    a bare colon is safe because OBS encodes colons inside a component as
-    ``#3A``.
-    """
+    """Split an OBS ``title:class:executable`` identifier into decoded parts, or
+    ``None`` for anything that isn't a three-component identifier."""
     parts = identifier.split(":")
     if len(parts) != _WINDOW_IDENTIFIER_PARTS:
         return None
@@ -388,22 +339,10 @@ async def _window_source_for_game(scene: str, configured_source: str | None) -> 
 
 
 async def _game_window(source_name: str, process: str) -> tuple[str, str]:
-    """Find OBS's own identifier for the window owned by ``process``.
-
-    OBS matches a window-capture source against the window list it enumerates
-    itself, so the identifier is taken from that list rather than assembled from
-    the process name. A synthesised ``::game.exe`` carries no window class and
-    matches nothing, and OBS reports no error for it -- the source simply renders
-    nothing, which surfaces much later as an empty screenshot.
-
-    Returns:
-        The identifier to store on the source, and the window title, which is
-        empty for a window that has none.
-
-    Raises:
-        ObsRequestError: if OBS lists no window for ``process``, which is what a
-            game that is not running (or has no visible window yet) looks like.
-    """
+    """Find OBS's own identifier for the window owned by ``process``, taken from
+    OBS's enumerated window list rather than assembled from the process name --
+    a synthesised ``::game.exe`` matches nothing and fails silently much later
+    as an empty screenshot. Returns the identifier and the window title."""
     data = await _call(
         "GetInputPropertiesListPropertyItems",
         {"inputName": source_name, "propertyName": _WINDOW_PROPERTY},
@@ -420,9 +359,7 @@ async def _game_window(source_name: str, process: str) -> tuple[str, str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        # A disabled entry is OBS's placeholder for a stored value that matches
-        # no live window -- precisely the broken state this repairs, so it must
-        # never be picked up as a candidate.
+        # OBS's placeholder for a stored value with no live window -- never a candidate.
         if item.get("itemEnabled") is False:
             continue
         parts = _window_identifier_parts(_as_str(item.get("itemValue")) or "")
@@ -455,12 +392,8 @@ async def _game_window(source_name: str, process: str) -> tuple[str, str]:
 
 
 async def _set_record_directory(directory: Path, *, required: bool = False) -> None:
-    """Point OBS's recording directory at ``directory``.
-
-    Connection setup treats this as best effort for compatibility with older
-    OBS versions. A recording start treats it as required because silently
-    recording into a different use-case directory would be worse than failing.
-    """
+    """Point OBS's recording directory at ``directory``. Connection setup treats
+    this as best effort; a recording start requires it."""
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -486,13 +419,9 @@ async def _set_record_directory(directory: Path, *, required: bool = False) -> N
 async def _settled_record_status(
     *, active: bool | None = None, paused: bool | None = None
 ) -> ObsRecordStatus:
-    """Read the record status once OBS reflects the change that was requested.
-
-    Returning the first read would report a state we know is stale -- pressing
-    Start would answer ``active: false``. Falls back to whatever OBS last said
-    if the flip never lands, so a genuinely stuck output is still reported
-    rather than hidden behind a hang.
-    """
+    """Read the record status once OBS reflects the change requested -- the
+    first read would still be stale. Falls back to OBS's last word if the flip
+    never lands, rather than hanging."""
     remaining = _SETTLE_ATTEMPTS
     while True:
         current = await record_status()
@@ -517,17 +446,9 @@ async def _settled_record_status(
 
 
 async def connect() -> ObsStatus:
-    """Open and identify a session with OBS.
-
-    Safe to call repeatedly: an already-identified session is reused. When
-    ``OBS_SET_RECORD_DIRECTORY`` is on, OBS's own recording directory is pointed
-    at the configured recording root -- note that this change persists in the
-    user's OBS profile after the app exits. An explicit recording ``output_dir``
-    is always applied when a recording starts.
-
-    Raises:
-        ObsConnectionError: if OBS is unreachable or rejects the password.
-    """
+    """Open and identify a session with OBS. Safe to call repeatedly. When
+    ``OBS_SET_RECORD_DIRECTORY`` is on, OBS's recording directory is pointed at
+    the configured root -- this persists in the user's OBS profile afterward."""
     global _client
     async with _get_lock():
         if _client is not None and _client.is_identified():
@@ -543,9 +464,8 @@ async def connect() -> ObsStatus:
     if settings.OBS_SET_RECORD_DIRECTORY:
         await _set_record_directory(settings.obs_recording_dir)
 
-    # Selecting the game window is best effort during connection: OBS may be
-    # running with a different scene collection or without a source yet. The
-    # dedicated endpoint below lets the caller retry once the scene is ready.
+    # Best effort during connection -- the dedicated endpoint below lets the
+    # caller retry once the scene is ready.
     try:
         await select_current_game_window()
     except AppException as exc:
@@ -554,19 +474,8 @@ async def connect() -> ObsStatus:
 
 
 async def select_current_game_window() -> ObsGameWindowSelection:
-    """Point the active scene's window-capture source at the active game.
-
-    The game is selected through the persistent active-game file. Its JSON
-    config supplies the process name, the source is discovered from the current
-    OBS program scene (or optionally disambiguated with ``obs.window_source``),
-    and the window itself is resolved against the list OBS enumerates.
-    Repeating this operation is safe: OBS receives the same settings again.
-
-    Raises:
-        ObsRequestError: if the active game has no process, the scene has no
-            usable window-capture source, OBS lists no window for the process, or
-            OBS rejects a request.
-    """
+    """Point the active scene's window-capture source at the active game's
+    process, resolved against the window list OBS enumerates. Safe to repeat."""
     await _ensure_connected()
     game = _active_game()
     process = _require_process(game)
@@ -647,20 +556,8 @@ async def status() -> ObsStatus:
 
 
 async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
-    """Capture a screenshot of a source or scene.
-
-    The image always comes back as a base64 data URI, ready for an ``<img>``
-    tag. Supplying ``file_name`` additionally has OBS write the file into the
-    configured screenshot root or its requested use-case subdirectory, with the
-    path returned alongside the preview.
-
-    Raises:
-        BadRequestError: if ``file_name`` is not a bare filename or
-            ``output_dir`` is outside the configured screenshot root.
-        ObsNotConnectedError: if a connection has never been established.
-        ObsConnectionError: if the session is gone and cannot be re-established.
-        ObsRequestError: if OBS rejected the request or returned no image.
-    """
+    """Capture a screenshot of a source or scene, always as a base64 data URI.
+    Supplying ``file_name`` also has OBS write the file to disk."""
     source_name = payload.source_name or await _current_scene()
     request_data: dict[str, Any] = {
         "sourceName": source_name,
@@ -713,12 +610,7 @@ async def record_status() -> ObsRecordStatus:
 
 
 async def start_recording(output_dir: str | None = None) -> ObsRecordStatus:
-    """Start recording in the default or requested use-case directory.
-
-    Raises:
-        BadRequestError: if ``output_dir`` escapes the configured recording root.
-        ObsRequestError: if a recording is already running.
-    """
+    """Start recording in the default or requested use-case directory."""
     directory: Path | None = None
     if output_dir is not None or settings.OBS_SET_RECORD_DIRECTORY:
         directory = _resolve_output_dir(settings.obs_recording_dir, output_dir)
@@ -734,15 +626,9 @@ async def start_recording(output_dir: str | None = None) -> ObsRecordStatus:
 
 
 async def stop_recording() -> ObsRecordStatus:
-    """Stop recording and report where the file landed.
-
-    obs-websocket documents ``outputPath`` on the ``RecordStateChanged`` event
-    rather than on ``StopRecord``, so it is read defensively and left null when
-    absent.
-
-    Raises:
-        ObsRequestError: if no recording is running.
-    """
+    """Stop recording and report where the file landed. ``outputPath`` is read
+    defensively and left null when absent -- obs-websocket documents it on the
+    ``RecordStateChanged`` event, not on ``StopRecord``."""
     data = await _call("StopRecord")
     output_path = _as_str(data.get("outputPath"))
     logger.info("OBS recording stopped (output=%s)", output_path or "unreported")
@@ -751,37 +637,23 @@ async def stop_recording() -> ObsRecordStatus:
 
 
 async def pause_recording() -> ObsRecordStatus:
-    """Pause the running recording.
-
-    Some OBS recording formats cannot pause. OBS accepts the request anyway and
-    simply leaves the output running, so the returned ``paused`` flag is the
-    thing to trust, not the fact that the call succeeded.
-
-    Raises:
-        ObsRequestError: if no recording is running, or it is already paused.
-    """
+    """Pause the running recording. Some formats can't pause -- OBS accepts the
+    request anyway, so trust the returned ``paused`` flag, not call success."""
     await _call("PauseRecord")
     logger.info("OBS recording paused")
     return await _settled_record_status(paused=True)
 
 
 async def resume_recording() -> ObsRecordStatus:
-    """Resume a paused recording.
-
-    Raises:
-        ObsRequestError: if the recording is not paused.
-    """
+    """Resume a paused recording."""
     await _call("ResumeRecord")
     logger.info("OBS recording resumed")
     return await _settled_record_status(paused=False)
 
 
 def reset() -> None:
-    """Drop the client and the lock without touching the network.
-
-    Tests call it between cases. Clearing the lock matters as much as clearing
-    the client -- the next test builds one bound to its own event loop.
-    """
+    """Drop the client and the lock without touching the network -- the next
+    test's lock must bind to its own event loop."""
     global _client, _lock
     _client = None
     _lock = None

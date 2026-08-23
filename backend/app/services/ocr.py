@@ -1,47 +1,14 @@
-"""Reading the game's on-screen text with Tesseract.
+"""Reads the game's on-screen text with Tesseract.
 
-The pieces this joins up already exist: the active game config names the parts of
-the screen worth reading, :mod:`app.utils.image_roi` cuts one out of a frame at
-whatever resolution the frame turned out to be, and :mod:`app.utils.ocr` runs the
-engine over it. What is left here is the part that is actually about this
-project -- where the frame comes from, which options a region is read with, and
-what happens when one region of four cannot be read.
-
-Four decisions are worth knowing before changing anything here.
-
-**A frame is either taken now or read back off disk.** A live read asks OBS for a
-screenshot inline, as base64, and never writes a file: an OCR frame is not
-evidence and a folder of them would be litter. A read of a capture run's
-screenshot is the same code over a file that is already there, which is what
-makes a reading reproducible -- the same frame, read again, with one option
-changed.
-
-**Options come from three places and are applied in one order.** The environment
-carries the defaults (``OCR_*``), the game config's ``ocr`` block overrides them
-per region, and the request may override again for one read. Later wins. The
-reading says what it ended up with, so tuning from the dashboard and then writing
-the winner into the game config is a loop someone can actually close.
-
-**The engine is looked up once, not per read.** Discovery walks the filesystem,
-and the status card polls. The resolved path, version and language list are cached
-until :func:`reset` drops them.
-
-**One region failing does not fail the read.** Ask for four and a region whose
-name is wrong is a rejected request, but a region the engine choked on comes back
-beside the others with its ``error`` set. A 502 for the whole read would say
-nothing about the three that worked.
-
-**A region is aimed at the game, not at the canvas.** Where a region lands on a
-frame is :mod:`app.services.roi`'s question, and the answer accounts for the
-black bars a window capture arrives with -- so a resized simulator does not need
-every region re-measured. The content box is found once per frame rather than
-once per region, and reported on the result beside the frame size.
-
-State is module-level, like the other services here, and callers use the
-namespace rather than the functions::
-
-    from app.services import ocr as ocr_service
-    await ocr_service.read(OcrReadRequest(regions=["cash_meter"]))
+A frame is either taken live from OBS (inline base64, never written to disk) or
+read back from a capture run's saved screenshot, which is what makes a reading
+reproducible. Options resolve environment → game config's ``ocr`` block → request,
+later wins, and the reading reports what it ended up with. The engine is looked
+up once and cached until :func:`reset`. One region failing (engine choked on it)
+doesn't fail the read — it comes back with its own ``error`` — but a region name
+that isn't configured is a rejected request. The content box (game content vs.
+canvas letterbox bars, see :mod:`app.services.roi`) is found once per frame, not
+per region.
 """
 
 from __future__ import annotations
@@ -113,13 +80,8 @@ def reset() -> None:
 
 
 def _executable() -> Path:
-    """The engine to run, or an explanation of why there is none.
-
-    Raises:
-        OcrEngineUnavailableError: if OCR is disabled, or no Tesseract was found.
-            A 409: the caller fixes it by installing the engine or pointing
-            ``OCR_TESSERACT_CMD`` at it, not by retrying.
-    """
+    """The engine to run; raises ``OcrEngineUnavailableError`` (a 409, not a
+    retryable failure) if OCR is disabled or no Tesseract was found."""
     if not settings.OCR_ENABLED:
         raise OcrEngineUnavailableError(
             "OCR is disabled; set OCR_ENABLED=true to turn it on"
@@ -139,11 +101,7 @@ def _executable() -> Path:
 
 
 def _identify(executable: Path) -> _Engine:
-    """Ask the engine what it is, and remember the answer.
-
-    Raises:
-        ocr.OcrError: if it would not report a version.
-    """
+    """Ask the engine what it is, and remember the answer."""
     global _engine
     cached = _engine
     if cached is not None and cached.executable == executable:
@@ -159,11 +117,7 @@ def _identify(executable: Path) -> _Engine:
 
 
 async def _engine_for_reading() -> Path:
-    """The engine, identified once so a broken install fails before any cropping.
-
-    Raises:
-        OcrEngineUnavailableError: if there is no usable engine.
-    """
+    """The engine, identified once so a broken install fails before any cropping."""
     executable = _executable()
     try:
         return (await asyncio.to_thread(_identify, executable)).executable
@@ -195,11 +149,8 @@ def _defaults() -> ocr.OcrOptions:
 
 
 def _request_overrides(overrides: OcrOptionOverrides | None) -> Mapping[str, Any]:
-    """The options a request asked to change, without the ones it left alone.
-
-    ``exclude_unset`` rather than ``exclude_none``, because ``threshold: null`` is
-    a request to turn thresholding off and is not the same as not mentioning it.
-    """
+    """The options a request asked to change. ``exclude_unset``, not
+    ``exclude_none`` -- ``threshold: null`` means turn thresholding off."""
     if overrides is None:
         return {}
     return overrides.model_dump(exclude_unset=True)
@@ -208,12 +159,8 @@ def _request_overrides(overrides: OcrOptionOverrides | None) -> Mapping[str, Any
 def _options_for(
     config: GameConfig, region: str, overrides: OcrOptionOverrides | None
 ) -> ocr.OcrOptions:
-    """Resolve the options one region is read with.
-
-    Environment, then the game config's ``ocr`` block, then the request. The
-    config's own block was validated when the config was read, so only the
-    request's half can fail here.
-    """
+    """Resolve the options one region is read with: environment, then the game
+    config's ``ocr`` block, then the request."""
     resolved = _defaults().merged(config.ocr.get(region), where=f"ocr.{region}")
     try:
         return resolved.merged(_request_overrides(overrides), where="options")
@@ -255,12 +202,9 @@ def _active_config() -> tuple[str, GameConfig]:
 def _requested_regions(
     config: GameConfig, requested: Sequence[str] | None
 ) -> list[str]:
-    """Which regions to read, checked against the ones the game declares.
-
-    A name that is not configured is a 404 rather than an empty reading: a typo in
-    a region name and a meter the engine could not read are different problems and
-    should not arrive looking the same.
-    """
+    """Which regions to read, checked against the ones the game declares. An
+    unconfigured name is a 404, not an empty reading -- a typo and an unreadable
+    meter are different problems."""
     if not config.roi:
         raise OcrRegionNotFoundError(
             f"The game config for {config.name!r} declares no 'roi' regions to read"
@@ -285,16 +229,8 @@ def _requested_regions(
 
 
 async def _live_frame() -> Image.Image:
-    """A screenshot taken from OBS now, decoded in memory.
-
-    Asked for inline rather than as a file: an OCR frame is not evidence, and
-    writing one per read would leave litter in the capture directory. Connecting
-    is left to the OBS service, whose failures reach the caller unchanged.
-
-    Raises:
-        OcrReadFailedError: if OBS answered with something that is not an image.
-        AppException: whatever the OBS service raises when it cannot answer.
-    """
+    """A screenshot taken from OBS now, decoded in memory -- never written to
+    disk, since an OCR frame isn't evidence."""
     await obs_service.connect()
     result = await obs_service.take_screenshot(
         ScreenshotRequest(image_format="png", width=settings.OCR_SCREENSHOT_WIDTH)
@@ -305,11 +241,7 @@ async def _live_frame() -> Image.Image:
 
 
 def _decode(data_uri: str) -> Image.Image:
-    """Turn OBS's base64 data URI into an open image.
-
-    Raises:
-        OcrReadFailedError: if it is not a data URI, or not a decodable image.
-    """
+    """Turn OBS's base64 data URI into an open image."""
     _, _, encoded = data_uri.rpartition(",")
     try:
         raw = base64.b64decode(encoded, validate=True)
@@ -328,15 +260,8 @@ def _decode(data_uri: str) -> Image.Image:
 
 
 def _run_frame(run_id: str, file_name: str) -> Image.Image:
-    """One screenshot from a capture run, opened and closed.
-
-    The path guards live in the capture service, which is the only place that
-    turns a run id and a filename off the wire into a file.
-
-    Raises:
-        EventCaptureRunNotFoundError: if the run or the file is not there.
-        OcrReadFailedError: if the file is not a readable image.
-    """
+    """One screenshot from a capture run, opened and closed. Path guards live in
+    the capture service, the only place that turns a run id/filename into a file."""
     path = capture_service.screenshot_path(run_id, file_name)
     try:
         with Image.open(path) as image:
@@ -362,14 +287,7 @@ def _read_region(
     include_crop: bool,
 ) -> OcrReading:
     """Read one region off a frame, reporting a failure rather than raising it.
-
-    Runs in a worker thread: the engine is a subprocess and Pillow releases
-    nothing while it works.
-
-    ``content`` is the part of the frame the game fills, found once by the caller
-    rather than per region -- every region of one frame is aimed at the same
-    rectangle, and finding it is a pass over the pixels.
-    """
+    ``content`` is found once by the caller, not per region."""
     started = time.perf_counter()
     reading = OcrReading(region=region, options=_as_payload(options))
     try:
@@ -378,8 +296,7 @@ def _read_region(
         crop = frame.crop(box)
         result = ocr.read_image(crop, executable=executable, options=options)
     except image_roi.RoiError as exc:
-        # The region is configured but unusable -- a config problem, reported on
-        # the reading it spoils rather than failing every other region with it.
+        # Reported on the reading it spoils, not failing every other region.
         return reading.model_copy(
             update={
                 "error": str(exc),
@@ -417,11 +334,8 @@ def _read_region(
 
 
 def _crop_data_uri(crop: Image.Image, options: ocr.OcrOptions) -> str | None:
-    """The preprocessed crop as a data URI: what the engine actually saw.
-
-    Never raises. This is a debugging aid, and losing the picture is not a reason
-    to lose the reading it belongs to.
-    """
+    """The preprocessed crop as a data URI: what the engine actually saw. Never
+    raises -- a debugging aid, not worth losing the reading over."""
     try:
         buffer = io.BytesIO()
         ocr.preprocess(crop, options).save(buffer, format="PNG")
@@ -441,11 +355,8 @@ def _elapsed_ms(started: float) -> int:
 
 
 async def status() -> OcrStatus:
-    """Report whether text can be read. Never fails.
-
-    A missing engine is a state, not an error: the dashboard card shows what to
-    install and everything else keeps working, exactly as with OBS.
-    """
+    """Report whether text can be read. Never fails -- a missing engine is a
+    state, not an error, exactly as with OBS."""
     options = _as_payload(_defaults())
     if not settings.OCR_ENABLED:
         return OcrStatus(
@@ -486,11 +397,7 @@ async def status() -> OcrStatus:
 
 
 def regions() -> OcrRegionCatalog:
-    """The active game's readable regions and the options each will be read with.
-
-    What the dashboard lists before anyone reads anything, and the answer to "why
-    is this meter read at psm 11" without opening the config file.
-    """
+    """The active game's readable regions and the options each will be read with."""
     name, config = _active_config()
     catalog: list[OcrRegion] = []
     for region in sorted(config.roi):
@@ -513,21 +420,11 @@ def regions() -> OcrRegionCatalog:
 
 
 async def read(request: OcrReadRequest) -> OcrReadResult:
-    """Read the named regions off one frame.
-
-    Raises:
-        OcrEngineUnavailableError: if there is no usable Tesseract install.
-        OcrRegionNotFoundError: if a named region is not in the game config.
-        BadRequestError: if the request's own options are unusable, or a run was
-            named without a file.
-        EventCaptureRunNotFoundError: if the named run or screenshot is not there.
-        OcrReadFailedError: if the frame itself could not be obtained.
-        AppException: whatever OBS raises for a live read it cannot serve.
-    """
+    """Read the named regions off one frame."""
     name, config = _active_config()
     wanted = _requested_regions(config, request.regions)
-    # Options are resolved before anything expensive happens, so a bad override
-    # is a 400 rather than a screenshot followed by a 400.
+    # Resolved before anything expensive happens, so a bad override is a 400
+    # rather than a screenshot followed by a 400.
     options = {
         region: _options_for(config, region, request.options) for region in wanted
     }
@@ -549,9 +446,8 @@ async def read(request: OcrReadRequest) -> OcrReadResult:
         source = OcrSource.LIVE
         frame = await _live_frame()
 
-    # Once for the frame, not once per region: the bars round a window capture
-    # are a property of the shot, and every region is measured against what is
-    # inside them.
+    # Once for the frame, not once per region -- every region is measured
+    # against the same content box.
     content = await asyncio.to_thread(roi_service.content_box, frame)
     readings = [
         await asyncio.to_thread(

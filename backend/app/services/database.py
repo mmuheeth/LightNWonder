@@ -1,8 +1,4 @@
-"""PostgreSQL connection-pool lifecycle.
-
-This module deliberately manages connectivity only. It does not create or
-modify schemas, tables, extensions, or other database objects.
-"""
+"""PostgreSQL connection-pool lifecycle only — no schema, tables, or migrations."""
 
 from __future__ import annotations
 
@@ -21,12 +17,7 @@ COMMAND_TIMEOUT_SECONDS = 10.0
 
 
 async def connect(settings: Settings) -> Pool | None:
-    """Open and validate the configured PostgreSQL pool.
-
-    An empty or missing ``DATABASE_URL`` leaves the database disabled so local
-    development and tests can still run without a database. When configured,
-    startup fails if the pool cannot establish a connection.
-    """
+    """Open and validate the configured pool. Missing DATABASE_URL disables it silently; a bad DSN raises."""
     if settings.DATABASE_URL is None:
         logger.info("Database connection disabled: DATABASE_URL is not configured")
         return None

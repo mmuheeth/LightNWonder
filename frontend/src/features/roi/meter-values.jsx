@@ -3,22 +3,10 @@ import { AlertTriangle } from "lucide-react";
 import { StatRow } from "@/components/stat-row";
 
 /**
- * The five values read off a cash-meter crop.
- *
- * Rendered inside the ROI card rather than in a card of its own: cropping the
- * meter and reading it are one action, so the numbers belong beside the picture
- * they came from.
- *
- * Two things this deliberately does not hide.
- *
- * **A low confidence is shown, not smoothed over.** A misread digit still looks
- * like a number -- `476` for `176` -- so the score the engine gave is the only
- * clue that a value is worth checking against the crop above it. Values verified
- * correct on this project's strips scored 79 or better.
- *
- * **`unmapped` is a warning, not a footnote.** A number that fell outside every
- * field's window means this skin's layout is not the expected one, which makes
- * every value above it suspect even though they all look fine.
+ * The five values read off a cash-meter crop, rendered inside the ROI card
+ * since cropping and reading are one action. Low confidence is shown, not
+ * smoothed over -- a misread digit still looks like a number -- and
+ * `unmapped` is a warning that the skin's layout may not be the expected one.
  */
 
 /** Below this a value is worth checking against the crop rather than trusting. */
@@ -119,8 +107,7 @@ export function MeterValues({ meter }) {
         value={meter.win}
         money={isCash}
         confidence={confidence("win")}
-        // An empty WIN cell is the normal state between spins, so it says so
-        // rather than looking like a failed read.
+        // An empty WIN cell is the normal state between spins, not a failed read.
         empty="none this spin"
       />
       <MeterRow

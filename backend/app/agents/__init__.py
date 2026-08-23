@@ -1,8 +1,6 @@
 """Provider-neutral building blocks for LangChain agents and LangGraph flows.
 
-Nothing in this package creates a model or opens a database at import time.
-Callers choose the provider through :class:`app.config.agents.AgentSettings`,
-then compose an agent or a graph explicitly in their service layer.
+Nothing here constructs a model or opens a database at import time; callers compose explicitly.
 """
 
 from app.agents.checkpoint import async_checkpoint_context, checkpoint_context

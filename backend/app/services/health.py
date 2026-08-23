@@ -1,16 +1,4 @@
-"""Health reporting and the dependency-probe registry.
-
-Register a probe at startup for anything the service cannot work without::
-
-    from app.services.health import register_probe, probe
-
-    @register_probe
-    async def postgres() -> DependencyCheck:
-        return await probe("postgres", lambda: db.execute(text("SELECT 1")))
-
-Probes feed both ``GET /health`` and ``GET /health/ready``. Keep them cheap --
-readiness is polled frequently.
-"""
+"""Health reporting and the dependency-probe registry feeding ``/health`` and ``/health/ready``."""
 
 from __future__ import annotations
 

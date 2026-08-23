@@ -15,12 +15,7 @@ __all__ = ["WorkflowState", "compile_workflow", "new_workflow"]
 
 
 class WorkflowState(MessagesState, total=False):
-    """Common state extension for application workflows.
-
-    Nodes can add domain-specific keys by defining a richer ``TypedDict`` and
-    passing it to ``StateGraph`` directly. Messages keep the default reducer,
-    while metadata and status are convenient cross-node observability fields.
-    """
+    """Common state extension for application workflows; extend with a richer TypedDict as needed."""
 
     run_id: str
     status: str
@@ -45,7 +40,6 @@ def compile_workflow(
         compile_kwargs["checkpointer"] = checkpointer
     if store is not None:
         compile_kwargs["store"] = store
-    # ``recursion_limit`` belongs to invocation config, not compile(); keep the
-    # setting available through ``default_run_config`` for callers.
+    # ``recursion_limit`` belongs to invocation config, not compile() — see default_run_config.
     del settings
     return builder.compile(**compile_kwargs)

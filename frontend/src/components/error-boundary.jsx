@@ -2,12 +2,8 @@ import { Component } from "react";
 
 import { Button } from "@/components/ui/button";
 
-/**
- * Catches render-time exceptions so one broken component cannot blank the page.
- *
- * This only catches errors thrown during rendering. Failed requests are handled
- * by react-query and surfaced per component; see `ApiErrorAlert`.
- */
+// Catches render-time exceptions only — failed requests are react-query's job,
+// surfaced per component via `ApiErrorAlert`.
 export class ErrorBoundary extends Component {
   state = { error: null };
 

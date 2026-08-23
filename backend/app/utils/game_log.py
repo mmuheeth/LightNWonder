@@ -1,44 +1,10 @@
-"""Patterns for the log a GDK game client writes.
-
-The sibling of :mod:`app.utils.panel_log`: that module knows the OLED panel
-service's log format, this one knows the game's. Both exist so the one place
-that understands a foreign file is not buried inside a service.
-
-Nothing here captures anything or knows about OBS. It turns lines appended to a
-log into :class:`DetectedEvent` values, which is useful to anything that wants
-to react to gameplay -- event capture is only the first caller.
-
-Every game shipped so far logs through the same GDK client logger, so one set of
-rules covers all of them::
-
-    08/18/26 19:40:26.721 00 FortuneOx:19864 INF: [MessageQueue.Publish] msg[...SpinMsg]
-    |--- date --||-- time ---| seq |-process:pid-| lvl |------- message -------|
-
-Four things learned from reading real logs shape the default rules below, and
-all of them are easy to get wrong:
-
-**Anchor on the publish line, not on the message name.** Every published message
-is echoed by a handful of ``StateMachine[...] [Non-queued] [<Msg>] not handled by
-state [...]`` lines from the state machines that ignored it. Matching the bare
-name yields five or more hits for one real event.
-
-**Name the machines by pattern, not by literal.** The interesting state machines
-are named after the feature they drive, so the free spin machine is
-``FreeSpinStateMachineFreeSpin`` in FortuneOx and
-``FreeSpinStateMachineCoinOnReelFS`` in HuffNPuffLink. A rule that pins either
-name works on exactly one game.
-
-**Some events are worth waiting for.** ``SpinDoneMsg`` is logged when the server
-result arrives, which is a beat before the reels visibly settle. A rule can
-declare ``delay_ms`` so a caller that screenshots on the event sees the finished
-frame rather than a blurred one.
-
-**Being visible is not the same as being worth a screenshot.** The rules here
-are the whole visual vocabulary of the two games -- including the credit meter
-after every win and the attract loop cycling to its next scene. A rule says
-which of them it is with ``capture``, so a caller reacting to gameplay can have
-all of them while event capture takes frames of only the moments a run is opened
-for.
+"""Patterns for the log a GDK game client writes, turning lines into
+:class:`DetectedEvent` values -- sibling of :mod:`app.utils.panel_log`, which
+does the same for the OLED panel service's log. Rules anchor on the publish
+line rather than the bare message name (state machines that ignored it echo
+the name too) and name state machines by pattern since each game suffixes them
+differently. ``delay_ms`` lets a rule wait past a lagging screen; ``capture``
+marks whether an otherwise-recognised event is worth a screenshot.
 """
 
 from __future__ import annotations
@@ -122,20 +88,13 @@ class EventRule:
     """How long to wait before acting, for events the screen lags behind."""
 
     capture: bool = True
-    """Whether this event gets a screenshot and shows up in a run.
-
-    Set per rule by hand. ``False`` keeps an event in the recognised vocabulary
-    while leaving it out of capture -- which is what the machine's own chrome
-    gets: attract, help, service, lockups, the demo menu.
-    """
+    """Whether this event gets a screenshot. ``False`` keeps it in the
+    recognised vocabulary without capturing -- the machine's own chrome."""
 
     only_on_change: bool = False
-    """Whether a repeat carrying the same values is the same event.
-
-    For lines a game re-logs unchanged. ``[BetManager.UpdateCurrentBet]`` is the
-    example: HuffNPuffLink writes it several times a round with an identical
-    bet, and only the ones where a value actually moved are events.
-    """
+    """Whether a repeat carrying the same values is the same event -- for lines
+    a game re-logs unchanged, e.g. HuffNPuffLink's repeated identical-bet
+    ``[BetManager.UpdateCurrentBet]``."""
 
 
 @dataclass(frozen=True)
@@ -152,11 +111,8 @@ class DetectedEvent:
 
 
 def parse_line(raw: str) -> LogLine | None:
-    """Split one log line into its parts.
-
-    Returns ``None`` for anything that is not a log line -- blank lines, and the
-    continuation lines of a multi-line payload, both of which appear regularly.
-    """
+    """Split one log line into its parts, or ``None`` for a blank line or a
+    multi-line payload's continuation."""
     matched = LINE.match(raw.rstrip("\r\n"))
     if matched is None:
         return None
@@ -188,12 +144,8 @@ def _summarise(template: str, fields: Mapping[str, str]) -> str:
 
 
 def match(line: LogLine, rules: Sequence[EventRule]) -> DetectedEvent | None:
-    """Return the first rule that recognises ``line``, if any.
-
-    First rather than best: rules are ordered, so a game's own additions -- which
-    :func:`resolve_rules` puts in front -- can claim a line before a broader
-    default rule sees it.
-    """
+    """Return the first rule that recognises ``line``, if any -- rules are
+    ordered so a game's own additions can claim a line before a default does."""
     for rule in rules:
         found = rule.pattern.search(line.message)
         if found is None:
@@ -278,11 +230,9 @@ def resolve_rules(
     extra: Sequence[EventRule] = (),
     disabled: Sequence[str] = (),
 ) -> tuple[EventRule, ...]:
-    """Combine the shipped rules with one game's additions and removals.
-
-    A game's own rules come first so they can claim a line ahead of a default,
-    which is how a game overrides a shipped rule rather than only adding to it.
-    """
+    """Combine the shipped rules with one game's additions and removals. A
+    game's own rules come first, so they can override a shipped rule rather
+    than only add to it."""
     excluded = {name.strip().casefold() for name in disabled}
     overridden = {rule.event.casefold() for rule in extra}
     return (
@@ -301,34 +251,13 @@ _QUALIFIER = r"(?:[\w.]+\.)?"
 
 
 def _message(message_name: str) -> str:
-    """Match the authoritative record of one message being handled.
-
-    Two shapes count, and which one a game uses depends on which log it writes.
-    The client logs (``FortuneOx_Client.log``) publish through ``MessageQueue``;
-    the theme logs (``HuffNPuffLink_Theme.log``) use ``SyncMessagePublisher``,
-    and surface some messages only as the state transition they caused::
-
-        [MessageQueue.Publish] msg[GDK.Common.ServerAPI.SpinButtonMsg]
-        StateMachine[IdleStateMachine] transitioned from [x] to [y] on event [...SpinButtonMsg]
-
-    What is deliberately *not* matched is the third shape::
-
-        StateMachine[GambleOfferStateMachine] [Non-queued] [...SpinButtonMsg] not handled by state [idleState]
-
-    Every state machine that ignored the message logs one of those, so matching
-    them turns one real event into five or more.
-
-    Both accepted shapes can appear for a single event, and several state
-    machines can transition on it. They arrive within a few milliseconds of each
-    other, so the caller's debounce collapses them; the alternation is about
-    working on every game rather than about being hit exactly once.
-
-    The message class is usually fully qualified and the namespace differs
-    between features (``GDK.Common.ServerAPI``, ``Theme.Common``,
-    ``GDK.Common.Gamble.Core``, ``GDK.Server.PlatformAPI``), so only the
-    trailing name is pinned. A few messages carry no namespace at all --
-    ``msg[double_up_offer_accept]``, ``msg[WinBangDone]`` -- which is why the
-    qualifier is optional rather than required.
+    """Match the authoritative record of one message being handled: either a
+    ``MessageQueue``/``SyncMessagePublisher`` publish, or the state transition
+    it caused (some theme logs only surface the latter). Deliberately does not
+    match the ``... not handled by state ...`` echo every ignoring state
+    machine logs, or that alone would turn one event into five hits. The
+    namespace prefix is optional and unpinned since it differs per feature and
+    is sometimes absent entirely.
     """
     return (
         rf"(?:\[(?:MessageQueue|SyncMessagePublisher)\.Publish\] msg\[{_QUALIFIER}{message_name}\]"
@@ -337,14 +266,9 @@ def _message(message_name: str) -> str:
 
 
 def _state(machine: str, *, to: str, frm: str = r"[^\]]+") -> str:
-    """Match one state machine arriving in a state.
-
-    ``machine`` is a regex, not a literal, because the interesting machines are
-    named after the feature they drive: the free spin machine is
-    ``FreeSpinStateMachineFreeSpin`` in FortuneOx and
-    ``FreeSpinStateMachineCoinOnReelFS`` in HuffNPuffLink, and a rule that
-    pinned either name would work on exactly one game.
-    """
+    """Match one state machine arriving in a state. ``machine`` is a regex, not
+    a literal, since each game suffixes the interesting machines differently
+    (e.g. ``FreeSpinStateMachineFreeSpin`` vs ``...CoinOnReelFS``)."""
     return rf"StateMachine\[{machine}\] transitioned from \[{frm}\] to \[{to}\]"
 
 
@@ -353,39 +277,17 @@ def _on(message_name: str) -> str:
     return rf" on event \[{_QUALIFIER}{message_name}\]"
 
 
-# Proof that the game registered a touch on its glass, whatever that touch hit.
-#
-# Deliberately *not* a rule in DEFAULT_RULES: a touch is an input, not something
-# a person watching the screen would see change, and every rule below earns its
-# place by being visible. It is here because a click posted into the game window
-# needs a weaker fallback proof than a named button press does -- a target whose
-# own event is unknown can still be shown to have reached the game at all.
-#
-# Both games log it, each in the shape its own log uses::
-#
-#     ServerProxy.ClientToServerRequest: GDK.Common.ServerAPI.TouchMsg
-#     MsgFromClient sessionID[<game>-GAME] msg[GDK.Common.ServerAPI.TouchMsg]
-#     InputManager - dispatchMessage: ...ClientMessaging.TouchEventNotificationMsg
-#
-# The leading word boundary is doing real work: it keeps ``ForceTouchMsg`` out.
-# That one travels *to* the client -- the platform injecting a touch of its own
-# -- so counting it would let someone else's synthetic input confirm our click.
+# Fallback proof a posted click reached the game glass at all, for targets with
+# no named ``confirm`` event. Deliberately not a DEFAULT_RULES entry -- a touch
+# isn't visible on screen. The leading \b excludes ``ForceTouchMsg``, which is
+# the platform injecting a touch *into* the client and would confirm nothing we did.
 TOUCH_REGISTERED = re.compile(r"\b(?:TouchMsg|TouchEventNotificationMsg)\b")
 
 
-# Ordered: the first match wins, so anything narrow goes before anything broad.
-#
-# Deliberately a *visual* list, not everything the log names. The game logs
-# plenty of internal bookkeeping between one visible change and the next -- the
-# server round trip behind a spin, the raw reel-stop data before the animation
-# plays, the bet confirmation a few hundred milliseconds after the bet that
-# caused it. None of that is here: each of those produced a frame
-# indistinguishable from the visual event either side of it. Every rule below
-# corresponds to something a person watching the screen would see change.
-#
-# Every rule captures by default. Set ``capture=False`` on a rule below to
-# exclude that event from screenshots and the captured-events list without
-# removing it from the recognised vocabulary.
+# Ordered (first match wins, narrow before broad) and deliberately a *visual*
+# list only -- internal bookkeeping the log names but that produces no frame
+# distinguishable from its neighbors is left out. ``capture=False`` keeps a
+# rule in the vocabulary without it becoming a screenshot.
 DEFAULT_RULES: tuple[EventRule, ...] = (
     EventRule(
         event="game-started",

@@ -1,18 +1,9 @@
-"""Minimal Win32 interop for driving another process's window.
-
-The only ``ctypes`` in the codebase, deliberately confined to one module: the
-``user32`` signatures are declared in exactly one place, and tests monkeypatch
-these functions wholesale, so the suite never touches a real window and still
-runs on a machine that is not Windows.
-
-**Nothing here moves the physical cursor.** A press is delivered as window
-messages, which the target handles as it would a real click while the user's
-pointer stays where it is.
-
-Every call is cheap and non-blocking. The ``post_*`` functions use
-``PostMessageW`` rather than ``SendMessageW``: posting returns as soon as the
-message is queued instead of blocking until the target pumps it, so an async
-caller never stalls behind a busy window.
+"""Minimal Win32 interop for driving another process's window -- the only
+``ctypes`` in the codebase, so tests can monkeypatch it wholesale and the
+suite still collects on a non-Windows machine. Nothing here moves the physical
+cursor; a press is delivered as window messages. ``post_*`` uses
+``PostMessageW`` rather than ``SendMessageW`` so an async caller never stalls
+behind a busy window.
 """
 
 from __future__ import annotations
@@ -61,13 +52,8 @@ _CONTINUE = 1
 
 
 class WindowAccessDenied(OSError):
-    """Windows refused the call because the target window outranks this process.
-
-    User Interface Privilege Isolation blocks input sent from a lower integrity
-    level to a higher one, so a backend started normally cannot drive a window
-    owned by a process that was started elevated -- even as the same user. The
-    fix is to run both at the same level, not to retry.
-    """
+    """UIPI blocked the call: the target window's process outranks this one in
+    integrity level. Fix is to run both at the same level, not to retry."""
 
 
 class _Rect(ctypes.Structure):
@@ -81,12 +67,9 @@ class _Rect(ctypes.Structure):
 
 @dataclass(frozen=True)
 class WindowInfo:
-    """A snapshot of one top-level window.
-
-    ``client_width`` and ``client_height`` describe the drawable area, which is
-    the coordinate space mouse messages are addressed in. Both read ``0`` while
-    the window is minimized: Windows gives an iconic window no client area.
-    """
+    """A snapshot of one top-level window. ``client_width``/``client_height``
+    are the drawable area mouse messages are addressed in, and read ``0``
+    while minimized -- Windows gives an iconic window no client area."""
 
     hwnd: int
     title: str
@@ -114,11 +97,8 @@ def _proc_type() -> Any:
 
 
 def _lib() -> Any:
-    """Return ``user32``, declaring the signatures we use exactly once.
-
-    Argument types are spelled out rather than left to ctypes' defaults, whose
-    ``int`` conversion truncates 64-bit window handles.
-    """
+    """Return ``user32``. Argument types are spelled out rather than left to
+    ctypes' defaults, whose ``int`` conversion truncates 64-bit handles."""
     global _user32
     if _user32 is not None:
         return _user32
@@ -228,11 +208,9 @@ def _describe(lib: Any, hwnd: int) -> WindowInfo | None:
 
 
 def _token_integrity(process: int) -> int | None:
-    """Read a process handle's integrity level, or ``None`` if it is opaque.
-
-    The level is the last sub-authority of the token's mandatory-label SID:
-    0x1000 low, 0x2000 medium, 0x3000 high, 0x4000 system.
-    """
+    """Read a process handle's integrity level (last sub-authority of the
+    token's mandatory-label SID: 0x1000 low ... 0x4000 system), or ``None``
+    if opaque."""
     advapi32, kernel32 = _advapi32(), _kernel32()
     token = ctypes.c_void_p()
     if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
@@ -318,12 +296,8 @@ def is_supported() -> bool:
 
 def find_window(*, title: str, class_name: str | None = None) -> WindowInfo | None:
     """Find a top-level window by title, optionally pinned to a window class.
-
     An exact (case-insensitive) title match wins; a substring match is the
-    fallback, so a panel that appends a suffix to its caption is still found.
-    Supplying ``class_name`` disambiguates a title another process happens to
-    share.
-    """
+    fallback, for a panel that appends a suffix to its caption."""
     lib = _lib()
     wanted = title.casefold()
     exact: WindowInfo | None = None
@@ -356,17 +330,11 @@ def describe(hwnd: int) -> WindowInfo | None:
 
 
 def can_post(hwnd: int) -> bool:
-    """Whether this process is allowed to send the window input.
-
-    Compares integrity levels rather than probing with a real message: the
-    comparison is a pure read, so it leaves nothing in the target's log, and it
-    is accurate where a probe message is not -- UIPI lets ``WM_NULL`` through
-    while dropping the mouse messages a press is made of.
-
-    Unknown answers are optimistic. If the owning process cannot be inspected,
-    this reports true and lets the actual call be the thing that fails, rather
-    than blocking a press that might have worked.
-    """
+    """Whether this process is allowed to send the window input. Compares
+    integrity levels rather than probing with a real message, since UIPI lets
+    ``WM_NULL`` through while dropping the mouse messages a press is made of.
+    Unknown answers are optimistic -- an uninspectable process reports true and
+    lets the actual call fail instead."""
     theirs = _window_integrity(hwnd)
     if theirs is None:
         return True
@@ -375,21 +343,14 @@ def can_post(hwnd: int) -> bool:
 
 
 def restore(hwnd: int) -> bool:
-    """Un-minimize a window without activating it.
-
-    Returns whether Windows accepted the request; it refuses when the window
-    belongs to a higher-integrity process.
-    """
+    """Un-minimize a window without activating it. Returns whether Windows
+    accepted the request -- it refuses for a higher-integrity process."""
     return bool(_lib().ShowWindow(hwnd, SW_SHOWNOACTIVATE))
 
 
 def focus(hwnd: int) -> bool:
-    """Bring a window to the foreground.
-
-    Best effort: Windows also refuses a foreground change requested by a process
-    that does not already own the foreground, so a false return is a hint rather
-    than a hard failure.
-    """
+    """Bring a window to the foreground. Best effort -- Windows can refuse a
+    foreground change from a process that doesn't already own it."""
     return bool(_lib().SetForegroundWindow(hwnd))
 
 

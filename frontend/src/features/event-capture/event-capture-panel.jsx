@@ -21,10 +21,7 @@ import {
 } from "@/features/event-capture/use-event-capture";
 import { cn } from "@/lib/utils";
 
-/**
- * Why a start failed, in terms of what to go and do about it. The backend's own
- * message says what happened; these say what fixes it.
- */
+/** What fixes a failed start; the backend's own message says what happened. */
 const ERROR_HINTS = {
   EVENT_CAPTURE_LOG_UNAVAILABLE:
     "Start the game so it begins writing its log, then try again.",
@@ -43,9 +40,7 @@ function formatDuration(ms) {
 
 /**
  * Start and stop log-driven capture, backed by `GET/POST /api/event-capture/*`.
- *
- * The run lives in the backend, so this card reports rather than owns it: a
- * reload mid-run shows it still going, and two tabs agree.
+ * The run lives in the backend, so a reload mid-run still shows it going.
  */
 export function EventCapturePanel() {
   const { data, error, isPending, isFetching, refetch } = useCaptureStatus();

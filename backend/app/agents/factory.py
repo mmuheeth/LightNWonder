@@ -40,12 +40,7 @@ def build_agent(
     store: BaseStore | None = None,
     middleware: Sequence[AgentMiddleware] = (),
 ) -> CompiledStateGraph:
-    """Build a LangChain v1 agent backed by the LangGraph runtime.
-
-    The function only assembles the graph. Callers own invocation, thread IDs,
-    and the checkpointer context, which keeps FastAPI request lifecycles and
-    background workflows independently testable.
-    """
+    """Assemble a LangChain v1 agent graph; caller owns invocation, thread IDs, and checkpointer context."""
     if not settings.AGENT_ENABLED:
         raise AgentDisabledError(
             "Agent execution is disabled; set AGENT_ENABLED=true after adding "

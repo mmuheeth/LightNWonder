@@ -1,11 +1,5 @@
-"""Aggregates every endpoint module into one router.
-
-Mounted by the app factory under ``settings.API_PREFIX``. Register new endpoint
-modules here.
-
-Health is *not* included: it mounts at the application root instead, so probes
-never depend on the API prefix.
-"""
+"""Aggregates every endpoint module into one router, mounted by the app
+factory under ``settings.API_PREFIX``. Health mounts separately at the root."""
 
 from fastapi import APIRouter
 

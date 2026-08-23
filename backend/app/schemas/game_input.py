@@ -1,14 +1,7 @@
-"""Game-window input payloads.
-
-Two coordinate spaces appear here and are kept apart deliberately. *Fractional*
-coordinates come from the game config and never change; *client* coordinates are
-where a target currently sits inside the live window, and shift whenever the
-simulator is resized. Clicks are addressed in client coordinates.
-
-The field to trust on a result is ``confirmed``, and ``confirmed_by`` says how
-strong that proof is: the game naming the button it hit is a different claim from
-the game merely admitting it felt a touch.
-"""
+"""Game-window input payloads. *Fractional* coordinates come from the game
+config and never change; *client* coordinates shift with the live window and
+are what clicks are addressed in. ``confirmed_by`` says how strong the proof
+of a landed click is."""
 
 from __future__ import annotations
 
@@ -39,19 +32,10 @@ class ClickConfirmation(StrEnum):
     """How a click was proven to have landed."""
 
     TARGET_EVENT = "target-event"
-    """The game published the event this target is meant to cause.
-
-    The strong proof: it names the button that was hit, so the coordinates are
-    known to have been right and not merely to have hit *something*.
-    """
+    """The game published the event this target is meant to cause -- strong proof."""
 
     TOUCH = "touch"
-    """The game registered a touch, but nothing said which button it hit.
-
-    All that is available for a target whose own event is not configured. It
-    still rules out the failures that actually happen -- a blocked or ignored
-    message, the wrong window, no client area.
-    """
+    """The game registered a touch, but nothing said which button it hit."""
 
 
 class ClickTargetInfo(BaseModel):
@@ -122,12 +106,8 @@ class ClickRequest(BaseModel):
 
 
 class ClickResult(BaseModel):
-    """Outcome of one click.
-
-    ``confirmed`` is the field to trust. A click that was posted but that the
-    game never reacted to comes back with ``confirmed`` false, and the endpoint
-    fails, rather than reporting a success that did not happen.
-    """
+    """Outcome of one click; ``confirmed`` is the field to trust -- false
+    means it was posted but the game never reacted."""
 
     target: str = Field(description="Target that was clicked.")
     game: str = Field(description="Game config the target was resolved against.")

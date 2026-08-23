@@ -1,10 +1,6 @@
 /**
- * Reel grid client.
- *
- * The shape of the grid is the backend's answer, read out of the active game's
- * `roi.reels` region and its `reel_bounds` block — the browser never names a
- * rectangle or a tile, only which screenshot to split. These call our own
- * `/api/grid/*` endpoints, which return the standard envelope.
+ * Reel grid client. The grid shape is the backend's answer, read out of the
+ * active game's `roi.reels`/`reel_bounds` — the browser only names a screenshot.
  */
 
 import { routes } from "@/config/env";
@@ -14,11 +10,7 @@ const GRID_URL = `${routes.API}/grid`;
 
 /**
  * Fetch the shape of the active game's reel grid and the frame it would use.
- *
- * A game that describes no grid resolves with `error` set rather than
- * rejecting: only some games have reels, and selecting one of the others is a
- * state the panel renders. `latest_frame` is null until a screenshot has been
- * taken, which is the panel's other empty state.
+ * A game with no grid resolves with `error` set rather than rejecting.
  *
  * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<{game: string, region: string, roi: number[]|null,
@@ -31,16 +23,9 @@ export function getGridLayout({ signal } = {}) {
 }
 
 /**
- * Split the reels of one frame into tiles.
- *
- * Omit `file_name` to use the newest screenshot, which is the usual case. The
- * crop and every tile are written under `obs-captured-files/grid/<frame stem>/`
- * whatever `include_images` says; it only governs whether they also come back
- * inline for the page to draw.
- *
- * `inset` overrides the game config's border trim for this one split, which is
- * how the right number gets found before it is written into the config. One
- * number trims every tile edge; two are [horizontal, vertical]; four are
+ * Split the reels of one frame into tiles. Omit `file_name` for the newest
+ * screenshot. `inset` overrides the config's border trim for this one split —
+ * one number trims every edge, two are [horizontal, vertical], four are
  * [left, top, right, bottom].
  *
  * @param {{file_name?: string, include_images?: boolean,

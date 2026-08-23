@@ -1,12 +1,6 @@
-"""Path handling for names that came from outside.
-
-A caller-supplied filename is untrusted input. Joining one onto a directory
-without checking is the whole of a path-traversal bug: ``..\\..\\Windows\\Temp``
-joined to a capture directory is still a valid path, and the process would write
-there quite happily.
-
-:func:`resolve_within` is the one place that check lives, so every endpoint that
-accepts a filename gets the same answer.
+"""Path handling for names that came from outside -- guards against path
+traversal (``..\\..\\Windows\\Temp`` joined to a capture dir is still valid).
+:func:`resolve_within` is the one place that check lives.
 """
 
 from __future__ import annotations
@@ -17,9 +11,8 @@ from pathlib import Path
 class UnsafeNameError(ValueError):
     """A supplied name is not a bare filename, or escapes its directory.
 
-    Carries :attr:`reason` separately from the message so callers can put the
-    short form in a field-level error detail and compose their own sentence
-    around it.
+    Carries :attr:`reason` separately so callers can use the short form in a
+    field-level error detail.
     """
 
     def __init__(self, reason: str) -> None:
@@ -28,23 +21,9 @@ class UnsafeNameError(ValueError):
 
 
 def resolve_within(root: Path, name: str, *, default_suffix: str | None = None) -> Path:
-    """Resolve a bare filename inside ``root``.
-
-    Args:
-        root: Directory the result must stay inside. Used as given, so pass an
-            absolute path -- a relative one resolves against the working
-            directory and the containment check would compare against a
-            different root than the caller meant.
-        name: The untrusted filename. Must be bare: no separators, no drive
-            letter, no parent reference.
-        default_suffix: Extension to add when ``name`` has none, without its dot.
-
-    Returns:
-        The absolute, resolved path.
-
-    Raises:
-        UnsafeNameError: if ``name`` is not a bare filename, or the resolved
-            path would land outside ``root``.
+    """Resolve a bare filename inside ``root``. ``root`` must be absolute --
+    a relative one resolves against the working directory, not the caller's
+    intended root.
     """
     candidate = Path(name)
     # `Path("..").name` is ".." rather than "", so an all-dots name clears the
@@ -61,13 +40,8 @@ def resolve_within(root: Path, name: str, *, default_suffix: str | None = None) 
 
 
 def resolve_subdirectory(root: Path, name: str) -> Path:
-    """Resolve a caller-supplied relative directory below ``root``.
-
-    A use case may create its own folder such as ``ir-inspection/session-01``
-    without being able to redirect OBS to an arbitrary location on disk.
-    Absolute paths, drive-qualified paths, and paths that resolve above the
-    configured root are rejected.
-    """
+    """Resolve a caller-supplied relative directory (e.g. ``session-01/run``)
+    below ``root``, rejecting absolute, drive-qualified, or escaping paths."""
     value = name.strip()
     if not value:
         raise UnsafeNameError("the output directory must not be empty")

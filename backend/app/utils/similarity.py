@@ -1,24 +1,9 @@
-"""Cosine similarity between two pictures of the same size.
-
-The reel grid writes fifteen equally-sized tiles per split, and the question
-after that is which of them hold the same symbol. Two crops of one symbol are
-never identical -- a game glows, pulses and scales its symbols to draw the eye,
-so the same pot of gold arrives a shade brighter and a percent larger on one
-reel than on the next -- and an exact comparison answers "different" for every
-pair. Cosine similarity answers it as an angle instead: brightening a symbol
-lengthens its vector without turning it, so a scale or a glow moves the score by
-much less than a different symbol does.
-
-**The score is not a probability, and its useful threshold is per-game.** Pixel
-channels are non-negative, so every pair of pictures of the same scene starts out
-with a high cosine -- two symbols sharing one reel background sit around 0.7 to
-0.9 whether or not they are the same symbol, and two crops of one symbol sit
-above 0.96. The separation is real and wide, but it is not where a naive reading
-of "0.7 means similar" would put it. That is why nothing here has a default
-threshold: the caller owns the cut.
-
-Nothing here knows about tiles, reels or paylines. It takes two pictures and
-returns a number.
+"""Cosine similarity between two pictures of the same size -- an angle rather
+than an exact match, since a glowing/pulsing symbol scales its vector without
+turning it. Not a probability, and no default threshold: pixel channels are
+non-negative so same-scene pairs already sit around 0.7-0.9, with same-symbol
+pairs above 0.96 -- real separation, but far above where "0.7 means similar"
+would put it. The caller owns the cut.
 """
 
 from __future__ import annotations
@@ -39,31 +24,17 @@ class SimilarityError(ValueError):
 
 
 def vector(image: Image.Image) -> np.ndarray:
-    """One picture as a flat vector of its RGB channels.
-
-    RGB rather than luminance: a slot game distinguishes plenty of its symbols
-    by colour alone -- a red ``A`` and a red ``Q`` differ far less in shape than
-    in the strokes' hue -- and folding the channels together throws that away
-    for no gain in robustness.
-    """
+    """One picture as a flat vector of its RGB channels -- RGB, not luminance,
+    since a red ``A`` and a red ``Q`` differ more in hue than in shape."""
     return np.asarray(image.convert("RGB"), dtype=np.float64).ravel()
 
 
 def cosine(left: Image.Image, right: Image.Image) -> float:
     """How nearly two pictures point the same way, in ``[-1.0, 1.0]``.
 
-    Both pictures must be the same size, which for tiles of one split they are
-    by construction -- :meth:`app.utils.reel_grid.ReelGrid.place` gives every
-    tile one shared width and height precisely so that comparisons like this one
-    need no resampling. A mismatch here therefore means the two came from
-    different splits, which is worth an error rather than a silent resize.
-
-    Two black pictures score 1.0 and a black one against anything else scores
-    0.0: a fade to black is a normal thing for a screenshot to catch, and
-    dividing by a zero-length vector is not.
-
-    Raises:
-        SimilarityError: if the two pictures are different sizes.
+    Must be the same size -- tiles of one split are, by construction, so a
+    mismatch means the two came from different splits and is worth an error
+    rather than a silent resize.
     """
     if left.size != right.size:
         raise SimilarityError(
@@ -74,12 +45,9 @@ def cosine(left: Image.Image, right: Image.Image) -> float:
 
 
 def vector_cosine(left: np.ndarray, right: np.ndarray) -> float:
-    """The angle between two already-flattened pictures.
-
-    Split out from :func:`cosine` so a caller comparing one tile against many
-    converts each picture once instead of once per pair, which is the difference
-    between fifteen conversions and a hundred and five.
-    """
+    """The angle between two already-flattened pictures. Split out from
+    :func:`cosine` so a caller comparing one tile against many converts each
+    picture once, not once per pair."""
     left_norm = float(np.linalg.norm(left))
     right_norm = float(np.linalg.norm(right))
     if left_norm == 0.0 or right_norm == 0.0:

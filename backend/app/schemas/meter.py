@@ -1,25 +1,7 @@
-"""Meter reading payloads.
-
-These ride along with an ROI extraction rather than having endpoints of their own:
-cropping ``roi.cash_meter`` and reading the numbers off it are one action from the
-dashboard's point of view, so :class:`app.schemas.roi.RoiExtractResult` carries a
-:class:`MeterValues` and there is no ``/api/meter``.
-
-Two things here are deliberate.
-
-**Reading the meter must never fail the crop.** The panel's job is to show the
-region; the numbers are what the region is *for*, but a missing Tesseract or a
-strip the engine could not manage is not a reason to withhold the picture. So
-failure is a populated ``error`` on this object, never an exception reaching the
-ROI service.
-
-**``cash`` and ``credits`` are separate fields with one of them null.** They are
-the same cell on screen -- a slot meter shows a cash balance or a credit count,
-never both -- but they are different quantities and collapsing them into one
-number would lose which was on screen. ``mode`` says which, and says how it was
-decided, because it is inferred from the value's shape rather than read: the
-``CASH``/``CREDITS`` label is 8px tall over artwork and does not OCR at all.
-"""
+"""Meter reading payloads. These ride along with an ROI extraction rather
+than having endpoints of their own -- :class:`app.schemas.roi.RoiExtractResult`
+carries a :class:`MeterValues`, and there is no ``/api/meter``. A failed
+reading populates ``error`` rather than failing the crop."""
 
 from __future__ import annotations
 
@@ -42,12 +24,8 @@ class MeterMode(StrEnum):
 
 
 class MeterField(BaseModel):
-    """One number read off the strip, with how sure the engine was.
-
-    Carried per field rather than as one number for the whole reading, because a
-    strip routinely has a confident balance beside an unreadable bet, and one
-    average would hide both.
-    """
+    """One number read off the strip, with how sure the engine was; carried
+    per field since one average would hide a confident balance beside a bad bet."""
 
     value: float | None = Field(
         default=None, description="The number, or null when none was read."
@@ -57,10 +35,7 @@ class MeterField(BaseModel):
     )
     confidence: float = Field(
         default=0.0,
-        description=(
-            "0-100. Values verified correct on this project's strips scored 79 "
-            "or better, so a low score here is the signal to look at the crop."
-        ),
+        description="0-100; verified-correct strips scored 79 or better.",
     )
     box: list[int] = Field(
         default_factory=list,
@@ -69,12 +44,8 @@ class MeterField(BaseModel):
 
 
 class MeterUnmapped(BaseModel):
-    """A confident number that fell outside every field's window.
-
-    Never filed under the nearest field. A skin that orders its cells differently
-    reads perfectly and means something else, and a bet quietly reported as a
-    balance is worse than one that arrives here asking to be looked at.
-    """
+    """A confident number that fell outside every field's window; never
+    filed under the nearest field, since that could silently mean something else."""
 
     value: float = Field(description="The number that was read.")
     centre: float = Field(
@@ -91,9 +62,8 @@ class MeterValues(BaseModel):
     currency: str | None = Field(
         default=None,
         description=(
-            "Currency symbol on the values, e.g. '$'. '?' means the pixels show "
-            "a symbol the engine would not name -- the yen glyph these games "
-            "draw reads as nothing at every mode and scale. Null in credits mode."
+            "Currency symbol on the values, e.g. '$'; '?' means an unrecognised "
+            "symbol. Null in credits mode."
         ),
     )
     cash: float | None = Field(
@@ -104,10 +74,7 @@ class MeterValues(BaseModel):
     )
     win: float | None = Field(
         default=None,
-        description=(
-            "Last win. Null is normal rather than a failure -- the WIN cell is "
-            "empty between spins."
-        ),
+        description="Last win; null is normal -- the WIN cell is empty between spins.",
     )
     bet: float | None = Field(default=None, description="Current total bet.")
 
@@ -118,17 +85,13 @@ class MeterValues(BaseModel):
     unmapped: list[MeterUnmapped] = Field(
         default_factory=list,
         description=(
-            "Confident numbers belonging to no field. Non-empty means this skin's "
-            "layout does not match the expected one -- look before trusting the "
-            "values above."
+            "Confident numbers belonging to no field; non-empty means this "
+            "skin's layout doesn't match the expected one."
         ),
     )
     band: list[int] = Field(
         default_factory=list,
-        description=(
-            "Rows [top, bottom] of the strip the values were read from, chosen by "
-            "whichever candidate read best. Cached per game after the first read."
-        ),
+        description="Rows [top, bottom] of the strip read; cached per game.",
     )
     engine_calls: int = Field(
         default=0,
@@ -137,9 +100,5 @@ class MeterValues(BaseModel):
     )
     duration_ms: int = Field(default=0, ge=0, description="How long the read took.")
     error: str | None = Field(
-        default=None,
-        description=(
-            "Why the meter could not be read; null when it was. Populated rather "
-            "than raised, so a failed reading never withholds the crop."
-        ),
+        default=None, description="Why the meter could not be read; null when it was."
     )

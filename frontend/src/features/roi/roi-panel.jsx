@@ -24,32 +24,23 @@ function formatCapturedAt(value) {
 }
 
 /**
- * Cut a configured region out of the latest screenshot and show it.
- *
- * The regions come from the active game's `roi` block, so the dropdown is
- * whatever that game declares and never a rectangle typed in here. The frame is
- * the newest shot in the screenshots directory, which is what the OBS panel's
- * Screenshot button writes -- take one there, extract here.
- *
- * Extracting the cash meter also reads it: the backend returns the numbers on the
- * strip beside the crop, so `<MeterValues>` renders below the picture rather than
- * in a card of its own. Every other region leaves `meter` null and nothing extra
- * is shown.
+ * Cut a configured region out of the latest screenshot and show it. Regions
+ * come from the active game's `roi` block; the frame is the newest shot the
+ * OBS panel's Screenshot button wrote. Extracting the cash meter also reads
+ * it, so `<MeterValues>` renders below the picture rather than in its own card.
  */
 export function RoiPanel() {
   const { data, error, isPending, isFetching, refetch } = useRoiRegions();
   const extract = useExtractRoi();
 
-  // Uncontrolled until the catalog arrives, then the first region. Kept as the
-  // name rather than an index so a config reload cannot silently re-point it.
+  // Kept as the name rather than an index so a config reload can't silently re-point it.
   const [region, setRegion] = useState("");
   const regions = data?.regions ?? [];
   const selected = region || regions[0]?.region || "";
   const selectedRegion = regions.find((option) => option.region === selected);
   const frame = data?.latest_frame ?? null;
 
-  // A region declared with unusable numbers is in the dropdown with its reason,
-  // so say why Extract is refused rather than just disabling it.
+  // Says why Extract is refused rather than just disabling it.
   const regionError = selectedRegion?.error ?? null;
   const canExtract = Boolean(frame) && Boolean(selected) && !regionError;
 

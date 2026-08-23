@@ -1,64 +1,19 @@
-"""Splitting the reels of a captured frame into a matrix of tiles.
+"""Splits the reels of a captured frame into a matrix of tiles.
 
-Every piece this joins up already existed. :mod:`app.services.roi` knows which
-screenshot is meant by "the latest one" and how to open it,
-:mod:`app.utils.image_roi` cuts a region out of a frame at whatever resolution
-the frame turned out to be, and :mod:`app.utils.reel_grid` reads the game
-config's ``reel_bounds`` block. What is left here is the part that is about this
-project: that a tile is a region of the *reels crop* and not of the frame, and
-that the split is written down.
-
-This is one step past :mod:`app.services.roi`, the way OCR is one step past it in
-the other direction. ROI answers *is this rectangle aimed at the right part of
-the screen*; this answers *and does it divide into the symbols I expect*. Two
-crops, in sequence, and the second divides the first -- so a reel window that
-moved on screen is a change to ``roi.reels`` alone, and a sixth reel a change to
-``reel_bounds.columns`` alone.
-
-**The frame comes off disk, newest first, and the reels are found inside the
-game rather than inside the canvas.** Both are delegated whole to the ROI
-service, which is where those questions are documented. A split with no
-``file_name`` uses the shot the dashboard's Screenshot button just took, and
-nothing here asks OBS for a frame -- the same frame split twice has to give the
-same tiles. ``roi.reels`` resolves against
-:func:`app.services.roi.content_box`, so resizing the simulator moves the reels
-crop with it and neither block needs re-measuring.
-
-**The split is written down, unlike an ROI extraction.** Fifteen tiles are not
-something to read off a screen and discard: they are the input to whatever looks
-at symbols next. They go to ``<capture dir>/grid/<frame stem>/``, one directory
-per source screenshot, so splitting two frames leaves two records rather than
-one overwritten one -- and splitting the *same* frame twice is idempotent, which
-is what makes it safe to re-run after editing the bounds.
-
-**Every tile is the same number of pixels.** Rounding each tile's edges on its
-own is right for a single region and wrong for a grid: three rows over a
-298-pixel crop round to 99, 100 and 99 depending only on where each boundary
-falls, and tiles that differ by a pixel cannot be stacked or fed to anything
-expecting one input size. :meth:`app.utils.reel_grid.ReelGrid.place` keeps each
-tile's own rounded position and gives them all one shared size, so nothing
-drifts off the symbol it was aimed at.
-
-**The border trim is part of the tile, not a step after it.** The grid divides
-the crop evenly, so a tile takes everything up to its neighbour -- the gap
-between the reel strips, and the frame the game draws inside a reel to highlight
-a win, which lies across the symbol's own edge. ``reel_bounds.inset`` shrinks
-every tile towards its centre, and a request may override it for one split: that
-is how the number gets found before it is written into the config, the same loop
-OCR's per-request options serve. What a config declares is a 500 if it is
-unusable and what a request asks for is a 400.
-
-**Stale tiles are cleared, and only tiles.** Re-splitting a frame after adding a
-sixth reel to the config would otherwise leave the old ``r1c5`` behind, looking
-exactly like part of the current answer. Only files matching a tile's own name
-pattern are removed, so nothing else that happens to be in the directory is.
-
-Like :mod:`app.services.roi` this service holds no state -- no client, no lock,
-no cached engine -- so it has no ``reset()`` and ``tests/conftest.py`` has
-nothing to clean up between tests. Callers use the namespace::
-
-    from app.services import grid as grid_service
-    await grid_service.split(GridSplitRequest())
+One step past :mod:`app.services.roi`: ROI answers *is this rectangle aimed
+right*, this answers *does it divide into the symbols expected* — a moved reel
+window is a change to ``roi.reels`` alone, a sixth reel a change to
+``reel_bounds.columns`` alone. Frame selection and content-box resolution are
+delegated whole to :mod:`app.services.roi`. Unlike an ROI extraction, the split
+is written to ``<capture dir>/grid/<frame stem>/`` — it's an input to whatever
+reads symbols next, not a throwaway — and splitting the same frame twice is
+idempotent. Every tile gets one shared pixel size (see
+:meth:`app.utils.reel_grid.ReelGrid.place`), since tiles differing by a pixel
+can't be stacked or fed to anything expecting one input size. ``reel_bounds.inset``
+trims each tile's border to cut the win-highlight frame the game draws inside a
+reel; a request may override it for one split (config errors are 500, request
+errors 400). Re-splitting clears stale tiles from a previous, differently-shaped
+split. Holds no state, so no ``reset()``.
 """
 
 from __future__ import annotations
@@ -133,12 +88,7 @@ def _active_config() -> tuple[str, GameConfig]:
 
 
 def _reels_region(config: GameConfig) -> image_roi.Roi:
-    """The reels region of the active game.
-
-    Raises:
-        GridNotConfiguredError: if the game declares no ``roi.reels``.
-        GameConfigInvalidError: if it declares one with unusable numbers.
-    """
+    """The reels region of the active game."""
     if REELS_REGION not in config.roi:
         known = ", ".join(sorted(config.roi)) or "none"
         raise GridNotConfiguredError(
@@ -152,12 +102,7 @@ def _reels_region(config: GameConfig) -> image_roi.Roi:
 
 
 def _grid(config: GameConfig) -> reel_grid.ReelGrid:
-    """The reel grid of the active game.
-
-    Raises:
-        GridNotConfiguredError: if the game declares no ``reel_bounds``.
-        GameConfigInvalidError: if it declares one that cannot be read.
-    """
+    """The reel grid of the active game."""
     if not config.reel_bounds:
         raise GridNotConfiguredError(
             f"The game config for {config.name!r} declares no 'reel_bounds' "
@@ -172,14 +117,8 @@ def _grid(config: GameConfig) -> reel_grid.ReelGrid:
 def _override_inset(
     grid: reel_grid.ReelGrid, requested: float | list[float] | None
 ) -> reel_grid.ReelGrid:
-    """Apply a request's own border trim, if it asked for one.
-
-    A 400 rather than the 500 the config's own inset would raise: the same
-    numbers are wrong in a different place, and only one of the two is something
-    the caller can fix by asking differently. Tuning the trim against a frame
-    that does not move and then writing the winner into the config is the loop
-    this exists for, the same one OCR's per-request options serve.
-    """
+    """Apply a request's own border trim, if it asked for one — a 400, not the
+    config's 500, since this is something the caller can fix by asking differently."""
     if requested is None:
         return grid
     try:
@@ -197,22 +136,13 @@ def _as_list(inset: reel_grid.Inset) -> list[float]:
 
 
 def _output_dir(source: Path) -> Path:
-    """The directory this frame's split is written to.
-
-    Named after the frame rather than the moment, so re-splitting one screenshot
-    replaces its own record instead of adding another one beside it. The stem
-    comes from a filename that has already been through
-    :func:`app.utils.paths.resolve_within`, so it carries no separators.
-    """
+    """The directory this frame's split is written to — named after the frame,
+    so re-splitting one screenshot replaces its own record."""
     return settings.obs_capture_dir / _OUTPUT_DIR / source.stem
 
 
 def _write(image: Image.Image, destination: Path) -> None:
-    """Write one PNG, or say which file could not be written.
-
-    Raises:
-        GridSplitFailedError: if the file could not be written.
-    """
+    """Write one PNG, or say which file could not be written."""
     try:
         image.save(destination, format="PNG")
     except OSError as exc:
@@ -222,16 +152,7 @@ def _write(image: Image.Image, destination: Path) -> None:
 
 
 def _encode(image: Image.Image) -> str:
-    """One picture as a PNG data URI, as this feature's own failure.
-
-    :func:`app.services.roi.encode_png` raises ROI's error, which is right
-    for ROI and would read as the wrong feature here. Translated rather than
-    reimplemented: the encoding itself is one reading of "PNG regardless of
-    the source format", and it belongs in one place.
-
-    Raises:
-        GridSplitFailedError: if the picture could not be encoded.
-    """
+    """One picture as a PNG data URI, translating ROI's error into this feature's own."""
     try:
         return roi_service.encode_png(image)
     except RoiExtractFailedError as exc:
@@ -239,11 +160,8 @@ def _encode(image: Image.Image) -> str:
 
 
 def _clear_stale_tiles(directory: Path, keep: set[str]) -> None:
-    """Remove tiles of a previous, differently-shaped split.
-
-    Scoped to names that match a tile's own pattern and are not part of this
-    split, so a directory someone put something else in keeps it.
-    """
+    """Remove tiles of a previous, differently-shaped split, without touching
+    anything else that may be in the directory."""
     if not directory.is_dir():
         return
     for path in directory.iterdir():
@@ -251,20 +169,11 @@ def _clear_stale_tiles(directory: Path, keep: set[str]) -> None:
             try:
                 path.unlink()
             except OSError:
-                # Not worth failing a split that otherwise worked; the stale
-                # tile is visible in the response's absence of it.
                 logger.warning("Could not remove the stale tile %s", path)
 
 
 def _prepare(source: Path, tiles: list[reel_grid.PlacedTile]) -> tuple[Path, Path]:
-    """Make the output directories, and clear any stale tiles from them.
-
-    Returns:
-        The split's own directory, and its ``tiles`` subdirectory.
-
-    Raises:
-        GridSplitFailedError: if the directories could not be created.
-    """
+    """Make the output directories, and clear any stale tiles from them."""
     directory = _output_dir(source)
     tiles_dir = directory / _TILES_DIR
     try:
@@ -276,22 +185,14 @@ def _prepare(source: Path, tiles: list[reel_grid.PlacedTile]) -> tuple[Path, Pat
 
 
 # --- reading a split back -------------------------------------------------
-# The written split is the deliverable, so reading one back belongs here rather
-# than in whatever reads it next -- this module is what named the directory, the
-# crop and the tiles, and a second module spelling those three the same way is a
-# second module to change when one of them moves. The same reason
-# :mod:`app.services.roi` owns "the latest screenshot" for the grid and for OCR.
+# This module named the directory, the crop and the tiles, so it also owns
+# reading a split back rather than a second module re-deriving those names.
 
 
 @dataclass(frozen=True)
 class SplitOnDisk:
-    """One written split, read back off disk.
-
-    The shape comes from the tile filenames rather than from the game config on
-    purpose: this describes what *was* split, which is the thing a later check is
-    actually looking at, and whether that still matches what the game declares is
-    the caller's question to ask.
-    """
+    """One written split, read back off disk. Shape comes from the tile filenames,
+    not the game config — this describes what *was* split."""
 
     directory: Path
     """The split's own directory, named after the frame it came from."""
@@ -320,12 +221,7 @@ def _split_root() -> Path:
 
 
 def latest_split() -> Path | None:
-    """Newest split directory, or None if nothing has been split yet.
-
-    Modification time, like :func:`app.services.roi.latest_path` and for the same
-    reason: the directory names carry the frame's timestamp today, and sorting
-    them as strings is a bug waiting for the day they do not.
-    """
+    """Newest split directory, by mtime (not directory name), or None."""
     root = _split_root()
     if not root.is_dir():
         return None
@@ -336,13 +232,7 @@ def latest_split() -> Path | None:
 
 
 def resolve_split(name: str | None) -> Path:
-    """The split to read: the one that was named, or the newest one.
-
-    Raises:
-        BadRequestError: if a named split is not a bare directory name.
-        PaylineSourceNotFoundError: if the named split, or any split at all, is
-            not there.
-    """
+    """The split to read: the one that was named, or the newest one."""
     if name is not None:
         try:
             directory = paths.resolve_within(_split_root(), name)
@@ -366,16 +256,8 @@ def resolve_split(name: str | None) -> Path:
 
 
 def _split_shape(names: list[str]) -> tuple[int, int]:
-    """The matrix a set of tile filenames describes.
-
-    Rows and columns from the largest of each, and then every position in that
-    rectangle has to be present: a split missing ``r2c3`` would otherwise be read
-    as a complete 3x5 grid with a hole in it, and a hole in the middle of a
-    payline is a line that silently cannot be evaluated.
-
-    Raises:
-        PaylineSourceNotFoundError: if the names describe no complete matrix.
-    """
+    """The matrix a set of tile filenames describes; every position in the
+    rows x columns rectangle must be present, or a hole reads as a complete grid."""
     positions = [
         (int(match.group(1)), int(match.group(2)))
         for match in (_TILE_POSITION.fullmatch(name) for name in names)
@@ -401,18 +283,8 @@ def _split_shape(names: list[str]) -> tuple[int, int]:
 
 def read_split(directory: Path) -> SplitOnDisk:
     """Open one written split: its crop, its tiles, and the shape they make.
-
-    Every tile is opened, because every tile is what a comparison needs -- and
-    because a split with an unreadable tile in it is worth failing on rather than
-    silently evaluating around.
-
-    Raises:
-        PaylineSourceNotFoundError: if the crop or the tiles directory is not
-            there, or the tiles do not make a complete matrix.
-        RoiExtractFailedError: if the crop or a tile is not a readable image.
-        GridSplitFailedError: if two tiles are different sizes, which means they
-            did not come from one split.
-    """
+    Every tile is opened — a split with an unreadable tile fails rather than
+    silently evaluating around it."""
     crop_path = directory / _CROP_FILE
     tiles_dir = directory / _TILES_DIR
     if not crop_path.is_file():
@@ -469,9 +341,7 @@ def _layout() -> GridLayout:
         region = _reels_region(config)
         grid = _grid(config)
     except (GridNotConfiguredError, GameConfigInvalidError) as exc:
-        # Reported rather than raised: half the shipped games have no reels, and
-        # a panel that shows an error card for choosing one of them says the
-        # dashboard is broken when it is only unconfigured.
+        # Reported rather than raised: an unconfigured game isn't a broken panel.
         return GridLayout(game=name, latest_frame=frame, error=exc.message)
 
     return GridLayout(
@@ -486,16 +356,8 @@ def _layout() -> GridLayout:
 
 
 async def layout() -> GridLayout:
-    """The active game's grid, and the frame a split would use.
-
-    What the panel renders before anything is split: the shape of the matrix and
-    the name of the shot it would come out of. A game that describes no grid
-    comes back with ``error`` set rather than as a failed request.
-
-    Raises:
-        GameConfigInvalidError: if the active game's config cannot be loaded.
-        RoiExtractFailedError: if the newest screenshot is not a readable image.
-    """
+    """The active game's grid, and the frame a split would use. A game with no
+    grid comes back with ``error`` set rather than as a failed request."""
     return await asyncio.to_thread(_layout)
 
 
@@ -508,17 +370,11 @@ def _split(request: GridSplitRequest) -> GridSplitResult:
     path = roi_service.resolve_frame(request.file_name)
     frame = roi_service.open_frame(path)
     try:
-        # Against the game rather than the canvas, the same way an ROI
-        # extraction resolves: the bars round a window capture change width when
-        # the window is resized, and the reels are inside them.
         box, content = roi_service.resolve_box(region, frame)
     except image_roi.RoiError as exc:
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
     crop = frame.crop(box)
 
-    # Placed rather than resolved one at a time: the tiles' fractions are of the
-    # crop, and `place` is what turns them into boxes that all share one pixel
-    # size instead of rounding each edge on its own.
     try:
         tiles = grid.place(crop.width, crop.height)
     except reel_grid.ReelGridError as exc:
@@ -585,18 +441,5 @@ def _split(request: GridSplitRequest) -> GridSplitResult:
 
 
 async def split(request: GridSplitRequest) -> GridSplitResult:
-    """Cut the reels out of one frame, divide them into tiles, and write both.
-
-    Raises:
-        BadRequestError: if a named frame is not a bare filename, or the
-            request's own ``inset`` is unusable.
-        GridNotConfiguredError: if the active game declares no ``roi.reels`` or
-            no ``reel_bounds``.
-        GameConfigInvalidError: if the config cannot be loaded, or either block
-            is declared with unusable numbers.
-        RoiFrameNotFoundError: if the frame to split is not on disk.
-        RoiExtractFailedError: if the frame is not a readable image.
-        GridSplitFailedError: if the crop or a tile could not be written, or
-            could not be encoded for the response.
-    """
+    """Cut the reels out of one frame, divide them into tiles, and write both."""
     return await asyncio.to_thread(_split, request)

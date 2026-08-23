@@ -6,13 +6,8 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { ThemeProvider } from "@/components/theme-provider";
 import { createQueryClient } from "@/lib/query-client";
 
-/**
- * Every app-wide provider, in one place.
- *
- * The query client is created in state rather than at module scope so it is not
- * shared across renders in tests or across requests if this ever runs on a
- * server.
- */
+// Query client lives in state, not module scope, so it isn't shared across
+// renders in tests or across requests if this ever runs on a server.
 export function AppProviders({ children }) {
   const [queryClient] = useState(createQueryClient);
 

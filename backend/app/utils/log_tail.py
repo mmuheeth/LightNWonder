@@ -1,33 +1,9 @@
-"""Follow a file another process is appending to.
-
-Two layers, so a caller takes only what it needs:
-
-:class:`LogTail` is a single read -- hand it a cursor, get back what arrived
-after it. That suits proving one thing happened: a button press captures the
-size first and reads only the delta, so an identical line already in the log
-cannot confirm the next press.
-
-:class:`LogFollower` is "keep reading" -- it holds the cursor itself, and
-:meth:`LogFollower.follow` is the poll loop around it. That suits reacting to a
-log as it is written, which is what event capture does.
-
-Written for the OLED panel service's log and for the games' own logs, but there
-is nothing specific to either here: this is a byte cursor over a growing file.
-What the lines *mean* belongs to :mod:`app.utils.panel_log` and
-:mod:`app.utils.game_log`.
-
-Two properties matter to callers:
-
-**Only what arrived after the cursor is read.** Nothing re-reads what it has
-already seen, so no line is ever handled twice.
-
-**A shrinking file is a rotation, not an error.** The panel service caps its logs
-around 20 MB and starts over; the cursor restarts from the beginning of the new
-file rather than waiting forever past the end of a file that no longer exists.
-
-Reads never raise: a log that is absent, locked or unreadable yields nothing,
-which callers already handle as "no evidence yet". Whether that is a failure is a
-question for the service, not for a file reader.
+"""Follow a file another process is appending to. :class:`LogTail` is a single
+read (hand it a cursor, get back what arrived after it, e.g. to confirm one
+button press); :class:`LogFollower` holds its own cursor for reacting to a log
+as it's written. A shrinking file means the log rotated, not an error -- the
+cursor restarts from the new file's beginning. Reads never raise: an absent,
+locked or unreadable log just yields nothing.
 """
 
 from __future__ import annotations
@@ -78,11 +54,9 @@ class LogTail:
             return 0
 
     def read_since(self, offset: int) -> tuple[str, int]:
-        """Read whatever was appended since ``offset``.
-
-        Returns the new text and the cursor to pass in next time. A file smaller
-        than the cursor has rotated, so reading restarts from its beginning.
-        """
+        """Read whatever was appended since ``offset``, returning the new text
+        and the next cursor. A file smaller than ``offset`` has rotated, so
+        reading restarts from its beginning."""
         try:
             size = self.path.stat().st_size
         except OSError:
@@ -104,12 +78,8 @@ class LogTail:
     async def wait_for(
         self, pattern: re.Pattern[str], *, offset: int, timeout: float
     ) -> str | None:
-        """Wait for a line matching ``pattern`` to appear after ``offset``.
-
-        Returns the matching line stripped of surrounding whitespace, or ``None``
-        once ``timeout`` elapses. The deadline is checked after a read, so a line
-        that arrives within the window is never missed by a hair.
-        """
+        """Wait for a line matching ``pattern`` after ``offset``, returning it
+        stripped, or ``None`` once ``timeout`` elapses."""
         deadline = time.monotonic() + timeout
         cursor = offset
         while True:
@@ -125,15 +95,9 @@ class LogTail:
 class LogFollower:
     """A cursor that remembers where it got to, for following a live log.
 
-    :class:`LogTail` is one read; this is the "keep reading" on top of it, which
-    is what anything reacting to a log as it is written actually wants. It holds
-    the cursor, so :meth:`new_lines` hands back only what is new and
-    :meth:`follow` is the poll loop around that.
-
-    Following starts at the *end* of the file. A follower cares about what
-    happens next, not about the history it was started after -- a run should not
-    open with a screenshot of every spin since the game launched. Set
-    :attr:`cursor` to 0 before the first read to take the file from its start.
+    Starts at the *end* of the file -- a run should not open with a screenshot
+    of every spin since the game launched. Set :attr:`cursor` to 0 to read the
+    file from its start instead.
     """
 
     def __init__(
@@ -145,21 +109,14 @@ class LogFollower:
         self.cursor = self._tail.offset()
 
     def new_lines(self) -> list[str]:
-        """Every line appended since the last call, and advance the cursor.
-
-        Never raises, for the reason the module docstring gives: an unreadable
-        log is simply nothing new.
-        """
+        """Every line appended since the last call, advancing the cursor.
+        Never raises -- an unreadable log is simply nothing new."""
         chunk, self.cursor = self._tail.read_since(self.cursor)
         return chunk.splitlines()
 
     async def follow(self, handle: Callable[[str], Awaitable[None]]) -> None:
-        """Hand every appended line to ``handle`` until cancelled.
-
-        Never returns on its own -- the caller owns the task and ends it by
-        cancelling. ``handle`` owns its own failures: an exception raised out of
-        it ends the loop, so a caller that must survive one catches it there.
-        """
+        """Hand every appended line to ``handle`` until cancelled. Never returns
+        on its own; an exception out of ``handle`` ends the loop."""
         while True:
             for line in self.new_lines():
                 await handle(line)

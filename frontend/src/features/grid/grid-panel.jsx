@@ -15,24 +15,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useGridLayout, useSplitGrid } from "@/features/grid/use-grid";
 import { cn } from "@/lib/utils";
 
-/**
- * The border trim as one short string.
- *
- * Four equal edges is the usual case and reads as one number; anything else is
- * spelled out, because a trim that is not symmetric is worth noticing.
- */
+/** The border trim as one short string: four equal edges read as one number. */
 function formatInset(inset) {
   if (!inset || inset.every((edge) => edge === 0)) return "none";
   return inset.every((edge) => edge === inset[0]) ? String(inset[0]) : inset.join(", ");
 }
 
 /**
- * The part of the frame the game filled, which `roi.reels` was resolved against.
- *
- * Worth a line of its own: OBS writes every frame at its canvas size and fits
- * the game window inside it, so a resized simulator arrives as a different
- * rectangle of an identical-looking file. When a crop looks misplaced this is
- * the number that says whether the region is wrong or the detection is.
+ * The part of the frame the game filled, which `roi.reels` was resolved against
+ * — the number that says whether a misplaced-looking crop is the region or the
+ * letterbox detection.
  */
 function formatContentBox(box, letterboxed) {
   if (!Array.isArray(box) || box.length !== 4) return "—";
@@ -48,12 +40,8 @@ function formatCapturedAt(value) {
 }
 
 /**
- * The tiles as a matrix, drawn from the backend's own row/column numbers.
- *
- * Laid out by `gridTemplateColumns` off `columns` rather than by chunking the
- * list: the tiles arrive row-major with their positions on them, so the only
- * thing the page has to know is how wide a row is. Getting that from the
- * response means a game with six reels needs nothing changed here.
+ * The tiles as a matrix, laid out by `gridTemplateColumns` off `columns` — the
+ * response already gives row-major order, so a six-reel game needs no changes.
  */
 function TileMatrix({ tiles, columns }) {
   return (
@@ -82,17 +70,10 @@ function TileMatrix({ tiles, columns }) {
 }
 
 /**
- * Split the reels out of the latest screenshot into a matrix of tiles.
- *
- * The grid comes from the active game's `roi.reels` region and its
- * `reel_bounds` block, so the shape shown here is whatever that game declares
- * and never a number typed in this file. The frame is the newest shot in the
- * screenshots directory, which is what the OBS panel's Screenshot button writes
- * — take one there, split it here.
- *
- * A game that declares no reels is a state, not an error: the backend reports it
- * as `error` on a 200 and this says so with Split disabled, the same way the ROI
- * panel handles a region with unusable numbers.
+ * Split the reels out of the latest screenshot into a matrix of tiles. The
+ * frame is whatever the OBS panel's Screenshot button last wrote. A game that
+ * declares no reels is a state, not an error: `error` comes back on a 200 and
+ * Split is disabled.
  */
 export function GridPanel() {
   const { data, error, isPending, isFetching, refetch } = useGridLayout();

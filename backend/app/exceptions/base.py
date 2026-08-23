@@ -1,16 +1,6 @@
-"""Domain exception hierarchy.
-
-Business code raises these; :mod:`app.exceptions.handlers` turns them into the
-standard response envelope. Nothing outside the handlers should build an HTTP
-response for an error.
-
-Add a new error type by subclassing :class:`AppException` and setting the three
-class attributes::
-
-    class PaymentRequiredError(AppException):
-        status_code = 402
-        error_code = "PAYMENT_REQUIRED"
-        message = "Payment is required to continue"
+"""Domain exception hierarchy. Business code raises these; only
+:mod:`app.exceptions.handlers` turns them into the response envelope. Add a new
+error by subclassing :class:`AppException` and setting its three class attributes.
 """
 
 from __future__ import annotations
@@ -21,13 +11,7 @@ from app.schemas.response import ErrorDetail
 
 
 class AppException(Exception):
-    """Base class for every expected, client-facing failure.
-
-    Attributes:
-        status_code: HTTP status to respond with.
-        error_code: Stable code clients can branch on.
-        message: Default human-readable message.
-    """
+    """Base class for every expected, client-facing failure."""
 
     status_code: int = HTTPStatus.INTERNAL_SERVER_ERROR
     error_code: str = "INTERNAL_SERVER_ERROR"
@@ -105,9 +89,8 @@ class ServiceUnavailableError(AppException):
 
 
 # --- OBS Studio -----------------------------------------------------------
-# 409 rather than 503 for "not connected": the client fixes it by connecting,
-# not by retrying. The frontend only offers a Retry button for 5xx, so this
-# split gives each failure the right affordance.
+# 409 for "not connected" (fixed by connecting, not retrying); 5xx gets the
+# frontend's Retry button.
 
 
 class ObsNotConnectedError(AppException):
@@ -129,10 +112,8 @@ class ObsRequestError(AppException):
 
 
 # --- Virtual OLED i-deck --------------------------------------------------
-# Same split as OBS above: 409 when the caller has to go do something (launch
-# the panel, name a real button) and 502 when the panel is there but the press
-# could not be proven. Only the 5xx offers a Retry button in the frontend, which
-# is the right affordance for each.
+# Same split as OBS: 409 when the caller must act (launch panel, name a real
+# button), 502 when the press could not be proven.
 
 
 class IDeckWindowNotFoundError(AppException):
@@ -166,11 +147,8 @@ class IDeckConfigError(AppException):
 
 
 # --- Game window input ----------------------------------------------------
-# Kept apart from the i-deck errors above rather than reusing them: those name
-# the Virtual OLED panel in both their code and their message, and the frontend
-# branches on the code. The same 409/404/502 split applies -- 409 when the caller
-# has to go do something (launch the game), 404 when they named a target that is
-# not configured, 502 when the window is there but the click could not be proven.
+# Kept apart from i-deck's errors since the frontend branches on error_code and
+# those name the panel. Same 409/404/502 split: launch game / unknown target / unproven click.
 
 
 class GameWindowNotFoundError(AppException):
@@ -219,9 +197,8 @@ class GameConfigInvalidError(AppException):
 
 
 # --- Event Based Capture --------------------------------------------------
-# Same 409-vs-404 split as above: a 409 means the caller has to go do something
-# (stop the run that is already going, pick a game whose config names a log,
-# open OBS), while a 404 means they asked for a run that is not there.
+# Same 409-vs-404 split: 409 means the caller must act first, 404 means the
+# run they asked for isn't there.
 
 
 class EventCaptureAlreadyRunningError(AppException):
@@ -249,13 +226,9 @@ class EventCaptureRunNotFoundError(AppException):
 
 
 # --- OCR ------------------------------------------------------------------
-# The same split once more. A missing Tesseract install is a 409: the caller fixes
-# it by installing the engine or pointing OCR_TESSERACT_CMD at it, and a Retry
-# button would be a lie. A 404 is a region the active game does not declare, which
-# is a typo rather than an unreadable meter -- a region that is configured but
-# could not be read comes back as a reading with an error on it, not as a failed
-# request. A 502 is for the frame: the engine is there, and there was nothing to
-# give it.
+# 409: no Tesseract install (a Retry button would be a lie). 404: region not
+# declared by the active game (a typo, not an unreadable meter). 502: no frame
+# to give the engine.
 
 
 class OcrEngineUnavailableError(AppException):
@@ -277,11 +250,8 @@ class OcrReadFailedError(AppException):
 
 
 # --- ROI extraction -------------------------------------------------------
-# The same split once more, one door further along. A 404 is a region the active
-# game does not declare, or a frame that is not on disk -- both of them a wrong
-# name rather than a broken crop. A 502 is a file that is there and is not a
-# readable image, which is the one failure the caller can do nothing about
-# except take another screenshot.
+# 404: unknown region or no screenshot on disk (a wrong name). 502: the file is
+# there but not a readable image.
 
 
 class RoiRegionNotFoundError(AppException):
@@ -303,12 +273,8 @@ class RoiExtractFailedError(AppException):
 
 
 # --- Reel grid ------------------------------------------------------------
-# Only two of its own, because the grid splitter reads the same frame off the
-# same directory as ROI does and raises ROI's own errors for it -- a missing
-# screenshot is a missing screenshot, and duplicating the code for it would mean
-# two messages to keep pointing at the OBS panel. What is new here is a game
-# that does not describe a reel grid at all, and a split that could not be
-# written to disk.
+# Only two of its own: a missing screenshot reuses ROI's own errors, since the
+# grid reads the same frame off the same directory.
 
 
 class GridNotConfiguredError(AppException):
@@ -324,10 +290,8 @@ class GridSplitFailedError(AppException):
 
 
 # --- Payline check --------------------------------------------------------
-# One step past the reel grid, and its errors say which of the three inputs is
-# missing: the patterns, the split they are checked against, or the agreement
-# between the two. A frame is not among them -- the check reads a split the grid
-# already wrote, so "no screenshot yet" cannot reach this far.
+# Names which of three inputs is missing: the patterns, the split, or agreement
+# between the two. No frame error -- the check reads a split the grid already wrote.
 
 
 class PaylinesNotConfiguredError(AppException):

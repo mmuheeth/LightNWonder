@@ -1,31 +1,7 @@
-"""ROI extraction payloads.
-
-Two things here differ from the OCR schemas next door, and both are the point of
-this feature existing separately.
-
-**A crop is returned, not a reading.** Extraction answers "is this region aimed
-at the right part of the screen", which is a question about a rectangle and not
-about text. So the response carries the picture and the pixel box it came from,
-and nothing about an engine -- the region can be checked before Tesseract is
-even installed.
-
-**The frame defaults to the newest screenshot on disk.** The dashboard's
-Screenshot button writes into the configured screenshots directory, so "extract
-the cash meter" means "off the shot I just took" without anyone naming a file.
-Naming one is still allowed, for going back to an older frame.
-
-**Two rectangles come back, not one.** ``box`` is where the region landed and
-``content_box`` is the part of the frame the game filled, which is what the
-region's fractions were resolved against. Reported apart because they answer
-different questions: a crop of the wrong thing is either a badly measured region
-or a misdetected content box, and only the pair says which.
-**The cash meter comes back read as well as cropped.** Extracting that one region
-also carries the numbers on it -- see :attr:`RoiExtractResult.meter` -- because
-cropping the meter and reading it are one action from the panel's point of view,
-and cropping twice would allow two extractions of the same strip to disagree.
-Every other region leaves it null, and a reading that failed populates its own
-``error`` rather than failing the crop.
-"""
+"""ROI extraction payloads. Unlike the OCR schemas next door, extraction
+returns a crop, not a reading -- the region can be checked before Tesseract
+is even installed. The cash meter region is the exception: it comes back
+read as well as cropped, via :attr:`RoiExtractResult.meter`."""
 
 from __future__ import annotations
 
@@ -63,11 +39,7 @@ class RoiRegionSummary(BaseModel):
     )
     error: str | None = Field(
         default=None,
-        description=(
-            "Why this region is unusable, when it is. A malformed region is "
-            "listed with its reason rather than hidden, so a typo in the config "
-            "is visible in the dropdown instead of only on extraction."
-        ),
+        description="Why this region is unusable, when it is; null when it is not.",
     )
 
 
@@ -141,16 +113,11 @@ class RoiExtractResult(BaseModel):
         max_length=4,
         description=(
             "Pixel box [left, top, right, bottom] of the part of the frame the "
-            "game filled, which the region's fractions were resolved against. "
-            "The whole frame when the capture had no letterboxing to trim."
+            "game filled; the whole frame when there was no letterboxing."
         ),
     )
     letterboxed: bool = Field(
-        description=(
-            "Whether any of the frame was letterbox rather than game. False "
-            "means the content box is the whole frame, so the region resolved "
-            "exactly as fractions of the canvas."
-        ),
+        description="Whether any of the frame was letterbox rather than game.",
     )
     width: int = Field(ge=1, description="Crop width in pixels.")
     height: int = Field(ge=1, description="Crop height in pixels.")
@@ -160,9 +127,7 @@ class RoiExtractResult(BaseModel):
     meter: MeterValues | None = Field(
         default=None,
         description=(
-            "The values read off the crop, for the cash meter region only; null "
-            "for every other region. Carries its own 'error' when the numbers "
-            "could not be read, because a failed reading still has a crop worth "
-            "looking at."
+            "Values read off the crop, for the cash meter region only; null "
+            "for every other region."
         ),
     )

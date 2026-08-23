@@ -1,35 +1,6 @@
-"""Reel grid payloads.
-
-The result of a split is a matrix, and the shape of these models is chosen so
-that a caller never has to reconstruct it. Every tile carries its own 1-indexed
-``row``/``column`` and the ``name`` those make (``r1c1``), the tiles arrive
-row-major, and :attr:`GridSplitResult.positions` is the same names already laid
-out as rows -- so a consumer can index by position, iterate in reading order, or
-render a grid, without chunking anything by hand.
-
-**Every tile is the same pixel size**, and :attr:`GridSplitResult.tile_width`
-and :attr:`GridSplitResult.tile_height` say what it is once rather than leaving
-it to be inferred from fifteen equal numbers. Each :attr:`GridTile.box` keeps its
-own position and takes that shared size.
-
-**Every tile's ``roi`` is post-inset.** A configured border trim is part of what
-a tile *is*, not a separate step, so the fractions and the pixel box already have
-it applied -- and the effective trim is reported beside them so it is never a
-number someone has to go and look up to explain a tile's size.
-
-Two rectangles are in play and they are deliberately reported apart.
-:attr:`GridSplitResult.roi` and :attr:`GridSplitResult.box` are the reels
-region, in fractions of the game's part of the frame and in pixels of the frame.
-:attr:`GridTile.roi` and :attr:`GridTile.box` are fractions and pixels of the
-**reels crop**. Mixing the two is the mistake worth making impossible to make
-silently, so neither is ever called just "the box".
-:attr:`GridSplitResult.content_box` is the third: the part of the frame the game
-filled, which is what the reels region's fractions were resolved against.
-
-:class:`app.schemas.roi.RoiFrame` is reused for the source screenshot rather
-than restated: it is the same file, found the same way, described by the same
-code.
-"""
+"""Reel grid payloads. Tiles are row-major with a shared pixel size and a
+post-inset ``roi``; ``GridSplitResult``/``GridTile`` report their rectangles
+in different reference frames (frame vs. reels crop), so are never confused."""
 
 from __future__ import annotations
 
@@ -37,9 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.roi import RoiFrame
 
-# The region a reel grid is split out of. One region, not a request field: the
-# ``reel_bounds`` block is singular in a game config, so there is nothing for a
-# second name to pair with.
+# Not a request field: reel_bounds is singular in a game config.
 REELS_REGION = "reels"
 
 
@@ -64,23 +33,10 @@ class GridTile(BaseModel):
     box: list[int] = Field(
         min_length=4,
         max_length=4,
-        description=(
-            "Pixel box [left, top, right, bottom] inside the reels crop -- not "
-            "inside the frame. The position is this tile's own; the size is the "
-            "grid's, shared by every tile, so it can sit up to a pixel inside "
-            "what 'roi' alone would give at the right and bottom edges."
-        ),
+        description="Pixel box [left, top, right, bottom] inside the reels crop.",
     )
-    width: int = Field(
-        ge=1,
-        description=(
-            "Tile width in pixels. The same for every tile of the split -- see "
-            "'tile_width' on the result."
-        ),
-    )
-    height: int = Field(
-        ge=1, description="Tile height in pixels. The same for every tile."
-    )
+    width: int = Field(ge=1, description="Tile width in pixels; see 'tile_width'.")
+    height: int = Field(ge=1, description="Tile height in pixels; see 'tile_height'.")
     image_data: str | None = Field(
         default=None,
         description=(
@@ -91,13 +47,8 @@ class GridTile(BaseModel):
 
 
 class GridLayout(BaseModel):
-    """What the panel needs before anything is split.
-
-    Reports a game that describes no reel grid as a state rather than a failure,
-    the same way a malformed ROI region is listed with its reason: only half the
-    shipped games have reels configured, and picking one of those is not an
-    error to recover from.
-    """
+    """What the panel needs before anything is split; a game with no reel
+    grid reports as a state (``error`` set) rather than a failure."""
 
     game: str = Field(description="Game the grid belongs to.")
     region: str = Field(
@@ -180,19 +131,16 @@ class GridSplitRequest(BaseModel):
     include_images: bool = Field(
         default=True,
         description=(
-            "Return the crop and every tile as data URIs. The files are written "
-            "either way; set false when only the files are wanted, which keeps a "
-            "5x3 split from carrying sixteen base64 payloads."
+            "Return the crop and tiles as data URIs too. Files are written "
+            "either way; set false to skip the payload."
         ),
     )
     inset: float | list[float] | None = Field(
         default=None,
         description=(
-            "Override the game config's border trim for this one split. One "
-            "number trims every edge, two are [horizontal, vertical], four are "
-            "[left, top, right, bottom] -- each a fraction of the tile. Omit to "
-            "use what the config declares; this is for finding the number to "
-            "write into it."
+            "Override the config's border trim for this split: one number "
+            "trims every edge, two are [horizontal, vertical], four are "
+            "[left, top, right, bottom], each a fraction of the tile."
         ),
     )
 
@@ -223,15 +171,11 @@ class GridSplitResult(BaseModel):
         max_length=4,
         description=(
             "Pixel box [left, top, right, bottom] of the part of the frame the "
-            "game filled, which the reels region's fractions were resolved "
-            "against. The whole frame when the capture had no letterboxing."
+            "game filled; the whole frame when there was no letterboxing."
         ),
     )
     letterboxed: bool = Field(
-        description=(
-            "Whether any of the frame was letterbox rather than game. False "
-            "means the reels region resolved exactly as fractions of the canvas."
-        ),
+        description="Whether any of the frame was letterbox rather than game.",
     )
     width: int = Field(ge=1, description="Reels crop width in pixels.")
     height: int = Field(ge=1, description="Reels crop height in pixels.")
@@ -241,28 +185,15 @@ class GridSplitResult(BaseModel):
         min_length=4,
         max_length=4,
         description=(
-            "Border trim that was applied to every tile, as [left, top, right, "
-            "bottom] fractions of the tile -- the config's, or the request's "
-            "override. All zeros when nothing was trimmed."
+            "Border trim applied to every tile, as [left, top, right, bottom] "
+            "fractions of the tile. All zeros when nothing was trimmed."
         ),
     )
-    tile_width: int = Field(
-        ge=1,
-        description=(
-            "Width in pixels of every tile. One number because they are all the "
-            "same size: rounding each tile's edges on its own would vary them by "
-            "a pixel, which is what stops a grid being stacked or diffed."
-        ),
-    )
+    tile_width: int = Field(ge=1, description="Width in pixels; shared by every tile.")
     tile_height: int = Field(
-        ge=1, description="Height in pixels of every tile. All tiles share it."
+        ge=1, description="Height in pixels; shared by every tile."
     )
-    output_dir: str = Field(
-        description=(
-            "Absolute directory the split was written to. The crop is at its "
-            "root and the tiles are in its 'tiles' subdirectory."
-        )
-    )
+    output_dir: str = Field(description="Absolute directory the split was written to.")
     crop_file: str = Field(
         description="What the whole reels crop was written as, e.g. 'reels.png'."
     )

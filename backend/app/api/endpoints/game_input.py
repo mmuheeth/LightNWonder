@@ -1,23 +1,6 @@
-"""Game-window click endpoints.
-
-Thin wrappers over :mod:`app.services.game_input`. Which window to drive comes
-from the environment and the active game config, and *where* to click comes only
-from that game's ``button_targets`` block -- never from the request body -- so a
-caller can reach the buttons a game declares and no other pixel.
-
-Four failure shapes recur:
-
-- **409 ``GAME_WINDOW_NOT_FOUND``** -- the game is not running, or is minimized
-  with restoring disabled. Fixed by launching it, not by retrying.
-- **409 ``GAME_INPUT_ACCESS_DENIED``** -- Windows is refusing us input because the
-  game outranks this backend. Fixed by running the backend elevated.
-- **404 ``GAME_TARGET_NOT_FOUND``** -- the active game configures no target by
-  that name. ``GET /targets`` lists the ones it does.
-- **502 ``GAME_CLICK_NOT_CONFIRMED``** -- the click was posted but the game never
-  reacted. The message distinguishes the two causes: a touch the game felt but
-  no target event means the coordinates need re-measuring, while no touch at all
-  means the input never arrived.
-"""
+"""Game-window click endpoints, thin wrappers over
+:mod:`app.services.game_input`. Click coordinates come only from the active
+game's ``button_targets`` config, never the request body."""
 
 from __future__ import annotations
 
@@ -36,9 +19,7 @@ from app.services import game_input as game_input_service
 
 router = APIRouter()
 
-# Shared across the routes below, so declared once. The alias matches the
-# signature FastAPI expects for `responses=`.
-ResponseSpec = dict[int | str, dict[str, Any]]
+ResponseSpec = dict[int | str, dict[str, Any]]  # matches FastAPI's `responses=`
 
 NO_WINDOW: ResponseSpec = {409: {"description": "The game window is not usable"}}
 NO_TARGET: ResponseSpec = {
@@ -64,11 +45,8 @@ CLICK_ERRORS: ResponseSpec = {
     summary="Game window status",
 )
 async def get_status() -> ApiResponse[GameInputStatus]:
-    """Report whether the game window can be clicked.
-
-    Always 200: a closed game is a state to report, not a failed request. Check
-    ``data.state`` rather than the status code.
-    """
+    """Report whether the game window can be clicked; always 200 -- check
+    ``data.state``, not the status code."""
     state = await game_input_service.status()
     return ApiResponse[GameInputStatus].ok(
         data=state, message=f"The game window is {state.state.value}"
@@ -82,12 +60,8 @@ async def get_status() -> ApiResponse[GameInputStatus]:
     responses=BAD_CONFIG,
 )
 async def get_targets() -> ApiResponse[list[ClickTargetInfo]]:
-    """Every target the active game declares, in name order.
-
-    Client coordinates are populated only while the game window is open and
-    restored, which makes this the thing to read when a coordinate needs checking
-    against a screenshot.
-    """
+    """Every target the active game declares, in name order. Client
+    coordinates populate only while the game window is open and restored."""
     found = await game_input_service.targets()
     return ApiResponse[list[ClickTargetInfo]].ok(
         data=found, message=f"{len(found)} click targets configured"
@@ -101,13 +75,8 @@ async def get_targets() -> ApiResponse[list[ClickTargetInfo]]:
     responses=CLICK_ERRORS,
 )
 async def click(payload: ClickRequest) -> ApiResponse[ClickResult]:
-    """Click a target by the name the active game's config gives it.
-
-    Unless verification is turned off, this only succeeds once the game's own log
-    shows it reacting. ``data.confirmed_by`` says how strong that proof was:
-    ``target-event`` means the game named the button it hit, ``touch`` means it
-    only admitted feeling a touch somewhere.
-    """
+    """Click a target by name; unless verification is off, only succeeds once
+    the game's log shows it reacting (``data.confirmed_by`` says how strongly)."""
     result = await game_input_service.click(
         payload.target, verify=payload.verify, hold_seconds=payload.hold_seconds
     )

@@ -1,9 +1,6 @@
 /**
- * OBS Studio client.
- *
- * The browser never talks to OBS directly: host, port and password live in the
- * backend's environment, so nothing sensitive reaches the bundle. These call our
- * own `/api/obs/*` endpoints, which return the standard envelope.
+ * OBS Studio client. The browser never talks to OBS directly — host, port and
+ * password live in the backend's environment, so nothing sensitive reaches the bundle.
  */
 
 import { routes } from "@/config/env";

@@ -18,8 +18,7 @@ def configure_tracing(settings: AgentSettings) -> None:
     if not settings.LANGCHAIN_TRACING_V2:
         return
 
-    # LangChain v1 still reads the LANGCHAIN_* names. LANGSMITH_* aliases make
-    # the intent explicit for newer SDKs without changing application code.
+    # LangChain v1 reads LANGCHAIN_*; LANGSMITH_* aliases are set for newer SDKs.
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
     os.environ["LANGSMITH_TRACING"] = "true"
     os.environ["LANGCHAIN_ENDPOINT"] = settings.LANGCHAIN_ENDPOINT
@@ -33,13 +32,7 @@ def configure_tracing(settings: AgentSettings) -> None:
 
 
 def build_chat_model(settings: AgentSettings) -> BaseChatModel:
-    """Create the configured provider-neutral LangChain chat model.
-
-    ``AGENT_MODEL`` accepts LangChain's ``provider:model`` notation. The
-    provider adapter resolves the correct integration package, while the
-    optional generic API key parameter handles providers that do not read a
-    standard environment variable. No request is made by this function.
-    """
+    """Create the configured chat model from ``AGENT_MODEL``'s ``provider:model`` notation. Makes no request."""
     configure_tracing(settings)
 
     model_kwargs: dict[str, Any] = {

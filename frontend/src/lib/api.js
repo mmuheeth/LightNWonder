@@ -1,11 +1,6 @@
-/**
- * Envelope-aware request helpers.
- *
- * The backend wraps every payload as
- * `{ success, message, data, error, meta }`. These helpers peel that off so
- * feature code and react-query see plain domain data, while errors still arrive
- * as `ApiError` (see `@/lib/api-error`).
- */
+// Unwraps the backend's `{ success, message, data, error, meta }` envelope so
+// feature code and react-query see plain domain data; errors still arrive as
+// `ApiError` (see `@/lib/api-error`).
 
 import { ApiError, CLIENT_ERROR_CODES } from "@/lib/api-error";
 import { http } from "@/lib/http";

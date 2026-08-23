@@ -42,12 +42,8 @@ function RunButton({ run, isSelected, onSelect }) {
   );
 }
 
-/**
- * Captured runs: pick one on the left, read its events on the right.
- *
- * The selected run lives in the URL rather than in state so a run can be linked
- * to — the dashboard card does exactly that after a run finishes.
- */
+// The selected run lives in the URL, not state, so a run can be linked to —
+// the dashboard card does exactly that after a run finishes.
 export function CapturesPage() {
   const { runId } = useParams();
   const navigate = useNavigate();

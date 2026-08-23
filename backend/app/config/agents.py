@@ -1,10 +1,6 @@
-"""Runtime settings for LangChain agents and LangGraph workflows.
+"""Provider-neutral LangChain/LangGraph settings (``provider:model`` selection).
 
-The application deliberately keeps these settings provider-neutral. A model is
-selected with ``provider:model`` (for example ``openai:gpt-4o-mini`` or
-``anthropic:claude-sonnet-4-6``), while provider-specific adapters remain
-replaceable packages. Agent execution is disabled by default so a development
-environment containing placeholder credentials can boot safely.
+Agent execution is disabled by default so placeholder dev credentials boot safely.
 """
 
 from __future__ import annotations
@@ -36,12 +32,7 @@ __all__ = [
 
 
 def is_placeholder_secret(value: SecretStr | None) -> bool:
-    """Return whether a secret is absent or clearly a sample value.
-
-    This prevents tracing or model factories from forwarding the dummy values
-    in ``.env.example`` to a provider. It is intentionally conservative: a
-    value that does not look like a placeholder is treated as user-supplied.
-    """
+    """Return whether a secret is absent or a placeholder from ``.env.example``."""
 
     if value is None:
         return True

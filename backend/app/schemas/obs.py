@@ -75,13 +75,9 @@ class ObsGameWindowSelection(BaseModel):
 
 
 class ScreenshotRequest(BaseModel):
-    """Request body for capturing a screenshot.
-
-    The image is always returned inline as a base64 data URI. Supply
-    ``file_name`` to also have OBS write the file into the configured
-    screenshot directory. ``output_dir`` optionally selects a relative
-    use-case subdirectory below that root, and requires ``file_name``.
-    """
+    """Request body for capturing a screenshot; supply ``file_name`` to also
+    write the file to the screenshot directory, ``output_dir`` for a
+    subdirectory below that root (requires ``file_name``)."""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -159,11 +155,8 @@ class RecordStartRequest(BaseModel):
 
 
 class ScreenshotResult(BaseModel):
-    """Outcome of a screenshot request.
-
-    ``image_data`` is always populated. ``file_path`` is populated too when the
-    request supplied ``file_name``.
-    """
+    """Outcome of a screenshot request; ``file_path`` is set too when the
+    request supplied ``file_name``."""
 
     source_name: str = Field(description="Source or scene that was captured.")
     image_format: str = Field(description="Format the image was encoded in.")

@@ -1,30 +1,10 @@
-"""Read the text in an image with the Tesseract engine.
-
-Tesseract ships as a program, not a library, so this module is a wrapper around
-running it. Three decisions shape everything below.
-
-**The image goes in on stdin and the answer comes back on stdout.** Tesseract
-accepts ``-`` as its input and ``stdout`` as its output, so a read is one process
-with no temporary file to name, write, read back and clean up -- which matters
-when a caller is reading the same small region off frame after frame.
-
-**The answer is asked for as TSV, not as plain text.** The ``tsv`` output adds one
-row per word with its confidence and its bounding box, and plain text can always
-be rebuilt from those rows. Confidence is the only thing that separates "the meter
-says 842.94" from "the engine produced 842.94 out of a crop of noise", and a
-region read off a game frame produces plenty of the latter.
-
-**A crop is preprocessed before it is handed over.** A region cut out of a game
-frame is nothing like the scanned page Tesseract's defaults expect: it is one
-short line, a few hundred pixels wide, drawn over artwork, and often light on
-dark. Enlarging it and stretching its contrast is the difference between a number
-and an empty string -- measured on this project's own captures, where the meter
-reads as nothing at all at native size. Every step is optional and configurable,
-because the right treatment is a property of the region.
-
-Nothing here knows about game configs, capture runs or settings. It takes an
-image, a path to the engine and a set of options; where those came from is the
-caller's business. :mod:`app.services.ocr` is the caller that knows.
+"""Read the text in an image with the Tesseract engine (a program, not a
+library, so this wraps running it). The image is piped in on stdin and read
+back on stdout -- no temp file. Output is requested as TSV, not plain text,
+since it carries per-word confidence and a bounding box that plain text can't
+distinguish "real reading" from "noise". A crop is preprocessed (enlarged,
+contrast-stretched) first, since Tesseract's defaults expect a scanned page,
+not a short line of game-frame artwork.
 """
 
 from __future__ import annotations
@@ -65,11 +45,8 @@ class OcrError(RuntimeError):
 
 
 class OcrUnavailableError(OcrError):
-    """The engine is not installed where it was expected to be.
-
-    Kept apart from :class:`OcrError` because the two want different answers: an
-    absent engine is fixed by installing it, a failed read by trying again.
-    """
+    """The engine is not installed where expected. Kept apart from
+    :class:`OcrError`: this is fixed by installing it, not by retrying."""
 
 
 class OcrOptionsError(ValueError):
@@ -106,13 +83,9 @@ _NUMBER = re.compile(r"[-+]?\d[\d.,]*")
 
 @dataclass(frozen=True)
 class OcrOptions:
-    """How one region should be preprocessed and read.
-
-    The defaults are aimed at a single line of large glyphs cut out of a game
-    frame. :class:`app.config.ocr.OcrSettings` carries the same set as
-    environment variables and the service builds these from it, so the numbers
-    here are the fallback rather than the configuration.
-    """
+    """How one region should be preprocessed and read. Defaults target a
+    single line of large glyphs cut out of a game frame -- the fallback, not
+    the configuration; :class:`app.config.ocr.OcrSettings` is that."""
 
     language: str = "eng"
     psm: int = 7
@@ -153,16 +126,9 @@ class OcrOptions:
     def merged(
         self, overrides: Mapping[str, Any] | None, *, where: str = "ocr"
     ) -> OcrOptions:
-        """Return these options with ``overrides`` applied over the top.
-
-        Only the keys present in ``overrides`` change, so a game config can
-        declare the one thing its region needs -- a whitelist of digits, say --
-        without restating the rest.
-
-        Raises:
-            OcrOptionsError: if a key is not an option, a value is the wrong
-                type, or the result would be out of range.
-        """
+        """Return these options with ``overrides`` applied over the top. Only
+        the keys present in ``overrides`` change, so a config can declare just
+        what its region needs."""
         if not overrides:
             return self
         # parse_overrides already locates its own failures, so its message is
@@ -215,20 +181,9 @@ _NULLABLE_OVERRIDES = frozenset({"threshold", "dpi"})
 
 
 def parse_overrides(raw: Any, *, where: str = "ocr") -> dict[str, Any]:
-    """Narrow a decoded JSON object to a set of option overrides.
-
-    Used by the game-config loader, so a typo in an ``ocr`` block is reported
-    when the config is read rather than in the middle of a read. Values are
-    range-checked as well as type-checked, by building the options they would
-    produce -- which keeps one definition of what a usable option is.
-
-    Args:
-        raw: The decoded value. Untrusted -- it may be any JSON shape.
-        where: What is being read, used to make the error locatable.
-
-    Raises:
-        OcrOptionsError: if ``raw`` is not an object, names something that is not
-            an option, gives one the wrong type, or puts one out of range.
+    """Narrow a decoded JSON object to a set of option overrides. Used by the
+    game-config loader, so a typo is reported when the config is read, not
+    mid-scan. Values are range-checked by building the options they'd produce.
     """
     if not isinstance(raw, Mapping):
         raise OcrOptionsError(f"{where} must be a JSON object of OCR options")
@@ -264,12 +219,9 @@ def parse_overrides(raw: Any, *, where: str = "ocr") -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class OcrWord:
-    """One word the engine recognised, and how sure it was.
-
-    The box is in the coordinates of the image that was passed in, not of the
-    enlarged copy the engine actually saw, so it can be drawn back onto the crop
-    it came from.
-    """
+    """One word the engine recognised, and how sure it was. The box is in the
+    coordinates of the original image, not the enlarged copy the engine saw,
+    so it can be drawn back onto the crop it came from."""
 
     text: str
     confidence: float
@@ -302,11 +254,8 @@ class OcrResult:
 
     @property
     def numbers(self) -> tuple[Decimal, ...]:
-        """Every number in the text, in reading order.
-
-        A meter panel is often one region with several values in it -- credit,
-        bet and win side by side -- so the numbers are plural.
-        """
+        """Every number in the text, in reading order -- a meter panel is
+        often one region with several values side by side."""
         return parse_numbers(self.text)
 
     @property
@@ -319,14 +268,9 @@ class OcrResult:
 def preprocess(
     image: Image.Image, options: OcrOptions = DEFAULT_OPTIONS
 ) -> Image.Image:
-    """Return the copy of ``image`` that will be handed to the engine.
-
-    Order matters: contrast is stretched while the pixels are still the original
-    ones, and the enlargement comes last so it interpolates a corrected image
-    rather than being corrected afterwards.
-
-    The source is left alone; every step returns a new image.
-    """
+    """Return the copy of ``image`` that will be handed to the engine. Order
+    matters: contrast is stretched before enlarging, so resizing interpolates
+    an already-corrected image. The source is left alone."""
     prepared = image
     if options.grayscale or options.threshold is not None:
         # Thresholding needs a single channel, so it forces the conversion even
@@ -358,19 +302,8 @@ def read_image(
     executable: Path | str,
     options: OcrOptions = DEFAULT_OPTIONS,
 ) -> OcrResult:
-    """Read the text in ``image``.
-
-    Args:
-        image: An open image. Usually a region crop -- see
-            :mod:`app.utils.image_roi` -- but a whole frame works the same way.
-        executable: Path to ``tesseract``.
-        options: Preprocessing and engine options.
-
-    Raises:
-        OcrUnavailableError: if there is no engine at ``executable``.
-        OcrError: if the engine failed, timed out, or the image could not be
-            encoded to hand over.
-    """
+    """Read the text in ``image`` -- usually a region crop, but a whole frame
+    works the same way."""
     prepared = preprocess(image, options)
     completed = _run(
         executable,
@@ -397,15 +330,9 @@ def read_file(
     executable: Path | str,
     options: OcrOptions = DEFAULT_OPTIONS,
 ) -> OcrResult:
-    """Read the text in an image file.
-
-    The file is opened, loaded and closed before the engine is run, so nothing
-    holds a handle on a frame that OBS may still be writing.
-
-    Raises:
-        OcrError: if the file is missing or is not an image, on top of the
-            failures :func:`read_image` raises.
-    """
+    """Read the text in an image file. Opened, loaded and closed before the
+    engine runs, so nothing holds a handle on a frame OBS may still be
+    writing."""
     try:
         with Image.open(source) as image:
             image.load()
@@ -417,12 +344,7 @@ def read_file(
 
 
 def engine_version(executable: Path | str, *, timeout: float = 10.0) -> str:
-    """The engine's version line, e.g. ``tesseract v5.5.3``.
-
-    Raises:
-        OcrUnavailableError: if there is no engine at ``executable``.
-        OcrError: if it would not report a version.
-    """
+    """The engine's version line, e.g. ``tesseract v5.5.3``."""
     completed = _run(executable, ["--version"], timeout=timeout)
     first = completed.stdout.decode("utf-8", "replace").strip().splitlines()
     if not first:
@@ -433,12 +355,7 @@ def engine_version(executable: Path | str, *, timeout: float = 10.0) -> str:
 def engine_languages(
     executable: Path | str, *, timeout: float = 10.0
 ) -> tuple[str, ...]:
-    """The traineddata files the engine can see, sorted.
-
-    Raises:
-        OcrUnavailableError: if there is no engine at ``executable``.
-        OcrError: if the language list could not be read.
-    """
+    """The traineddata files the engine can see, sorted."""
     completed = _run(executable, ["--list-langs"], timeout=timeout)
     lines = completed.stdout.decode("utf-8", "replace").splitlines()
     # The first line is a sentence about where it looked; the rest are the
@@ -447,18 +364,10 @@ def engine_languages(
 
 
 def parse_numbers(text: str) -> tuple[Decimal, ...]:
-    """Every number in ``text``, as exact decimals.
-
-    Written for meters, so it is deliberately forgiving about what surrounds a
-    number and deliberately strict about the number itself: currency symbols,
-    labels and the separators between fields are all skipped, while a token that
-    is not a number does not become a zero.
-
-    Which separator is the decimal one is decided by position rather than by
-    locale: whichever of ``.`` and ``,`` comes last is the decimal point, so both
-    ``1,234.56`` and ``1.234,56`` read as the same amount. A lone ``,`` followed
-    by exactly three digits is a thousands separator.
-    """
+    """Every number in ``text``, as exact decimals. Whichever of ``.``/``,``
+    comes last in a token is the decimal point (locale-independent), so both
+    ``1,234.56`` and ``1.234,56`` read as the same amount; a lone separator
+    with exactly three digits after it is a thousands grouping instead."""
     numbers: list[Decimal] = []
     for match in _NUMBER.finditer(text):
         value = _to_decimal(match.group())
@@ -483,15 +392,9 @@ def _run(
     payload: bytes | None = None,
     timeout: float,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run the engine once and return the finished process.
-
-    The single place this module touches a subprocess, so a test can stand in for
-    the engine by replacing this one function.
-
-    Raises:
-        OcrUnavailableError: if the executable is not there.
-        OcrError: if it timed out, could not be started, or exited non-zero.
-    """
+    """Run the engine once and return the finished process. The single place
+    this module touches a subprocess, so a test can stand in for the engine
+    by replacing this one function."""
     command = [str(executable), *args]
     try:
         completed = subprocess.run(
@@ -523,12 +426,9 @@ def _run(
 
 
 def _encode(image: Image.Image) -> bytes:
-    """The image as PNG bytes, ready for the engine's stdin.
-
-    PNG rather than a raw format because it is lossless -- a JPEG's ringing
-    around a glyph is exactly the noise that costs a digit -- and because
-    Tesseract reads it without being told what it is being given.
-    """
+    """The image as PNG bytes, ready for the engine's stdin. PNG rather than
+    JPEG since lossy ringing around a glyph is exactly the noise that costs a
+    digit."""
     buffer = io.BytesIO()
     try:
         image.save(buffer, format="PNG")
@@ -538,28 +438,19 @@ def _encode(image: Image.Image) -> bytes:
 
 
 def _reason(stderr: bytes) -> str:
-    """The last useful line of the engine's stderr, for an error message.
-
-    Tesseract writes progress and resolution warnings there too, so the tail is
-    what says why it stopped.
-    """
+    """The last useful line of the engine's stderr -- Tesseract writes
+    progress/resolution warnings there too, so the tail is what matters."""
     lines = [line.strip() for line in stderr.decode("utf-8", "replace").splitlines()]
     meaningful = [line for line in lines if line]
     return meaningful[-1] if meaningful else "no output on stderr"
 
 
 def _parse_tsv(stdout: str, *, scale: float) -> tuple[tuple[OcrWord, ...], str]:
-    """Read the word rows out of Tesseract's TSV output.
-
-    Returns the words and the plain text rebuilt from them: words within a line
-    joined by spaces, lines by newlines. Rebuilding rather than asking the engine
-    twice keeps the text and the boxes describing the same reading.
-
-    Rows above word level describe the page, its blocks, paragraphs and lines,
-    and carry a confidence of -1; they are skipped, along with words that are
-    only whitespace. A row that cannot be read is skipped rather than raised on:
-    one malformed line should cost a word, not the whole reading.
-    """
+    """Read the word rows out of Tesseract's TSV output, returning the words
+    and the plain text rebuilt from them (words joined by spaces, lines by
+    newlines) so both describe the same reading. Non-word rows and malformed
+    lines are skipped rather than raised on -- one bad line costs a word, not
+    the whole reading."""
     words: list[OcrWord] = []
     lines: list[list[str]] = []
     line_key: tuple[str, str, str] | None = None

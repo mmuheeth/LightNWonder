@@ -1,10 +1,6 @@
 /**
- * ROI extraction client.
- *
- * Which regions exist is the backend's answer, read out of the active game's
- * config -- the browser never names a rectangle, only picks one of the names it
- * was given. These call our own `/api/roi/*` endpoints, which return the
- * standard envelope.
+ * ROI extraction client. Which regions exist is the backend's answer — the
+ * browser only picks one of the names it was given.
  */
 
 import { routes } from "@/config/env";
@@ -29,14 +25,10 @@ export function getRoiRegions({ signal } = {}) {
 }
 
 /**
- * Extract one region and get the crop back as a data URI.
- *
- * Omit `file_name` to use the newest screenshot, which is the usual case.
- *
- * `meter` carries the numbers read off the crop and is populated for the cash
- * meter region only -- null for every other region. It has its own `error`
- * rather than failing the request, because a reading that could not be taken
- * still leaves a crop worth looking at.
+ * Extract one region and get the crop back as a data URI (omit `file_name` for
+ * the newest screenshot). `meter` is populated for the cash meter region only,
+ * with its own `error` rather than failing the request — a bad reading still
+ * leaves a crop worth looking at.
  *
  * @param {{region: string, file_name?: string}} payload
  * @returns {Promise<{game: string, region: string, roi: number[],

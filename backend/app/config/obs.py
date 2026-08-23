@@ -1,10 +1,4 @@
-"""OBS Studio runtime settings.
-
-The environment variable names intentionally remain flat (``OBS_HOST``,
-``OBS_PORT`` and so on). :class:`app.config.runtime.Settings` inherits this
-model, so callers keep the existing ``settings.OBS_*`` API while the OBS
-defaults and derived paths live with the integration they configure.
-"""
+"""OBS Studio runtime settings: connection, capture directories, and derived paths."""
 
 from __future__ import annotations
 

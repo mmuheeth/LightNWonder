@@ -30,12 +30,7 @@ function score(value) {
   return typeof value === "number" ? value.toFixed(4) : "—";
 }
 
-/**
- * One labelled number in the statistics block.
- *
- * Its own component rather than a `StatRow`, because these read as a grid of
- * figures to scan across rather than as a list of a card's properties.
- */
+/** One labelled number in the statistics block — a grid to scan, not a `StatRow` list. */
 function Figure({ label, value, hint }) {
   return (
     <div className="space-y-0.5">
@@ -59,14 +54,8 @@ function Swatch({ color }) {
   );
 }
 
-/**
- * One paying line, as a box rather than a clause in a sentence.
- *
- * `result.summary` reads fine as a log line but not as something to scan --
- * "Line 1 pays 2, Line 5 pays 5" is one run-on clause however many lines paid.
- * A box per line is a box per fact: the colour ties it to the same line's
- * stroke on the overlay below and its row in the dropdown further down.
- */
+/** One paying line as a box to scan, not a clause in `result.summary`'s run-on
+ * sentence. Colour ties it to the same line's overlay stroke and dropdown row. */
 function PaylineResultCard({ line }) {
   return (
     <div
@@ -82,16 +71,8 @@ function PaylineResultCard({ line }) {
   );
 }
 
-/**
- * One line's own dropdown: the verdict on the summary, the evidence inside.
- *
- * A native `<details>` rather than a vendored accordion, because that is exactly
- * this behaviour with no dependency and it keeps keyboard and screen-reader
- * support without any of it being written here. Closed by default and
- * independently openable: forty lines of four comparisons each is not something
- * to read all at once, and the whole point of the dropdown is to look at one
- * line when its number surprises you.
- */
+/** One line's dropdown: verdict on the summary, evidence inside. Native
+ * `<details>` for free keyboard/screen-reader support, no accordion dependency. */
 function PaylineRow({ line }) {
   return (
     <details className="group border-border/60 hover:border-border overflow-hidden rounded-lg border transition-colors">
@@ -114,9 +95,7 @@ function PaylineRow({ line }) {
       </summary>
 
       <div className="bg-muted/20 space-y-3 border-t px-3 py-3">
-        {/* The picture carries the tile-by-tile verdict now -- green borders on
-            the confirmed run, red on the tile that broke it -- so there is no
-            separate row of position chips repeating the same thing in text. */}
+        {/* The picture already carries the tile-by-tile verdict via borders. */}
         {line.image_data ? (
           <img
             src={line.image_data}
@@ -133,8 +112,7 @@ function PaylineRow({ line }) {
               key={`${step.left}-${step.right}`}
               className={cn(
                 "flex items-center gap-2 font-mono text-xs",
-                /* Dimmed once the run has broken: these comparisons happened
-                   and are worth seeing, but they did not decide anything. */
+                // Dimmed once the run has broken -- didn't decide anything.
                 step.counted ? "" : "text-muted-foreground/70",
               )}
             >
@@ -156,35 +134,16 @@ function PaylineRow({ line }) {
 }
 
 /**
- * Check which paylines of the active game pay on the latest split reel grid.
- *
- * One step past the Reel grid panel, and it reads that panel's output: the tiles
- * under `obs-captured-files/grid/<frame>/`, not a screenshot. So the loop is
- * three clicks in a row — Screenshot in the OBS panel, Split in the Reel grid
- * panel, Check here — and a re-check at a different threshold does not need the
- * simulator to still be showing the same spin.
- *
- * A line is read from the left one adjacent pair at a time and stops at the
- * first pair that is not the same symbol, so `pays` is the length of the leading
- * run: three matching reels behind a break pay nothing.
- *
- * **The threshold is the control that matters, and it is not intuitive.** Cosine
- * similarity of pixel channels does not start at zero for unrelated pictures —
- * two different symbols on one reel background score 0.6 to 0.9 and two crops of
- * the same symbol score above 0.96 — so a cut that sounds generous calls
- * everything a match. `stats.matched_min` and `stats.rejected_max` on a result
- * are the two numbers a working cut sits between, which is what tuning
- * `PAYLINE_MATCH_THRESHOLD` against a frame that does not move is for.
- *
- * Full width on the dashboard because the annotated reels are a wide picture and
- * the per-line evidence is a long list, and neither survives half a row.
+ * Check which paylines pay on the latest split (reads the Reel grid panel's
+ * written tiles, not a screenshot — Screenshot, Split, Check). `threshold`
+ * isn't intuitive: cosine similarity of unrelated symbols scores 0.6-0.9, so
+ * tune it against `stats.matched_min`/`rejected_max`, not intuition.
  */
 export function PaylinePanel() {
   const { data, error, isPending, isFetching, refetch } = usePaylineLayout();
   const check = useCheckPaylines();
 
-  // Blank means "whatever the setting says", which is the case that needs no
-  // typing. Held as the raw string so a half-typed "0." is not snapped to 0.
+  // Raw string, not a number, so a half-typed "0." isn't snapped to 0.
   const [set, setSet] = useState("");
   const [threshold, setThreshold] = useState("");
 
@@ -339,9 +298,7 @@ export function PaylinePanel() {
                   </span>
                 </div>
 
-                {/* One box per paying line, rather than the comma-separated
-                    sentence that same information reads as in `result.summary`:
-                    a box is a fact to scan, a clause is a sentence to parse. */}
+                {/* One box per paying line, not the comma-separated `result.summary`. */}
                 <div className="flex flex-wrap gap-2">
                   {result.lines.some((line) => line.paying) ? (
                     result.lines
@@ -398,9 +355,7 @@ export function PaylinePanel() {
                         label="Score range"
                         value={`${score(stats.score_min)}–${score(stats.score_max)}`}
                       />
-                      {/* The pair that says whether the threshold is doing its
-                          job: a cut between these two is separating the symbols,
-                          one outside it is not. */}
+                      {/* Threshold should sit between these two. */}
                       <Figure
                         label="Lowest match"
                         value={score(stats.matched_min)}

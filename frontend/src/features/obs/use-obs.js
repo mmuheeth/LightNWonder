@@ -1,9 +1,6 @@
 /**
- * react-query hooks for OBS Studio.
- *
- * Connection state is server state, so it lives here rather than in the Zustand
- * store. Every mutation invalidates the whole `obs` subtree, which refreshes the
- * status straight after an action.
+ * react-query hooks for OBS Studio. Every mutation invalidates the whole `obs`
+ * subtree, which refreshes the status straight after an action.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,11 +19,8 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 
 /**
- * Fetch the OBS connection and recording status.
- *
- * Background polling is opt-in so the dashboard does not continuously hit the
- * status endpoint. The panel's Refresh button and mutations still refresh it
- * immediately when the user needs current state.
+ * Fetch the OBS connection and recording status. Background polling is opt-in;
+ * the panel's Refresh button and mutations still refresh it immediately.
  *
  * @param {{refetchInterval?: number|false}} [options]
  */
@@ -78,12 +72,8 @@ export function useResumeRecording() {
 }
 
 /**
- * Capture a screenshot.
- *
- * The preview is read from `mutation.data`, so nothing in the `obs` subtree
- * needs invalidating for the panel's own sake. The `roi` and `grid` subtrees do:
- * a screenshot is also the frame those panels crop and split, and each of their
- * catalogs names the newest one.
+ * Capture a screenshot. Invalidates `roi`/`grid`, not `obs` — a screenshot is
+ * also the frame those panels crop and split, and each catalog names the newest one.
  */
 export function useTakeScreenshot() {
   const queryClient = useQueryClient();

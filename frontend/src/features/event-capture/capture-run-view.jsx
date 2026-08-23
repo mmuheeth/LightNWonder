@@ -14,13 +14,8 @@ function formatTime(value) {
 }
 
 /**
- * One event: what happened, then the frame it triggered.
- *
- * Description above the image rather than beside it, and two of these to a row
- * at most. A screenshot of a slot game is mostly reels, and reels shrunk into a
- * thumbnail beside a paragraph are unreadable -- which is the whole point of
- * having taken it. So the image gets the card's full width, and the sentence
- * that says what to look for sits above it.
+ * One event: what happened, then the frame it triggered. Full-width image, not
+ * a thumbnail — a slot screenshot is mostly reels and unreadable shrunk down.
  */
 function EventCard({ runId, event }) {
   const hasFields = Object.keys(event.fields ?? {}).length > 0;
@@ -53,8 +48,7 @@ function EventCard({ runId, event }) {
       </div>
 
       {event.screenshot ? (
-        // Opening full size in a tab rather than a lightbox: the images are
-        // already on disk and a new tab needs no extra dependency.
+        // Full size in a new tab rather than a lightbox — no extra dependency.
         <a
           href={captureImageUrl(runId, event.screenshot)}
           target="_blank"
@@ -65,8 +59,7 @@ function EventCard({ runId, event }) {
             src={captureImageUrl(runId, event.screenshot)}
             alt={`${event.event} at ${formatTime(event.at)}`}
             loading="lazy"
-            // Contained rather than cropped: a cropped frame can hide the
-            // meter or the message that made the event worth capturing.
+            // object-contain, not cropped: a crop could hide the meter/message.
             className="bg-muted/40 aspect-video w-full rounded-md border object-contain"
           />
         </a>

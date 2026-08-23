@@ -33,11 +33,7 @@ logger = get_logger("main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run startup and shutdown work.
-
-    Acquire shared resources here (database pools, HTTP clients, caches), stash
-    them on ``app.state``, and release them after the ``yield``.
-    """
+    """Connect the database and (optionally) OBS on startup; tear both down on shutdown."""
     settings: Settings = app.state.settings
     logger.info(
         "Starting %s v%s (env=%s, debug=%s)",
@@ -85,9 +81,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
 
-    # Middleware is applied outermost-first in reverse registration order, so
-    # the last one added sees the request first. Request context goes outermost
-    # so that every log line -- including CORS preflights -- is correlated.
+    # Middleware runs outermost-last-added-first, so request context is added last
+    # to see every request first, including CORS preflights.
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.add_middleware(
         CORSMiddleware,

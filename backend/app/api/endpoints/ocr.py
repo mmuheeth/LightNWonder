@@ -1,21 +1,6 @@
-"""OCR endpoints.
-
-Thin wrappers over :mod:`app.services.ocr`. Which regions exist comes from the
-active game's config and never from the request; what a request may say is which
-of them to read, off which frame, and -- for tuning -- which engine options to
-change for that one read.
-
-Three failure shapes recur:
-
-- **409 ``OCR_ENGINE_UNAVAILABLE``** -- no Tesseract install was found, or OCR is
-  switched off. Fixed by installing the engine or setting ``OCR_TESSERACT_CMD``,
-  not by retrying. ``GET /api/ocr/status`` says which, and where it looked.
-- **404 ``OCR_REGION_NOT_FOUND``** -- the active game declares no region by that
-  name. A region that exists but could not be read is *not* this: it comes back
-  200 with ``error`` set on its reading.
-- **502 ``OBS_*`` / ``OCR_READ_FAILED``** -- a live read has to get a frame from
-  OBS first, so OBS's failures surface here too.
-"""
+"""OCR endpoints, thin wrappers over :mod:`app.services.ocr`. Regions come
+from the active game's config; a request only says which to read, off which
+frame, and which engine options to override for that read."""
 
 from __future__ import annotations
 
@@ -49,12 +34,8 @@ NO_FRAME: ResponseSpec = {
     summary="OCR engine status",
 )
 async def get_status() -> ApiResponse[OcrStatus]:
-    """Report whether text can be read, and with what.
-
-    Always 200: a machine with no Tesseract is a state to report, not a failed
-    request -- the same treatment OBS gets. Check ``data.state`` rather than the
-    status code, and read ``data.detail`` when it is not ``ready``.
-    """
+    """Report whether text can be read, and with what; always 200 -- check
+    ``data.state``, and ``data.detail`` when it is not ``ready``."""
     state = await ocr_service.status()
     return ApiResponse[OcrStatus].ok(
         data=state, message=f"The OCR engine is {state.state.value}"
@@ -68,12 +49,8 @@ async def get_status() -> ApiResponse[OcrStatus]:
     responses={500: {"description": "The game config is unreadable"}},
 )
 async def get_regions() -> ApiResponse[OcrRegionCatalog]:
-    """Every region the active game declares, with the options it will be read with.
-
-    The options shown are the effective ones -- environment defaults with the
-    game config's per-region overrides applied -- so "why is this meter read at
-    psm 11" is answerable without opening the config file.
-    """
+    """Every region the active game declares, with its effective read options
+    -- environment defaults plus the config's per-region overrides."""
     catalog = ocr_service.regions()
     return ApiResponse[OcrRegionCatalog].ok(
         data=catalog,
@@ -88,17 +65,9 @@ async def get_regions() -> ApiResponse[OcrRegionCatalog]:
     responses={**NO_ENGINE, **NO_REGION, **NO_FRAME},
 )
 async def read(payload: OcrReadRequest) -> ApiResponse[OcrReadResult]:
-    """Read the named regions, or all of them, off one frame.
-
-    With no ``run_id`` the frame is taken from OBS now. With one, the named
-    screenshot from that capture run is read instead, which is what makes a
-    reading reproducible while an option is being tuned. ``include_crop`` returns
-    what the engine actually saw, which is the thing to look at when a reading is
-    wrong.
-
-    One unreadable region does not fail the request: its reading carries the
-    reason and the others are still returned.
-    """
+    """Read the named regions, or all of them, off one frame -- from OBS now
+    with no ``run_id``, or a capture run's screenshot with one. One unreadable
+    region carries its own error; the rest still come back."""
     result = await ocr_service.read(payload)
     read_count = sum(1 for reading in result.readings if reading.error is None)
     return ApiResponse[OcrReadResult].ok(

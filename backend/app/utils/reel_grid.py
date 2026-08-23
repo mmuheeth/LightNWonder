@@ -1,50 +1,12 @@
-"""Read the ``reel_bounds`` block of a game config.
-
-A game config says where the reels are, and then how many symbol positions that
-rectangle divides into::
-
-    "roi":  { "reels": [0.35, 0.559722, 0.649219, 0.822222] },
-    "reel_bounds": { "rows": 3, "columns": 5, "inset": 0.03 }
-
-**The grid divides its crop evenly, and the two blocks are measured against
-different rectangles.** ``roi.reels`` is fractions of the *frame*, like every
-other region and click target in this project; the grid is a count of tiles
-across the *reels crop* -- the rectangle ``roi.reels`` cut out. The reels fill
-their own crop by definition, so reel ``c`` is the ``c``-th fifth of it and no
-fractions have to be written down at all.
-
-Counting rather than measuring is what keeps the two blocks independent. Move
-the reel window on screen and only ``roi.reels`` changes; add a sixth reel and
-only ``columns`` does. It is also what makes a new game a two-integer job: the
-gaps between reel strips are a few pixels of background either side of a
-boundary, not something a split has to be told about.
-
-**``inset`` trims the borders the division cannot.** An even split gives a tile
-everything up to its neighbour -- including the gap between the reel strips, and
-including the frame the game draws *inside* a reel when it highlights a win,
-which is a line of gold across the symbol's own edge. An inset shrinks every
-tile towards its centre by a fraction **of that tile**, so the trim scales with
-the symbol rather than with the frame. It is optional and defaults to nothing.
-
-A tile is a rectangle of the crop, so :class:`ReelGrid` hands back
-:class:`~app.utils.image_roi.Roi` objects rather than pixel boxes of its own --
-the rounding that keeps a crop proportional across resolutions is already
-written once, in the sibling module, and a tile is a region of the crop in
-exactly the sense that a region is a region of the frame.
-
-**Every tile gets the same pixel size, and that needs one deliberate step.**
-An even division is not an even *pixel* division: three rows over a 298-pixel
-crop round to 99, 100 and 99, and tiles that differ by a pixel cannot be
-stacked, diffed, or fed to anything that expects one input size.
-:meth:`ReelGrid.place` therefore rounds every tile's *position* independently --
-so no tile drifts from the symbol it is aimed at -- and then gives all of them
-the one size that fits every tile, which is the smallest of them. The pixel a
-tall tile gives up comes off its bottom edge, where the gap between rows
-already is.
-
-Nothing here knows about game configs, screenshots, or where a tile gets
-written. It takes the decoded block and hands back positioned rectangles; what
-they are cut out of is the caller's business.
+"""Read the ``reel_bounds`` block of a game config: ``rows``/``columns`` divide
+the ``roi.reels`` crop evenly (a count, not a fraction of the frame), which keeps
+the two blocks independent -- moving the reel window changes only ``roi.reels``,
+adding a reel changes only ``columns``. Optional ``inset`` trims each tile's
+border (as a fraction of that tile) to remove the reel-strip gap and any win-
+highlight frame the game draws inside a reel. Because an even split isn't an
+even *pixel* split, :meth:`ReelGrid.place` rounds each tile's position
+independently, then gives every tile the smallest natural size so all tiles
+match -- required since unequal tiles can't be stacked or diffed.
 """
 
 from __future__ import annotations
@@ -67,15 +29,13 @@ __all__ = [
     "position_name",
 ]
 
-# The keys the block is written with. Named here so the service, the tests and
-# the error messages all spell them the same way.
+# Named here so the service, tests and error messages spell them the same way.
 COLUMNS_KEY = "columns"
 ROWS_KEY = "rows"
 INSET_KEY = "inset"
 
-# The per-span form this block used to be written in. Kept only to be rejected:
-# a config still carrying them would otherwise be split evenly and silently,
-# which is the one outcome worse than failing to split at all.
+# The old per-span form. Kept only to be rejected -- a config still carrying it
+# would otherwise split evenly and silently, which is worse than failing loudly.
 _REPLACED_KEYS = {"col_bounds": COLUMNS_KEY, "row_bounds": ROWS_KEY}
 
 
@@ -84,26 +44,17 @@ class ReelGridError(ValueError):
 
 
 def position_name(row: int, column: int) -> str:
-    """A matrix position as a name: ``r1c1`` is the top-left tile.
-
-    One function rather than an f-string in two dataclasses, because this name
-    ends up as a filename and as an API field, and the two must never drift.
-    """
+    """A matrix position as a name: ``r1c1`` is the top-left tile. One function
+    rather than an f-string in two dataclasses, so a filename and an API field
+    can't drift apart."""
     return f"r{row}c{column}"
 
 
 @dataclass(frozen=True)
 class Inset:
-    """How much of each tile edge to trim, as fractions of that tile.
-
-    Fractions of the tile rather than of the crop, so one number keeps trimming
-    the same proportion of a symbol whether the capture is 720p or 4K -- and so
-    the same number reads the same for a wide reel and a narrow one.
-
-    Zero on every edge is the default and means the tile is exactly its share of
-    the crop. Nothing here is clamped: an inset that would leave no tile is
-    rejected, because a one-pixel sliver of the middle of a symbol is not a
-    smaller mistake than a crash.
+    """How much of each tile edge to trim, as fractions of that tile (not the
+    crop), so the trim reads the same for a wide reel or a narrow one. Nothing
+    is clamped: an inset that would leave no tile is rejected outright.
     """
 
     left: float = 0.0
@@ -143,18 +94,9 @@ class Inset:
 
     @classmethod
     def from_value(cls, value: Any, *, where: str = INSET_KEY) -> Inset:
-        """Read an inset from decoded JSON, in any of the three forms.
-
-        One number trims every edge equally, which is the usual case. Two are
-        ``[horizontal, vertical]``, for a game whose reels are framed on the
-        sides but not top and bottom. Four are
-        ``[left, top, right, bottom]`` -- the same order and meaning as a
-        :class:`~app.utils.image_roi.Roi`, so the one convention covers both.
-
-        Args:
-            value: The decoded value. Untrusted -- it may be any JSON shape.
-            where: What is being read, used to make the error locatable.
-        """
+        """Read an inset from decoded JSON: one number (all edges), two
+        (``[horizontal, vertical]``), or four (``[left, top, right, bottom]``,
+        same order as :class:`~app.utils.image_roi.Roi`)."""
         if isinstance(value, cls):
             return value
         if value is None:
@@ -203,11 +145,8 @@ class Inset:
             raise ReelGridError(f"{where}: {exc}") from exc
 
     def applied(self, left: float, top: float, right: float, bottom: float) -> Roi:
-        """Shrink one tile's edges inwards and hand back the region.
-
-        The trim is a fraction of the tile being shrunk, so it is computed from
-        that tile's own width and height rather than from the crop's.
-        """
+        """Shrink one tile's edges inwards, using that tile's own width and
+        height as the trim's basis."""
         width, height = right - left, bottom - top
         return Roi(
             left=left + self.left * width,
@@ -219,11 +158,8 @@ class Inset:
 
 @dataclass(frozen=True)
 class Tile:
-    """One symbol position, and where it is in the matrix.
-
-    :attr:`row` and :attr:`column` are 1-indexed, because they are read the way
-    a paytable is read -- ``r1c1`` is the top symbol of reel 1.
-    """
+    """One symbol position, and where it is in the matrix. :attr:`row` and
+    :attr:`column` are 1-indexed, the way a paytable is read."""
 
     row: int
     column: int
@@ -244,12 +180,8 @@ class Tile:
 
 @dataclass(frozen=True)
 class PlacedTile:
-    """One tile resolved to the pixels of a crop of a known size.
-
-    Separate from :class:`Tile` because a tile is resolution-independent and a
-    placement is not: the same tile placed on a 383-pixel crop and on a
-    1532-pixel one is two different boxes, and only the second kind can promise
-    that every tile is the same size.
+    """One tile resolved to the pixels of a crop of a known size. Separate from
+    :class:`Tile` since a tile is resolution-independent and a placement isn't.
     """
 
     row: int
@@ -259,12 +191,9 @@ class PlacedTile:
     """The tile as the grid divides it, inset included. Fractions of the crop."""
 
     box: tuple[int, int, int, int]
-    """``(left, top, right, bottom)`` in pixels of the crop.
-
-    The width and height are the same for every tile of the grid, so this can be
-    up to a pixel short of what :attr:`roi` alone would give at the right and
-    bottom edges. The position is not rounded away -- only the size is shared.
-    """
+    """``(left, top, right, bottom)`` in pixels of the crop. Width/height are
+    shared across the grid, so this can be up to a pixel short of what
+    :attr:`roi` alone would give at the right/bottom edges."""
 
     @property
     def name(self) -> str:
@@ -311,17 +240,7 @@ class ReelGrid:
 
     @classmethod
     def from_mapping(cls, block: Any, *, where: str = "reel_bounds") -> ReelGrid:
-        """Read a grid from a decoded ``reel_bounds`` object.
-
-        Args:
-            block: The decoded value. Untrusted -- it may be any JSON shape.
-            where: What is being read, used to make the error locatable.
-
-        Raises:
-            ReelGridError: if the block is not an object, either count is
-                missing or is not a positive integer, the inset would leave no
-                tile, or the block carries a key this does not read.
-        """
+        """Read a grid from a decoded ``reel_bounds`` object."""
         if not isinstance(block, Mapping):
             raise ReelGridError(f"{where} must be a JSON object")
 
@@ -347,24 +266,15 @@ class ReelGrid:
         )
 
     def with_inset(self, inset: Inset) -> ReelGrid:
-        """The same grid, trimmed differently.
-
-        For a caller overriding the configured trim for one split: the counts
-        were already validated when the block was read, and re-reading them to
-        change one number would be a second chance to reject them.
-        """
+        """The same grid, trimmed differently -- for a caller overriding the
+        configured inset for one split without re-validating the counts."""
         return ReelGrid(
             row_count=self.row_count, column_count=self.column_count, inset=inset
         )
 
     def tile(self, row: int, column: int) -> Tile:
-        """One tile by its 1-indexed matrix position.
-
-        Raises:
-            ReelGridError: if the position is outside the grid. Named rather
-                than an ``IndexError``, because a position usually arrives from
-                a caller that was told the grid's shape and got it wrong.
-        """
+        """One tile by its 1-indexed matrix position. Raises ``ReelGridError``
+        (not ``IndexError``) if the position is outside the grid."""
         if not 1 <= row <= self.row_count or not 1 <= column <= self.column_count:
             raise ReelGridError(
                 f"r{row}c{column} is outside a "
@@ -397,16 +307,9 @@ class ReelGrid:
         ]
 
     def tile_size(self, width: int, height: int) -> tuple[int, int]:
-        """The one pixel size every tile gets on a crop this size.
-
-        The smallest of the natural sizes, so a tile anchored at its own rounded
-        start always still fits inside the crop -- taking the largest would push
-        the last reel past the right edge and need a clamp, which is the
-        uneven-tiles problem again wearing a different hat.
-
-        Raises:
-            ReelGridError: if the crop has no area to place tiles on.
-        """
+        """The one pixel size every tile gets on a crop this size -- the
+        smallest natural size, so a tile anchored at its rounded start always
+        still fits (the largest would push the last reel past the edge)."""
         if width <= 0 or height <= 0:
             raise ReelGridError("the crop must have a non-zero width and height")
         boxes = [tile.roi.to_box(width, height) for tile in self.tiles()]
@@ -416,16 +319,9 @@ class ReelGrid:
         )
 
     def place(self, width: int, height: int) -> list[PlacedTile]:
-        """Every tile as a pixel box on a crop this size, row-major.
-
-        Each box keeps its own rounded left and top, so a tile stays aimed at
-        the symbol its share of the crop covers, and takes the grid's shared
-        width and height -- which is what makes fifteen tiles fifteen images of
-        one size.
-
-        Raises:
-            ReelGridError: if the crop has no area to place tiles on.
-        """
+        """Every tile as a pixel box on a crop this size, row-major. Each box
+        keeps its own rounded left/top but takes the grid's shared width and
+        height, so every tile comes out the same size."""
         tile_width, tile_height = self.tile_size(width, height)
         placed: list[PlacedTile] = []
         for tile in self.tiles():
@@ -447,12 +343,9 @@ class ReelGrid:
 
 
 def _count(value: Any, *, where: str) -> int:
-    """Narrow a decoded JSON value to one axis's number of tiles.
-
-    A count, not a measurement: the crop divides into this many equal shares.
-    Floats are refused rather than rounded, because ``2.5`` reels is a config
-    the author meant something else by.
-    """
+    """Narrow a decoded JSON value to one axis's number of tiles. Floats are
+    refused rather than rounded -- ``2.5`` reels means the author meant
+    something else."""
     if value is None:
         raise ReelGridError(f"{where} must say how many tiles the crop divides into")
     # `bool` is an `int`, and `true` as a count is a mistake, not a 1.

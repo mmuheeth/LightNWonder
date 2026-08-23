@@ -1,47 +1,17 @@
 """Clicking the game's own window.
 
-Take-win and gamble are not on the button deck. The i-deck layout has fourteen
-keys -- Service, Line1-5, Rebet, Collect, Hold1-5, Maxbet -- and neither of those
-is among them; the games' logs settle it, because every gamble decision in them
-arrives as a ``TouchMsg`` from the glass and never as an OLED button. So reaching
-them means clicking the simulator's Unity window, which is what this module does.
-
-**There is no API to ask instead, and not for want of looking.** Unity implements
-neither UI Automation nor Microsoft Active Accessibility, so the window exposes
-no tree of controls to address by name. The game does ship a proper automation
-service -- GDK's GAF, a Thrift server with a literal ``SimulateTouch(gameObject)``
-and a ``GetSelectableObjects`` that enumerates whatever is touchable right now --
-and the handlers are present in the game's own ``Assembly-CSharp.dll``. It is not
-started in a normal simulator launch, though: nothing listens on the ports its
-client defaults to. If it is ever switched on it belongs here as a second way to
-deliver a click, and everything below the public API would be what changes.
-
-Two things make clicking a coordinate reliable rather than hopeful:
-
-**Geometry is not hardcoded here.** Aim points live in the active game's
-``button_targets`` block as fractions of the window, read by
-:mod:`app.utils.click_target` -- the same fractions-of-the-frame convention
-:mod:`app.utils.image_roi` crops regions with. A resized simulator needs no
-re-measurement, and a new game is a new JSON file.
-
-**Clicks are proven, not assumed.** This is what earns the coordinate its keep. A
-click that misses is silent -- no error, no exception, just nothing -- so each one
-captures the game log's size beforehand and then reads only what was appended.
-The strong proof is the game naming the button it hit: a touch on the gamble
-button publishes ``double_up_offer_accept`` before anything else happens, and
-:mod:`app.utils.game_log` already matches that in both shapes the games write it.
-Where a target names no such event, the fallback is
-:data:`app.utils.game_log.TOUCH_REGISTERED` -- weaker, since it cannot say *which*
-button was hit, but still enough to rule out the failures that really occur.
-
-The two are reported apart rather than blurred, so a caller is never told a
-coordinate was right when all that was proven is that input arrived.
-
-State is module-level, like the other services here, and callers use the
-namespace rather than the functions::
-
-    from app.services import game_input as game_input_service
-    await game_input_service.click("gamble")
+Take-win and gamble aren't on the i-deck's fourteen keys -- both arrive as a
+``TouchMsg`` from the glass in the game logs, never an OLED button -- so
+reaching them means clicking the simulator's Unity window directly. There's no
+API to ask instead: Unity implements neither UI Automation nor MSAA, and GDK's
+GAF Thrift server (which does have a real ``SimulateTouch``) isn't started by a
+normal launch. Aim points live in the active game's ``button_targets`` block as
+fractions of the window (:mod:`app.utils.click_target`), so a resized simulator
+needs no re-measurement. A missed click is silent, so each click captures the
+game log's size beforehand and reads only what was appended after: the strong
+proof is the game naming the button hit (a config-declared ``confirm`` event),
+the fallback is :data:`app.utils.game_log.TOUCH_REGISTERED`, which only proves
+input arrived. The two are reported apart, never blurred.
 """
 
 from __future__ import annotations
@@ -96,12 +66,8 @@ _POLL_SECONDS = 0.05
 
 
 def _get_lock() -> asyncio.Lock:
-    """Return the module lock, created inside whichever loop is running.
-
-    Built lazily rather than at import time because ``tests/conftest.py`` makes a
-    fresh event loop per test, and a lock holding waiters from a dead loop is a
-    hazard. :func:`reset` clears it, so each test gets its own.
-    """
+    """Return the module lock, created lazily (not at import time) since each
+    test gets a fresh event loop and :func:`reset` clears it between tests."""
     global _lock
     if _lock is None:
         _lock = asyncio.Lock()
@@ -109,11 +75,7 @@ def _get_lock() -> asyncio.Lock:
 
 
 def _game_or_raise() -> GameConfig:
-    """Load the selected game's config once and keep it.
-
-    Raises:
-        GameInputConfigError: if the config cannot be read or is malformed.
-    """
+    """Load the selected game's config once and keep it."""
     global _game
     if _game is None:
         try:
@@ -129,27 +91,14 @@ def _game_or_raise() -> GameConfig:
 
 
 def _targets() -> Mapping[str, Any]:
-    """The active game's ``button_targets`` block.
-
-    Empty when the game declares none, which is a real state: the window can
-    still be described, there is simply nothing configured to click in it.
-
-    Raises:
-        GameInputConfigError: if the game config cannot be read or is malformed.
-    """
+    """The active game's ``button_targets`` block. Empty when the game declares
+    none -- a real state, not an error."""
     return _game_or_raise().button_targets
 
 
 def _window_title() -> str:
-    """Title to search for: the setting when given, else the game's own name.
-
-    The simulator titles its window after the game, so the game config already
-    holds the answer and restating it in the environment would be a second place
-    to keep correct. The setting exists for a deployment where it is not true.
-
-    Raises:
-        GameInputConfigError: if the game config cannot be read or is malformed.
-    """
+    """Title to search for: the setting when given, else the game's own name --
+    the simulator titles its window after the game."""
     configured = settings.GAME_INPUT_WINDOW_TITLE.strip()
     return configured or _game_or_raise().name
 
@@ -160,43 +109,29 @@ def _log_path() -> Path | None:
 
 
 def _log() -> LogTail | None:
-    """A cursor over the active game's log, or ``None`` when it names none.
-
-    Built per call rather than cached: the path follows the active game, and the
-    tests move it between cases.
-    """
+    """A cursor over the active game's log, or ``None`` when it names none. Built
+    per call, not cached, since the path follows the active game."""
     path = _log_path()
     return None if path is None else LogTail(path, poll_seconds=_POLL_SECONDS)
 
 
 def _resolve_target(name: str) -> ClickTarget:
-    """Map a caller-supplied name onto an aim point in the active game.
-
-    Raises:
-        GameTargetNotFoundError: if the game configures no target by that name.
-        GameInputConfigError: if the target is configured but malformed.
-    """
+    """Map a caller-supplied name onto an aim point in the active game."""
     targets = _targets()
     try:
         return named_target(targets, name)
     except ClickTargetError as exc:
-        # A name that is simply absent is the caller's mistake; a name that is
-        # present but unreadable is the config's, and they are different errors.
+        # Absent is the caller's mistake; present-but-unreadable is the config's.
         if name.strip().casefold() in {found.casefold() for found in targets}:
             raise GameInputConfigError(str(exc)) from exc
         raise GameTargetNotFoundError(str(exc)) from exc
 
 
 def _confirm_pattern(target: ClickTarget) -> re.Pattern[str] | None:
-    """The log pattern that proves a click on ``target`` hit the right button.
-
-    ``None`` when the target names no event, or names one this game does not
-    recognise -- the caller falls back to a generic touch either way.
-
-    Resolved through :func:`app.utils.game_log.resolve_rules` rather than against
-    the shipped rules directly, so a game that overrides ``gamble-accepted`` in
-    its own config gets its own pattern here too.
-    """
+    """The log pattern that proves a click on ``target`` hit the right button, or
+    ``None`` when it names no event (or one this game doesn't recognise) --
+    resolved through :func:`app.utils.game_log.resolve_rules` so a game's own
+    ``event_rules`` override is honoured too."""
     if target.confirm is None:
         return None
     game = _game_or_raise()
@@ -217,12 +152,7 @@ def _confirm_pattern(target: ClickTarget) -> re.Pattern[str] | None:
 
 
 def _client_point(target: ClickTarget, window: win32.WindowInfo) -> tuple[int, int]:
-    """Where a target sits in the live window.
-
-    Raises:
-        GameInputConfigError: if the window has no area to aim at. Callers check
-            that first, so this is the belt to that braces.
-    """
+    """Where a target sits in the live window."""
     try:
         return target.to_point(window.client_width, window.client_height)
     except ClickTargetError as exc:
@@ -242,14 +172,7 @@ def _access_denied() -> GameInputAccessDeniedError:
 
 async def _ready_window() -> tuple[win32.WindowInfo, bool]:
     """Locate the game window and make sure it has a client area to aim at.
-
-    Returns the window and whether it had to be un-minimized to get there.
-
-    Raises:
-        ServiceUnavailableError: if this build cannot reach the Win32 API.
-        GameWindowNotFoundError: if the game is absent, or is minimized and
-            restoring it is disabled.
-    """
+    Returns the window and whether it had to be un-minimized to get there."""
     if not win32.is_supported():
         raise ServiceUnavailableError(
             "Game input needs the Windows API, which is not available in this "
@@ -264,9 +187,8 @@ async def _ready_window() -> tuple[win32.WindowInfo, bool]:
             f"{settings.GAME_INPUT_WINDOW_CLASS!r}. Is the game running?"
         )
 
-    # Checked before anything else is attempted: when UIPI is blocking us every
-    # later call fails too, but with symptoms that look like unrelated bugs --
-    # a restore that does nothing, a click that vanishes.
+    # Checked first: a UIPI block otherwise surfaces later as unrelated-looking
+    # bugs -- a restore that does nothing, a click that vanishes.
     if not win32.can_post(window.hwnd):
         raise _access_denied()
 
@@ -306,18 +228,10 @@ async def _await_client_area(hwnd: int) -> win32.WindowInfo | None:
 async def _watch_log(
     tail: LogTail, expected: re.Pattern[str] | None, offset: int
 ) -> tuple[ClickConfirmation | None, str | None, bool]:
-    """Wait for the game to react to a click.
-
-    Returns the strength of the proof, the line that carried it, and -- whether
-    or not the wait succeeded -- whether a bare touch was seen at all. That last
-    flag is what turns a failure into a diagnosis: a touch with no target event
-    means the click reached the game and missed the button, which is a
-    coordinate to re-measure, while no touch at all means the input never
-    arrived, which is a window or a privilege problem.
-
-    Lines are matched against the message rather than the raw line, because that
-    is what an :class:`app.utils.game_log.EventRule` is written against.
-    """
+    """Wait for the game to react to a click. Returns the strength of the proof,
+    the line that carried it, and whether a bare touch was seen regardless --
+    that flag is what turns a failure into a diagnosis: touched-but-no-event
+    means a stale coordinate, no touch at all means input never arrived."""
     deadline = time.monotonic() + settings.GAME_INPUT_VERIFY_TIMEOUT_SECONDS
     cursor = offset
     touched = False
@@ -338,14 +252,9 @@ async def _watch_log(
 
 
 async def _post_click(hwnd: int, x: int, y: int, hold_seconds: float) -> None:
-    """Post one complete click at a client-area point.
-
-    The move is not optional. It is what the panel service needs for its own
-    reasons, and the game needs it too: the Unity build drives its UI through
-    TouchScript, whose Windows pointer handler tracks position from motion
-    messages, so a button message on its own would be resolved against wherever
-    the game last believed the pointer was.
-    """
+    """Post one complete click at a client-area point. The move is not optional:
+    Unity's TouchScript pointer handler tracks position from motion messages,
+    not the button message."""
     win32.post_mouse_move(hwnd, x, y)
     win32.post_left_down(hwnd, x, y)
     await asyncio.sleep(hold_seconds)
@@ -353,17 +262,9 @@ async def _post_click(hwnd: int, x: int, y: int, hold_seconds: float) -> None:
 
 
 def _require_log_for_verification() -> LogTail:
-    """Return the log cursor, failing loudly when there is nothing to read.
-
-    Degrading to unverified silently is exactly what must not happen here. A
-    click at a stale coordinate produces no error of its own -- the game simply
-    does nothing -- so an unread log would turn every click into an unprovable
-    claim.
-
-    Raises:
-        GameInputConfigError: if the active game names no log, or names one that
-            does not exist yet.
-    """
+    """Return the log cursor, failing loudly when there is nothing to read -- a
+    click at a stale coordinate produces no error of its own, so an unread log
+    would make every click an unprovable claim."""
     tail = _log()
     if tail is None:
         raise GameInputConfigError(
@@ -406,11 +307,8 @@ def _not_confirmed(
 
 
 async def status() -> GameInputStatus:
-    """Report what the service can see of the game window.
-
-    Never raises: a closed game, a game config with no targets and a non-Windows
-    host are all states worth reporting rather than failed requests.
-    """
+    """Report what the service can see of the game window. Never raises -- a
+    closed game or non-Windows host is a state, not a failure."""
     base: dict[str, Any] = {
         "window_title": settings.GAME_INPUT_WINDOW_TITLE,
         "window_class": settings.GAME_INPUT_WINDOW_CLASS,
@@ -453,16 +351,8 @@ async def status() -> GameInputStatus:
 
 
 async def targets() -> list[ClickTargetInfo]:
-    """Every target the active game configures, in name order.
-
-    Client coordinates are populated only while the game window is open and
-    restored, which is what makes this the thing to read when a coordinate needs
-    checking against a screenshot.
-
-    Raises:
-        GameInputConfigError: if the game config cannot be read, or a target in
-            it is malformed.
-    """
+    """Every target the active game configures, in name order. Client coordinates
+    are populated only while the game window is open and restored."""
     configured = _targets()
     window: win32.WindowInfo | None = None
     if win32.is_supported():
@@ -503,20 +393,8 @@ async def targets() -> list[ClickTargetInfo]:
 async def click(
     name: str, *, verify: bool | None = None, hold_seconds: float | None = None
 ) -> ClickResult:
-    """Click one configured target and confirm the game reacted.
-
-    Clicks serialise on the module lock, so two callers never interleave a
-    button-down and a button-up on the same window.
-
-    Raises:
-        ServiceUnavailableError: if this build cannot reach the Win32 API.
-        GameWindowNotFoundError: if the game window is absent or unusable.
-        GameTargetNotFoundError: if the active game configures no such target.
-        GameInputConfigError: if the config or the target is malformed, or
-            verification is on with no log to read.
-        GameClickNotConfirmedError: if the click was posted but the game never
-            reacted to it.
-    """
+    """Click one configured target and confirm the game reacted. Clicks
+    serialise on the module lock, so two callers never interleave a down and up."""
     started = time.monotonic()
     should_verify = settings.GAME_INPUT_VERIFY_CLICKS if verify is None else verify
     hold = (
@@ -546,8 +424,7 @@ async def click(
         if tail is not None:
             confirmation, evidence, touched = await _watch_log(tail, expected, offset)
 
-            # A window that has never been focused can swallow the first posted
-            # click. Worth exactly one retry, and still without moving the cursor.
+            # An unfocused window can swallow the first posted click -- one retry.
             if confirmation is None and settings.GAME_INPUT_FOCUS_ON_RETRY:
                 logger.info("Click on %r went unconfirmed; retrying focused", name)
                 win32.focus(window.hwnd)
@@ -595,12 +472,7 @@ async def click(
 
 
 def reset() -> None:
-    """Drop the cached game config and lock without touching any window.
-
-    Mirrors ``ideck_service.reset()``: tests call it between cases. Clearing the
-    lock matters as much as clearing the config -- the next test builds one bound
-    to its own event loop.
-    """
+    """Drop the cached game config and lock without touching any window."""
     global _game, _lock
     _game = None
     _lock = None

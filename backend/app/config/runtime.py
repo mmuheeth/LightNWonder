@@ -1,16 +1,5 @@
-"""Application runtime settings.
-
-Values are read from the environment (and from a local ``.env`` file during
-development). Access them through :func:`get_settings`, which is cached so the
-environment is parsed exactly once per process.
-
-Integration-specific settings are defined in :mod:`app.config.obs`,
-:mod:`app.config.ideck`, :mod:`app.config.event_capture`,
-:mod:`app.config.game_input`, :mod:`app.config.ocr`,
-:mod:`app.config.frame`, :mod:`app.config.paylines` and
-:mod:`app.config.agents`, then composed here.
-Their environment names stay flat for backwards compatibility with existing
-``.env`` files.
+"""Application runtime settings, composed from each integration's settings
+mixin. Access via :func:`get_settings`, cached so ``.env`` parses once per process.
 """
 
 from __future__ import annotations

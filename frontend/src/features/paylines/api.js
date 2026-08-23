@@ -1,11 +1,6 @@
 /**
- * Payline check client.
- *
- * The patterns are the backend's answer, read out of the active game's
- * `paylines` block, and the tiles are a split the Reel grid panel already wrote
- * — the browser never names a line, a position or a picture, only which split,
- * which set of lines and how strict to be. These call our own
- * `/api/paylines/*` endpoints, which return the standard envelope.
+ * Payline check client. Lines and tiles are the backend's answer — the browser
+ * only picks which split, which set, and how strict to be.
  */
 
 import { routes } from "@/config/env";
@@ -15,11 +10,8 @@ const PAYLINES_URL = `${routes.API}/paylines`;
 
 /**
  * Fetch the bet configurations the active game declares and the split to check.
- *
- * A game with no `paylines` block, a game with no reel grid, and a checkout that
- * has split nothing all resolve with `error` set rather than rejecting: each is
- * a state the panel renders. `latest_split` is null until the Reel grid panel
- * has written one.
+ * An unconfigured game or nothing split yet resolves with `error` set, not a
+ * rejection — `latest_split` is null until the Reel grid panel writes one.
  *
  * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<{game: string, sets: Array<{name: string, label: string}>,
@@ -34,17 +26,10 @@ export function getPaylineLayout({ signal } = {}) {
 }
 
 /**
- * Check one set of paylines against the tiles of one split.
- *
- * Omit `split` to use the newest one, which is the usual case. Each line is read
- * from the left one adjacent pair at a time and stops at the first pair whose
- * tiles are not the same symbol, so `pays` is the length of the leading run — 0
- * when the first two reels differ, otherwise 2 or more.
- *
- * `threshold` is the number worth tuning: cosine similarity does not start at
- * zero for unrelated pictures, so the default calls most pairs a match.
- * `stats.matched_min` and `stats.rejected_max` in the result are the two numbers
- * a working cut sits between.
+ * Check one set of paylines against the tiles of one split (omit `split` for
+ * the newest). `pays` is the length of the leading run of matching adjacent
+ * tiles, 0 or 2+. `threshold` is worth tuning — cosine similarity doesn't start
+ * at zero for unrelated pictures — against `stats.matched_min`/`rejected_max`.
  *
  * @param {{split?: string, set?: string, threshold?: number,
  *   include_images?: boolean}} [payload]

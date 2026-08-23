@@ -71,13 +71,10 @@ export function ObsPanel() {
   const isRecording = Boolean(recording?.active);
   const isPaused = Boolean(recording?.paused);
 
-  // Only the stop endpoint reports where the file landed; GET /status always
-  // leaves output_path null. So read it from the mutation result, which the
-  // Record button clears when a new take begins.
+  // GET /status never carries output_path; read it from the stop mutation instead.
   const savedPath = stop.data?.output_path ?? null;
 
-  // Any in-flight action should lock the rest of the controls, so two commands
-  // never race on the single OBS socket.
+  // Lock the controls during any in-flight action so commands can't race the OBS socket.
   const busy =
     connect.isPending ||
     disconnect.isPending ||

@@ -1,9 +1,5 @@
-/**
- * Typed, validated access to build-time environment variables.
- *
- * Read `env` instead of `import.meta.env` directly so defaults and coercion
- * live in one place and a typo fails here rather than deep in a request.
- */
+// Read `env` instead of `import.meta.env` directly so defaults and coercion
+// live in one place and a typo fails here rather than deep in a request.
 
 /** Parse a "true"/"false" string into a boolean. */
 function toBoolean(value, fallback = false) {

@@ -1,10 +1,5 @@
-/**
- * Client-only UI state.
- *
- * Zustand holds state the UI owns. Anything that lives on the server belongs in
- * react-query instead — duplicating server data here means two sources of truth
- * and stale reads.
- */
+// Client-only UI state. Anything that lives on the server belongs in
+// react-query instead — duplicating it here means stale reads.
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -12,27 +7,24 @@ import { persist } from "zustand/middleware";
 export const THEMES = Object.freeze({
   LIGHT: "light",
   DARK: "dark",
-  SYSTEM: "system",
 });
 
 export const useUiStore = create(
   persist(
     (set, get) => ({
-      theme: THEMES.SYSTEM,
+      theme: THEMES.LIGHT,
 
-      /** Cycle light → dark → system, so every option is reachable. */
+      /** Toggle light ↔ dark. */
       cycleTheme: () => {
-        const order = [THEMES.LIGHT, THEMES.DARK, THEMES.SYSTEM];
-        const next = order[(order.indexOf(get().theme) + 1) % order.length];
-        set({ theme: next });
+        set({ theme: get().theme === THEMES.LIGHT ? THEMES.DARK : THEMES.LIGHT });
       },
     }),
     {
       name: "lnw-ui",
-      version: 2,
-      // Discard the removed sidebar preference while preserving the theme.
+      version: 3,
+      // Drop the removed "system" preference, and the sidebar preference before it.
       migrate: (persistedState) => ({
-        theme: persistedState?.theme ?? THEMES.SYSTEM,
+        theme: persistedState?.theme === THEMES.DARK ? THEMES.DARK : THEMES.LIGHT,
       }),
       partialize: (state) => ({ theme: state.theme }),
     },

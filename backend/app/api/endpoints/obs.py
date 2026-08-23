@@ -1,16 +1,6 @@
-"""OBS Studio control endpoints.
-
-Thin wrappers over :mod:`app.services.obs`. Connection settings come from the
-environment, never from the request body, so the OBS password never travels to
-or from the browser.
-
-Two failure shapes recur across this module:
-
-- **409 ``OBS_NOT_CONNECTED``** -- nothing is connected yet. The caller fixes
-  this by connecting, not by retrying.
-- **502 ``OBS_CONNECTION_FAILED`` / ``OBS_REQUEST_FAILED``** -- OBS is
-  unreachable, or refused the request. Worth retrying.
-"""
+"""OBS Studio control endpoints, thin wrappers over :mod:`app.services.obs`.
+Connection settings come from the environment so the OBS password never
+travels to or from the browser."""
 
 from __future__ import annotations
 
@@ -31,9 +21,7 @@ from app.services import obs as obs_service
 
 router = APIRouter()
 
-# Shared across nine routes, so declared once. The alias matches the signature
-# FastAPI expects for `responses=`.
-ResponseSpec = dict[int | str, dict[str, Any]]
+ResponseSpec = dict[int | str, dict[str, Any]]  # matches FastAPI's `responses=`
 
 NOT_CONNECTED: ResponseSpec = {409: {"description": "Not connected to OBS"}}
 OBS_UNREACHABLE: ResponseSpec = {
@@ -48,11 +36,8 @@ OBS_ERRORS: ResponseSpec = {**NOT_CONNECTED, **OBS_UNREACHABLE}
     summary="OBS connection status",
 )
 async def get_status() -> ApiResponse[ObsStatus]:
-    """Report the OBS connection state.
-
-    Always 200: a closed OBS is a state to report, not a failed request. Check
-    ``data.state`` rather than the status code.
-    """
+    """Report the OBS connection state; always 200 -- check ``data.state``,
+    not the status code."""
     state = await obs_service.status()
     return ApiResponse[ObsStatus].ok(data=state, message=f"OBS is {state.state.value}")
 
@@ -106,12 +91,8 @@ async def select_game_window() -> ApiResponse[ObsGameWindowSelection]:
     },
 )
 async def take_screenshot(payload: ScreenshotRequest) -> ApiResponse[ScreenshotResult]:
-    """Capture a source or scene.
-
-    Omit ``file_name`` for a base64 data URI in the response; supply one to have
-    OBS write the file into the configured screenshot directory instead. Use
-    ``output_dir`` for a relative use-case subdirectory.
-    """
+    """Capture a source or scene. Omit ``file_name`` for a base64 data URI in
+    the response; supply one to write it to the screenshot directory instead."""
     result = await obs_service.take_screenshot(payload)
     return ApiResponse[ScreenshotResult].ok(
         data=result, message="Screenshot captured successfully"

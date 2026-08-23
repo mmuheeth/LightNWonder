@@ -27,9 +27,7 @@ def _object(raw: Any, *, where: str) -> Mapping[str, Any]:
 def _ocr(raw: Any, *, path: Path) -> dict[str, Mapping[str, Any]]:
     """Read the optional ``ocr`` block: option overrides per named region.
 
-    Validated here, next to the regions the keys name, so a misspelled option or
-    a page-segmentation mode Tesseract would refuse is reported when the config
-    is read rather than the first time someone reads that meter.
+    Validated here so a bad option is reported at config-load time, not read time.
     """
     block = _object(raw, where=f"'ocr' in {path}")
     overrides: dict[str, Mapping[str, Any]] = {}
@@ -64,9 +62,7 @@ def _fractions(raw: Any, *, where: str) -> tuple[float, float]:
 def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
     """Read the optional ``meter`` block: how to read the cash meter strip.
 
-    Validated here, when the config is read, so a band the wrong way round is an
-    error naming the file rather than a meter that silently reads as punctuation
-    months later.
+    Validated here so a bad band is a load-time error, not a silent misread later.
     """
     block = _object(raw, where=f"'meter' in {path}")
     parsed: dict[str, Any] = {}
@@ -91,9 +87,7 @@ def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
     """Read the optional ``events`` block: extra rules, and defaults to drop.
 
-    Rule compilation happens here rather than at capture time so a typo in a
-    pattern is reported when the config is read, not once a run is already
-    underway.
+    Compiled here so a pattern typo is a load-time error, not a mid-run one.
     """
     block = _object(raw, where=f"'events' in {path}")
 
@@ -114,15 +108,8 @@ def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, 
 
 
 def load_game_config(path: Path) -> GameConfig:
-    """Read and validate one game config.
-
-    Every block is optional -- a config declaring nothing but a name is valid --
-    but an unreadable or malformed file is an error.
-
-    Raises:
-        GameConfigError: if the file is missing, is not valid JSON, is not an
-            object, or any block it declares has the wrong shape.
-    """
+    """Read and validate one game config; every block is optional, but an
+    unreadable or malformed file raises :class:`GameConfigError`."""
     try:
         raw: Any = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:

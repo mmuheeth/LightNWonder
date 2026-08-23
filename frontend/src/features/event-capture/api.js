@@ -1,9 +1,6 @@
 /**
- * Event Based Capture client.
- *
- * Tracking runs in the backend, not the browser: it follows the game's log and
- * drives OBS, neither of which the page can reach. So there is no local timer or
- * accumulated state here — the card starts a run, stops it, and polls status.
+ * Event Based Capture client. Tracking runs in the backend (it follows the
+ * game's log and drives OBS), so this only starts/stops a run and polls status.
  */
 
 import { routes } from "@/config/env";
@@ -12,9 +9,8 @@ import { apiRequest } from "@/lib/api";
 const CAPTURE_URL = `${routes.API}/event-capture`;
 
 /**
- * Fetch the state of the run in progress.
- *
- * Resolves whether or not tracking is on — check `active` rather than catching.
+ * Fetch the state of the run in progress. Resolves either way — check `active`
+ * rather than catching.
  *
  * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<{active: boolean, run_id: string|null, game: string|null,
@@ -26,10 +22,8 @@ export function getCaptureStatus({ signal } = {}) {
 }
 
 /**
- * Start tracking the active game's log.
- *
- * Connects to OBS first, so this rejects with `OBS_CONNECTION_FAILED` when OBS
- * is closed and `EVENT_CAPTURE_LOG_UNAVAILABLE` when the game is not running.
+ * Start tracking the active game's log. Connects to OBS first, so this rejects
+ * with `OBS_CONNECTION_FAILED` or `EVENT_CAPTURE_LOG_UNAVAILABLE`.
  */
 export function startCapture() {
   return apiRequest({ method: "POST", url: `${CAPTURE_URL}/start` });
@@ -61,11 +55,8 @@ export function getCaptureRun(runId, { signal } = {}) {
 }
 
 /**
- * URL of one captured screenshot, for an `<img>` src.
- *
- * The only backend route that returns a file rather than the envelope, so it is
- * built here rather than fetched through `apiRequest`. It stays under `/api` so
- * the Vite dev proxy forwards it like everything else.
+ * URL of one captured screenshot, for an `<img>` src — the only backend route
+ * that returns a file rather than the envelope, so it's built here, not fetched.
  */
 export function captureImageUrl(runId, fileName) {
   return `${CAPTURE_URL}/runs/${encodeURIComponent(runId)}/screenshots/${encodeURIComponent(fileName)}`;

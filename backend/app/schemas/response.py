@@ -1,28 +1,6 @@
-"""The single response envelope used by every endpoint and every error.
-
-Success::
-
-    {
-      "success": true,
-      "message": "Game selected successfully",
-      "data":    {"game": "FortuneOx"},
-      "error":   null,
-      "meta":    {"request_id": "8f3c...", "timestamp": "2026-08-18T09:12:44Z"}
-    }
-
-Failure::
-
-    {
-      "success": false,
-      "message": "The requested game was not found",
-      "data":    null,
-      "error":   {"code": "NOT_FOUND", "details": []},
-      "meta":    {"request_id": "8f3c...", "timestamp": "2026-08-18T09:12:44Z"}
-    }
-
-Keys are always present -- ``data`` is ``null`` on failure and ``error`` is
-``null`` on success -- so clients never need to branch on key existence.
-"""
+"""The single response envelope used by every endpoint and every error:
+``{success, message, data, error, meta}``, with ``data`` null on failure and
+``error`` null on success -- both keys always present."""
 
 from __future__ import annotations
 
@@ -80,11 +58,8 @@ class ResponseMeta(BaseModel):
 
     @classmethod
     def build(cls, request_id: str | None = None) -> ResponseMeta:
-        """Build metadata, defaulting the id to the ambient request context.
-
-        Exception handlers pass ``request_id`` explicitly because the context
-        var may already have been reset by the time they run.
-        """
+        """Build metadata; handlers pass ``request_id`` explicitly since the
+        context var may already be reset by the time they run."""
         return cls(request_id=request_id or get_request_id())
 
 
@@ -152,11 +127,8 @@ class ApiResponse(BaseModel, Generic[T]):
         details: list[ErrorDetail] | None = None,
         meta: ResponseMeta | None = None,
     ) -> ApiResponse[T]:
-        """Build a failure envelope.
-
-        Exception handlers use this, so endpoints rarely call it directly --
-        raise an :class:`~app.exceptions.base.AppException` subclass instead.
-        """
+        """Build a failure envelope; endpoints should raise an
+        :class:`~app.exceptions.base.AppException` subclass instead."""
         return cls(
             success=False,
             message=message,

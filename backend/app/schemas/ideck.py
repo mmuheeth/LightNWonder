@@ -1,14 +1,6 @@
-"""Virtual OLED i-deck payloads.
-
-Two coordinate spaces appear here and are kept apart deliberately. *Panel*
-coordinates come from the layout file and never change; *client* coordinates are
-where a key currently sits inside the live window, and shift whenever the panel
-is resized. Presses are addressed in client coordinates.
-
-A key has one name, ``xml_id``: what the panel layout calls it. The layout
-belongs to the cabinet rather than to any game, so that name is the same
-whichever game is running.
-"""
+"""Virtual OLED i-deck payloads. *Panel* coordinates come from the layout
+file and never change; *client* coordinates are where a key sits in the live
+window and shift on resize -- presses are addressed in client coordinates."""
 
 from __future__ import annotations
 
@@ -124,12 +116,8 @@ class SequenceRequest(BaseModel):
 
 
 class PressResult(BaseModel):
-    """Outcome of one press.
-
-    ``confirmed`` is the field to trust. A press that was posted but never
-    appeared in the panel log comes back with ``confirmed`` false, and the
-    endpoint fails, rather than reporting a success that did not happen.
-    """
+    """Outcome of one press; ``confirmed`` is the field to trust -- false
+    means it was posted but never appeared in the panel log."""
 
     button: str = Field(description="Name as the caller spelled it.")
     xml_id: str = Field(description="Layout key it resolved to.")
@@ -156,11 +144,8 @@ class PressResult(BaseModel):
 
 
 class ProbeResult(BaseModel):
-    """Outcome of the side-effect-free capability check.
-
-    Posts a mouse *move* and nothing else, so it proves the panel processes our
-    synthetic input without touching game state.
-    """
+    """Outcome of the side-effect-free capability check: posts a mouse move
+    and nothing else, to prove input reaches the panel."""
 
     supported: bool = Field(description="Whether Win32 interop is available here.")
     window_found: bool = Field(description="Whether the panel window was located.")

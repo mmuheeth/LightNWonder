@@ -1,8 +1,5 @@
-"""Per-request context.
-
-The request id is stored in a :class:`~contextvars.ContextVar` so that response
-builders, loggers and exception handlers can all reach it without threading an
-extra argument through every function signature.
+"""Per-request context: the request id lives in a ContextVar so response
+builders, loggers and exception handlers can reach it without an extra argument.
 """
 
 from __future__ import annotations
@@ -12,12 +9,8 @@ from contextvars import ContextVar, Token
 
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
-#: Key under which the middleware also stores the id on the ASGI scope.
-#:
-#: The context var is reset as the request unwinds, but Starlette's outermost
-#: ``ServerErrorMiddleware`` runs *after* that -- so the unhandled-exception
-#: handler would see no id. The scope dict is the same object at every layer and
-#: outlives the unwind, which makes it the reliable source for error responses.
+#: Key the middleware also stores the id under on the ASGI scope, which
+#: outlives the ContextVar reset -- the reliable source for error responses.
 REQUEST_ID_SCOPE_KEY = "request_id"
 
 

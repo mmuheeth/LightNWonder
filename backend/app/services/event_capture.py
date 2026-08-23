@@ -1,45 +1,16 @@
 """Event Based Capture: follow the game's log, screenshot what happens.
 
 One run at a time. ``start`` opens a directory under the OBS screenshot root,
-begins following the active game's log from its current end, and leaves a task
-watching it. Every line that a rule recognises *and marks worth capturing* gets
-a screenshot and a row in that run's ``run.json``. ``stop`` ends the task and
-finalises the manifest.
-
-The reading itself is not here: :class:`app.utils.log_tail.LogFollower` owns the
-cursor and the poll loop, and :mod:`app.utils.game_log` owns what a line means.
-What is left in this module is the part that is actually about capture -- which
-recognised events are worth a frame, and how a run is recorded.
-
-Four decisions are worth knowing before changing anything here.
-
-**A run is not every event the rules know.** :mod:`app.utils.game_log` lists
-every visual event either game logs, which is more than a run should be: the
-credit meter ticks after every win, the paytable swaps behind every
-denomination change, the attract loop cycles for as long as nobody touches the
-machine. Screenshotting all of it would bury the moments someone opened the run
-to look at, so a rule carries ``capture`` and this module honours it. Turning
-one on or off for a game is a line in its config rather than a change here.
-
-**The manifest is written after every event, not at the end.** A run can be
-minutes or hours long, and losing all of it to a crash at minute 58 would be
-worse than the cost of rewriting a small JSON file a hundred times. The write is
-atomic (temp file then replace), so a crash mid-write cannot corrupt it either.
-
-**The watcher task is owned by the endpoints, not by the app lifespan.** The
-comment at the top of :mod:`app.services.obs` explains why this module has no
-background reconnect task, and the same reasoning applies: the test transport
-never runs lifespan, and ``filterwarnings = error`` turns a task still pending at
-teardown into a failure. So the task is created by :func:`start` and always
-cancelled *and awaited* -- by :func:`stop`, by :func:`abort` at shutdown, and by
-:func:`reset` in tests. There is no path that leaves it running.
-
-**Debounce compares the game's timestamps, not the wall clock.** The follower
-reads whatever was appended since it last looked, so a single read can hand it a
-hundred lines at once and processing them takes no measurable time. Debouncing
-on the wall clock would collapse them all into one event; debouncing on the
-timestamps in the lines themselves gives the same answer whether the lines
-arrived one at a time or in a burst.
+follows the active game's log from its current end, and screenshots every line
+whose matched rule marks it ``capture`` -- not every event
+:mod:`app.utils.game_log` knows, which includes noisy ones like credit-meter
+ticks that would bury the interesting moments. The manifest (``run.json``) is
+rewritten atomically after every event, not just at the end, so a crash doesn't
+lose the run. The watcher task belongs to the endpoints, not the app lifespan
+(same reasoning as :mod:`app.services.obs`'s lack of one), and is always
+cancelled *and awaited* by :func:`stop`, :func:`abort`, or :func:`reset`.
+Debounce compares the game's own line timestamps, not the wall clock, so a
+burst of lines read at once collapses the same way a slow trickle would.
 """
 
 from __future__ import annotations
@@ -115,12 +86,8 @@ _lock: asyncio.Lock | None = None
 
 
 def _get_lock() -> asyncio.Lock:
-    """Serialise start and stop.
-
-    Built lazily for the same reason as the OBS service's: a lock created at
-    import time binds to whichever loop imported the module, and each test runs
-    its own.
-    """
+    """Serialise start and stop. Built lazily, like the OBS service's, since a
+    lock made at import time would bind to the wrong loop in tests."""
     global _lock
     if _lock is None:
         _lock = asyncio.Lock()
@@ -143,12 +110,8 @@ def _active_config() -> tuple[str, GameConfig]:
 
 
 def _log_for(name: str, config: GameConfig) -> Path:
-    """The game's log, checked to actually be there.
-
-    Refusing up front is the point: a run that starts against a log which never
-    appears looks identical to a quiet game, and the difference would only show
-    up as an empty record at the end.
-    """
+    """The game's log, checked to actually be there -- refusing up front, since a
+    run against a log that never appears looks identical to a quiet game."""
     if config.log_path is None:
         raise EventCaptureLogUnavailableError(
             f"The game config for {name!r} does not declare a 'log' path to follow"
@@ -189,11 +152,8 @@ def _detail(
 
 
 def _write_manifest(run: _ActiveRun, detail: CaptureRunDetail) -> None:
-    """Persist the run record atomically.
-
-    Never raises: losing the manifest is bad, but taking down a live capture
-    because one write failed is worse, and the next event rewrites it anyway.
-    """
+    """Persist the run record atomically. Never raises -- losing one write is
+    better than taking down a live capture over it; the next event retries."""
     target = run.directory / MANIFEST_NAME
     temporary = target.with_name(f".{MANIFEST_NAME}.tmp")
     try:
@@ -208,11 +168,8 @@ def _write_manifest(run: _ActiveRun, detail: CaptureRunDetail) -> None:
 
 
 def _read_manifest(path: Path) -> CaptureRunDetail | None:
-    """Read one ``run.json``, or ``None`` if it is unusable.
-
-    A half-written or hand-edited manifest should drop out of the listing rather
-    than break it.
-    """
+    """Read one ``run.json``, or ``None`` if it is unusable -- drops out of the
+    listing rather than breaking it."""
     try:
         document: Any = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -229,12 +186,8 @@ def _read_manifest(path: Path) -> CaptureRunDetail | None:
 
 
 def _screenshot_name(sequence: int, event: str, at: datetime | None) -> str:
-    """Filename that sorts by sequence and still says what it is.
-
-    ``007_reels-stopped_14-32-14``. The sequence leads so a directory listing is
-    in event order; the event name is there so the folder is readable without
-    opening the manifest.
-    """
+    """Filename that sorts by sequence and still says what it is, e.g.
+    ``007_reels-stopped_14-32-14``."""
     stamp = (at or datetime.now()).strftime(_FILE_TIME_FORMAT)
     return f"{sequence:03d}_{event}_{stamp}"
 
@@ -268,9 +221,8 @@ async def _capture(run: _ActiveRun, detected: game_log.DetectedEvent) -> None:
                 )
             )
         except AppException as exc:
-            # One failed screenshot is not a reason to end the session -- OBS
-            # dropping its socket mid-run is exactly the case this covers, and
-            # it re-identifies on the next request.
+            # One failed screenshot isn't a reason to end the session -- OBS
+            # re-identifies on the next request even if its socket dropped.
             capture_error = exc.message
             message = f"{detected.event}: {exc.message}"
             if message not in run.errors:
@@ -295,12 +247,8 @@ async def _capture(run: _ActiveRun, detected: game_log.DetectedEvent) -> None:
 
 
 def _is_repeat(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
-    """Whether this event is the same one already recorded moments ago.
-
-    Compares the game's timestamps, not the clock -- see the module docstring.
-    A line with no usable timestamp is always let through: silently dropping
-    events is worse than an occasional duplicate.
-    """
+    """Whether this event is the same one already recorded moments ago, by the
+    game's own timestamps. A line with no usable timestamp is always let through."""
     at = detected.line.timestamp
     if at is None:
         return False
@@ -313,14 +261,9 @@ def _is_repeat(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
 
 
 def _is_unchanged(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
-    """Whether a rule that only fires on a change was handed the old values.
-
-    Some lines are re-logged as a statement of the current state rather than of
-    a change to it -- HuffNPuffLink writes ``[BetManager.UpdateCurrentBet]``
-    several times a round with the bet it already had. The debounce cannot help
-    with those: they are seconds apart and genuinely separate lines. What makes
-    them a non-event is that nothing in them moved.
-    """
+    """Whether a rule that only fires on a change was handed the old values --
+    e.g. HuffNPuffLink re-logs ``[BetManager.UpdateCurrentBet]`` with an
+    unchanged bet, which debounce (seconds apart) can't catch."""
     if not detected.only_on_change:
         return False
     fields = dict(detected.fields)
@@ -330,12 +273,9 @@ def _is_unchanged(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
 
 
 async def _handle(run: _ActiveRun, raw: str) -> None:
-    """Capture one appended line, if a rule claims it as something to see.
-
-    Never raises: a live run outranks any one line, so a failure is recorded on
-    the run and the next line is still read. Cancellation is a ``BaseException``
-    and so passes straight through, which is how the watcher is stopped.
-    """
+    """Capture one appended line, if a rule claims it as something to see. Never
+    raises: a failure is recorded on the run and the next line still gets read.
+    Cancellation is a ``BaseException`` and passes straight through."""
     try:
         line = game_log.parse_line(raw)
         if line is None:
@@ -360,11 +300,8 @@ async def _watch(run: _ActiveRun) -> None:
 
 
 async def _stop_watching(run: _ActiveRun) -> None:
-    """End the watcher task.
-
-    Awaiting the cancellation is not optional: a cancelled-but-unawaited task is
-    exactly the pending-task warning that fails the test suite.
-    """
+    """End the watcher task. Awaiting the cancellation is not optional -- an
+    unawaited one is the pending-task warning that fails the test suite."""
     task = run.task
     if task is not None and not task.done():
         task.cancel()
@@ -375,8 +312,7 @@ async def _finish(run: _ActiveRun, *, status: CaptureRunState) -> CaptureRunDeta
     """Stop the watcher, take one last look, and seal the manifest."""
     await _stop_watching(run)
 
-    # Events logged between the last poll and the stop request are still part of
-    # this session, so read once more before sealing.
+    # Events logged between the last poll and the stop request still count.
     for raw in run.log.new_lines():
         await _handle(run, raw)
 
@@ -392,12 +328,8 @@ async def _finish(run: _ActiveRun, *, status: CaptureRunState) -> CaptureRunDeta
 
 
 async def start() -> CaptureStatus:
-    """Begin a run against the active game's log.
-
-    OBS is connected first and deliberately allowed to fail the request: a run
-    that cannot take screenshots is a folder of text, which is not what anyone
-    pressed the button for.
-    """
+    """Begin a run against the active game's log. OBS is connected first and
+    allowed to fail the request -- a run that can't screenshot is just text."""
     global _run
     async with _get_lock():
         if _run is not None:
@@ -409,8 +341,7 @@ async def start() -> CaptureStatus:
         log_path = _log_for(name, config)
 
         await obs_service.connect()
-        # Pointing the source at the game is worth trying but not worth failing
-        # for: the scene may already be correct, and connect() attempts it too.
+        # Worth trying, not worth failing for -- the scene may already be correct.
         with contextlib.suppress(AppException):
             await obs_service.select_current_game_window()
 
@@ -425,9 +356,7 @@ async def start() -> CaptureStatus:
             game=name,
             directory=directory,
             output_dir=output_dir,
-            # Opening the follower here is what makes the run start from the
-            # end of the log: what the game did before the button was pressed is
-            # not part of it.
+            # Opened here so the run starts from the log's end, not its history.
             log=LogFollower(log_path, poll_seconds=settings.EVENT_CAPTURE_POLL_SECONDS),
             rules=game_log.resolve_rules(
                 extra=config.event_rules, disabled=config.disabled_events
@@ -476,10 +405,8 @@ def status() -> CaptureStatus:
 
 
 def list_runs() -> list[CaptureRunSummary]:
-    """Every run on disk, newest first.
-
-    Run ids are timestamps, so sorting by name is sorting by time.
-    """
+    """Every run on disk, newest first -- run ids are timestamps, so sorting by
+    name is sorting by time."""
     root = _capture_root()
     if not root.is_dir():
         return []
@@ -518,11 +445,8 @@ def get_run(run_id: str) -> CaptureRunDetail:
 
 
 def screenshot_path(run_id: str, file_name: str) -> Path:
-    """Resolve one screenshot for serving.
-
-    Both halves come from the URL, so both go through the path guards -- this is
-    the only route that turns a request into a file read.
-    """
+    """Resolve one screenshot for serving. Both halves come from the URL, so
+    both go through the path guards."""
     directory = _run_directory(run_id)
     try:
         target = resolve_within(directory, file_name)
@@ -538,11 +462,8 @@ def screenshot_path(run_id: str, file_name: str) -> Path:
 
 
 async def abort() -> None:
-    """End any run because the process is shutting down.
-
-    Marks the record ``interrupted`` rather than ``completed``: nobody pressed
-    stop, and a reader should be able to tell the difference.
-    """
+    """End any run because the process is shutting down. Marks the record
+    ``interrupted``, not ``completed`` -- nobody pressed stop."""
     global _run
     run = _run
     if run is None:

@@ -4,12 +4,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api-error";
 
-/**
- * Renders an `ApiError` consistently wherever a request fails.
- *
- * Shows the backend's `message`, any field-level `details`, and the request id —
- * which is the fastest way to find the matching server log line.
- */
+// Shows the backend's message, field-level details, and the request id — the
+// fastest way to find the matching server log line.
 export function ApiErrorAlert({ error, onRetry, className }) {
   if (!error) return null;
 

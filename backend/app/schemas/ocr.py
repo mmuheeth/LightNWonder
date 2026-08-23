@@ -1,18 +1,6 @@
-"""OCR status, tuning and reading payloads.
-
-Two things here are worth knowing before using them.
-
-**Every reading carries its confidence and the options that produced it.** A
-region read off a game frame is not a scanned document: the same crop can read
-perfectly at one page-segmentation mode and come back as punctuation at another.
-So a reading is never just text -- it says how sure the engine was and exactly
-what it was asked, which is what makes a bad reading diagnosable instead of
-mysterious.
-
-**A read never fails as a whole because one region failed.** Ask for four regions
-and a broken one comes back with its ``error`` populated beside the three that
-worked, because the alternative is a 502 that says nothing about the three.
-"""
+"""OCR status, tuning and reading payloads. Every reading carries its
+confidence and the options that produced it; one region failing to read
+doesn't fail the others in the same request."""
 
 from __future__ import annotations
 
@@ -47,11 +35,8 @@ class OcrSource(StrEnum):
 
 
 class OcrOptions(BaseModel):
-    """A fully resolved set of engine and preprocessing options.
-
-    This is what a read actually used: environment defaults, with the game
-    config's per-region overrides and then the request's own applied over them.
-    """
+    """A fully resolved set of engine and preprocessing options: environment
+    defaults, with the config's and then the request's overrides applied."""
 
     language: str = Field(description="Traineddata name(s), e.g. 'eng'.")
     psm: int = Field(ge=0, le=13, description="Page segmentation mode.")
@@ -72,12 +57,8 @@ class OcrOptions(BaseModel):
 
 
 class OcrOptionOverrides(BaseModel):
-    """Options to change for one read, leaving the rest as configured.
-
-    For tuning a region from the dashboard: sweep ``psm`` or turn ``invert`` on
-    against a frame that is already on disk, then write whatever worked into the
-    game config's ``ocr`` block so it applies from then on.
-    """
+    """Options to change for one read, leaving the rest as configured; for
+    tuning a region before writing the result into the game config."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -99,11 +80,7 @@ class OcrOptionOverrides(BaseModel):
 
 
 class OcrStatus(BaseModel):
-    """What the dashboard card polls.
-
-    Always returned, engine or no engine, so the card never has to branch on an
-    error to find out whether OCR is available.
-    """
+    """What the dashboard card polls; always returned, engine or no engine."""
 
     state: OcrEngineState = Field(description="Whether text can be read right now.")
     executable: str | None = Field(
@@ -157,11 +134,8 @@ class OcrRegionCatalog(BaseModel):
 
 
 class OcrWordBox(BaseModel):
-    """One recognised word, with where it sat and how sure the engine was.
-
-    Coordinates are pixels inside the *crop*, not the frame, so an overlay drawn
-    on the region image lines up without rescaling.
-    """
+    """One recognised word; coordinates are pixels inside the crop, not the
+    frame, so an overlay drawn on the region image lines up unscaled."""
 
     text: str = Field(description="The word as recognised.")
     confidence: float = Field(description="0-100, as the engine reports it.")
@@ -217,12 +191,8 @@ class OcrReading(BaseModel):
 
 
 class OcrReadRequest(BaseModel):
-    """Which regions to read, off which frame.
-
-    With no ``run_id`` the frame is taken from OBS now. With one, the named
-    screenshot from that capture run is read instead -- which is how a reading is
-    tuned or re-checked without the game having to still be on screen.
-    """
+    """Which regions to read, off which frame -- live from OBS with no
+    ``run_id``, or a capture run's screenshot with one."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -277,16 +247,12 @@ class OcrReadResult(BaseModel):
         default_factory=list,
         description=(
             "Pixel box [left, top, right, bottom] of the part of the frame the "
-            "game filled, which every region's fractions were resolved against. "
-            "The whole frame when the capture had no letterboxing to trim."
+            "game filled; the whole frame when there was no letterboxing."
         ),
     )
     letterboxed: bool = Field(
         default=False,
-        description=(
-            "Whether any of the frame was letterbox rather than game. False "
-            "means the regions resolved exactly as fractions of the canvas."
-        ),
+        description="Whether any of the frame was letterbox rather than game.",
     )
     readings: list[OcrReading] = Field(
         description="One entry per requested region, in the order asked for."

@@ -1,16 +1,6 @@
-/**
- * The single error type every API call rejects with.
- *
- * The backend answers failures with a fixed envelope:
- *
- *     { success: false, message, data: null,
- *       error: { code, details: [{ field, message, type }] },
- *       meta: { request_id, timestamp } }
- *
- * `ApiError.from` normalises that — plus network failures, timeouts and
- * non-envelope responses (a proxy's HTML 502, say) — into one shape, so UI code
- * never has to inspect an AxiosError.
- */
+// The single error type every API call rejects with. `ApiError.from` normalises
+// the backend's failure envelope — plus network failures, timeouts, and
+// non-envelope responses (a proxy's HTML 502, say) — into one shape.
 
 /** Codes assigned client-side, when the request never reached the API. */
 export const CLIENT_ERROR_CODES = Object.freeze({

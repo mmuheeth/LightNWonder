@@ -1,9 +1,6 @@
 /**
- * react-query hooks for Event Based Capture.
- *
- * Same shape as `use-obs.js`: run state is server state, so it is polled rather
- * than mirrored into the store, and every mutation invalidates the feature's
- * whole subtree so the poll refreshes straight after an action.
+ * react-query hooks for Event Based Capture. Same shape as `use-obs.js`: run
+ * state is polled server state, and every mutation invalidates the subtree.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,13 +19,9 @@ const ACTIVE_INTERVAL_MS = 2_000;
 const IDLE_STALE_MS = 30_000;
 
 /**
- * Poll the run in progress.
- *
- * The interval is a function of the last result: a live run polls every couple
- * of seconds, an idle one not at all. Idling on `false` rather than a slow
- * interval keeps this in line with `useObsStatus` — starting or stopping a run
- * invalidates the subtree, so the card still updates the moment you act on it.
- * A run begun in another tab shows up on the next action or manual refresh.
+ * Poll the run in progress. Idles on `false` rather than a slow interval when
+ * nothing is active, in line with `useObsStatus` — mutations invalidate the
+ * subtree so the card still updates the moment you act on it.
  */
 export function useCaptureStatus() {
   return useQuery({

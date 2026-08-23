@@ -1,42 +1,9 @@
-"""Turning a cash-meter crop into the five values on it.
+"""Reads the five values off a cash-meter crop that :mod:`app.services.roi` already cropped.
 
-The pieces this joins up already exist: :mod:`app.utils.meter` locates and reads
-the numbers on a strip, and :mod:`app.services.roi` already crops that strip out
-of the newest screenshot. What is left here is the part that is about this project
--- which engine to use, what to remember between reads, and what a failure looks
-like to the caller.
-
-Three decisions are worth knowing before changing anything here.
-
-**This has no endpoints, and that is the point.** Cropping ``roi.cash_meter`` and
-reading it are one action from the dashboard's point of view, so
-:mod:`app.services.roi` calls :func:`read` while it already has the crop in hand
-and the numbers come back on the same response. A ``/api/meter`` would mean the
-browser cropping once to look at the region and again to read it, and two
-extractions of "the same" strip that could disagree.
-
-**A failed reading never fails the crop.** Every error is caught and returned as a
-populated ``error`` on :class:`app.schemas.meter.MeterValues`. A machine with no
-Tesseract still gets its picture, exactly as OCR being absent does not stop the
-rest of the service working -- and the ROI panel's job is to show the region
-whether or not anything could be read off it.
-
-**The row band is declared if the game says so, and fitted otherwise.** Which
-rows of the strip hold the values is a property of the skin -- one game prints its
-labels below the cells and another inside them.
-:func:`app.utils.meter.fit_band` works it out by reading, which is what lets a new
-game need no setup, but it can only judge from the frame in front of it: measured
-over this project's saved crops, fitting from each strip independently reads 15 of
-20 correctly where one band reused across them reads 18. So a ``meter.band`` in
-the game config wins when it is there, and a fitted band is cached per game and
-size so the guess is at least made once rather than per frame. The size is part of
-the key because a different capture resolution is a different pixel band.
-
-State is module-level, like the other services here, and callers use the
-namespace::
-
-    from app.services import meter as meter_service
-    values = meter_service.read(crop, game="FortuneOx")
+No endpoint of its own — ROI calls :func:`read` while it holds the crop, so one
+extraction serves both. Never raises: failures come back as ``MeterValues.error``.
+A declared ``meter.band`` wins over fitting one from the frame; fitted bands are
+cached per (game, width, height).
 """
 
 from __future__ import annotations
@@ -72,13 +39,7 @@ def reset() -> None:
 
 
 def _executable() -> Path:
-    """The engine to read with.
-
-    Raises:
-        meter.MeterError: if OCR is off or no Tesseract was found. Raised rather
-            than returned so :func:`read` has one place to turn every failure into
-            a reported one.
-    """
+    """The engine to read with; raises ``meter.MeterError`` if OCR is off or Tesseract wasn't found."""
     if not settings.OCR_ENABLED:
         raise meter.MeterError("OCR is disabled; set OCR_ENABLED=true to turn it on")
     executable = settings.ocr_tesseract_cmd
@@ -92,13 +53,8 @@ def _executable() -> Path:
 
 
 def _classify(fields: dict[str, meter.MeterField]) -> tuple[MeterMode, str | None]:
-    """Decide cash-vs-credits and the currency from what was read.
-
-    The ``CASH``/``CREDITS`` label does not OCR -- 8px glyphs, letter-spaced over
-    artwork, returning ``'CREOS'`` and ``'LA'`` at confidence 0 -- so the mode
-    comes from the shape of the values instead: a currency symbol or a fractional
-    amount is money, a bare whole number is a credit count.
-    """
+    """Decide cash-vs-credits and currency from the values read — the CASH/CREDITS
+    label itself doesn't OCR reliably, so a symbol or fractional amount means money."""
     read = [f for f in fields.values() if f.value is not None]
     if not read:
         return MeterMode.UNKNOWN, None
@@ -131,12 +87,8 @@ def _number(value: Decimal | None) -> float | None:
 
 
 def _declared_band(profile: Mapping[str, Any], height: int) -> meter.Band | None:
-    """The band the game config declares, in pixels for a strip this tall.
-
-    Stored as fractions rather than pixels, the same convention ``roi`` and
-    ``button_targets`` already use, so one pair of numbers holds at any capture
-    resolution.
-    """
+    """The band the game config declares, in pixels for a strip this tall (stored as
+    fractions, like ``roi`` and ``button_targets``, so it holds at any resolution)."""
     band = profile.get("band")
     if band is None:
         return None
@@ -160,18 +112,8 @@ def read(
     game: str,
     profile: Mapping[str, Any] | None = None,
 ) -> MeterValues:
-    """Read the five values off a cash-meter crop. Never raises.
-
-    Args:
-        strip: The meter strip, as cropped out of a frame.
-        game: Active game name, used as part of the band cache key.
-        profile: The game config's ``meter`` block, when it has one. A declared
-            band is used as it stands; without one the band is fitted by reading,
-            which needs no setup but can only judge from the frame in front of it.
-
-    Returns:
-        The values, or a :class:`MeterValues` carrying ``error`` and nothing else.
-    """
+    """Read the five values off a cash-meter crop. Never raises — a declared band
+    in ``profile`` wins; otherwise one is fitted and cached per (game, size)."""
     started = time.perf_counter()
     block: Mapping[str, Any] = profile or {}
     windows = _declared_windows(block)

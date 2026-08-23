@@ -2,12 +2,8 @@ import { QueryClient } from "@tanstack/react-query";
 
 import { ApiError } from "@/lib/api-error";
 
-/**
- * Build the react-query client.
- *
- * A factory rather than a module-level singleton so tests get a fresh cache per
- * case and cannot leak state between them.
- */
+// A factory rather than a module-level singleton, so tests get a fresh cache
+// per case and cannot leak state between them.
 export function createQueryClient() {
   return new QueryClient({
     defaultOptions: {
