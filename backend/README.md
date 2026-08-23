@@ -1123,17 +1123,13 @@ Escalating keeps a strip near six engine calls instead of twenty-seven, and the
 reads run concurrently, which matters because each is a subprocess at roughly
 200ms. Expect **3-6s** for a strip.
 
-### Checking it
+### Accuracy
 
-```bash
-python scripts/meter_probe.py          # every saved crop, as a table plus CSV
-```
-
-The harness runs the real extractor rather than its own copy, and fits a band per
-*file* -- deliberately harsher than the dashboard, where one band is reused per
-skin. Against the 20 saved crops the declared bands give **59 of 60 values
-correct, with no wrong ones**; the single failure is a missing `bet` on the yen
-strip, which reports as `null` rather than as a number.
+Measured by running the real extractor against every saved crop and fitting a
+band per *file* -- deliberately harsher than the dashboard, where one band is
+reused per skin. Against the 20 saved crops the declared bands give **59 of 60
+values correct, with no wrong ones**; the single failure is a missing `bet` on the
+yen strip, which reports as `null` rather than as a number.
 
 Two limits worth knowing. Both skins are **bright digits on a dark strip**, so a
 dark-on-light meter would invert the brightness assumption -- untested rather than
