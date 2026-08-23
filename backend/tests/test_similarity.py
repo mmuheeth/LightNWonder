@@ -10,6 +10,7 @@ choosing over a pixel difference, and so worth pinning.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -19,6 +20,27 @@ from app.utils import similarity
 def solid(colour: tuple[int, int, int], size: tuple[int, int] = (8, 8)) -> Image.Image:
     """One flat picture, which is the simplest thing with a direction."""
     return Image.new("RGB", size, colour)
+
+
+def tile(
+    background: tuple[int, int, int],
+    centre: tuple[int, int, int],
+    size: tuple[int, int] = (20, 20),
+    centre_size: tuple[int, int] = (10, 10),
+) -> Image.Image:
+    """A picture shaped like a symbol: one colour framed by another."""
+    picture = Image.new("RGB", size, background)
+    left = (size[0] - centre_size[0]) // 2
+    top = (size[1] - centre_size[1]) // 2
+    picture.paste(Image.new("RGB", centre_size, centre), (left, top))
+    return picture
+
+
+def raw_vector(image: Image.Image) -> np.ndarray:
+    """The flat RGB vector :func:`similarity.vector` used to build before this
+    change trimmed and corner-rounded its input -- used to show the trim
+    actually moves the score, not just that nothing crashed."""
+    return np.asarray(image.convert("RGB"), dtype=np.float64).ravel()
 
 
 # --- what the measure is for ----------------------------------------------
@@ -71,3 +93,25 @@ def test_different_sizes_are_refused_rather_than_resampled() -> None:
         similarity.cosine(solid((1, 2, 3), (8, 8)), solid((1, 2, 3), (8, 9)))
 
     assert "same size" in str(exc.value)
+
+
+# --- the border trim -------------------------------------------------------
+
+
+def test_trimming_widens_separation_between_symbols_sharing_a_background() -> None:
+    """The shared background is exactly what the trim is meant to discount."""
+    background = (120, 120, 120)
+    left = tile(background, (200, 10, 10))
+    right = tile(background, (10, 200, 10))
+
+    raw = similarity.vector_cosine(raw_vector(left), raw_vector(right))
+    trimmed = similarity.cosine(left, right)
+
+    assert trimmed < raw
+
+
+def test_identical_symbols_still_score_one_after_trim() -> None:
+    """The trim must not break the case it is not meant to change."""
+    picture = tile((120, 120, 120), (200, 10, 10))
+
+    assert similarity.cosine(picture, picture) == pytest.approx(1.0)
