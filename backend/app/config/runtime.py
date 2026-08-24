@@ -18,6 +18,7 @@ from app.config.ideck import PACKAGE_ROOT, IDeckSettings
 from app.config.obs import ObsSettings
 from app.config.ocr import OcrSettings
 from app.config.paylines import PaylineSettings
+from app.config.paytable import PaytableSettings
 
 Environment = Literal["local", "development", "staging", "production"]
 
@@ -44,6 +45,7 @@ class Settings(
     OcrSettings,
     FrameSettings,
     PaylineSettings,
+    PaytableSettings,
 ):
     """Complete runtime configuration for the API."""
 

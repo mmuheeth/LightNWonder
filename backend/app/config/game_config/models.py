@@ -37,6 +37,26 @@ class GameConfig:
     log_path: Path | None
     """The game's own log, when it declares one."""
 
+    game_config_dir: Path | None
+    """The game's installed ``GameConfig`` directory, outside this repo, holding
+    one folder per paytable named exactly as the log's ``paytableId``. ``None``
+    when the game declares none, which is a real state -- every dashboard slice
+    but the paytable one works without the game installed."""
+
+    win_geometry_path: Path | None
+    """The game's own ``winGeometry.xml``, which sits beside those folders and
+    is shared by all of them. Read by :mod:`app.utils.win_geometry`."""
+
+    symbols: Mapping[str, str]
+    """Display name per symbol code, e.g. ``{"WC": "WILD", "AA": "Ox"}``.
+
+    Configured because it cannot be read: the maths files carry two-letter codes
+    and no display text in any element -- not in ``SymbolSetList``, not in
+    ``ReelStripList`` -- so a code becomes readable here or nowhere. *Which*
+    codes exist is still read from the maths; only what to call them is
+    declared. A code with no entry keeps whatever the maths implies about it
+    (``Wild``/``Scatter``) or stays a bare code."""
+
     roi: Mapping[str, Any]
     """Named screen regions, as fractions of the game's content box (not the
     OBS canvas -- see :mod:`app.utils.letterbox`). Shape enforced at use by

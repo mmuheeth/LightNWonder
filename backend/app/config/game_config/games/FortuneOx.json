@@ -2,6 +2,28 @@
   "name": "FortuneOx",
   "process": "FortuneOx.exe",
   "log": "C:\\logs\\Game\\FortuneOx\\Logs\\FortuneOx_Client.log",
+  "game_config" : "C:\\re\\games\\FortuneOx\\GameConfig",
+  "win_geometry" : "C:\\re\\games\\FortuneOx\\GameConfig\\winGeometry.xml",
+  "symbols": {
+    "WC": "WILD",
+    "AA": "Ox",
+    "BB": "Pisces",
+    "CC": "Wealth Pot",
+    "DD": "Arm Band",
+    "EE": "Ace",
+    "FF": "King",
+    "GG": "Queen",
+    "HH": "Jack",
+    "JJ": "Ten",
+    "MS": "Mystery1",
+    "MO": "Mystery2",
+    "MC": "Mystery (Orb)",
+    "SC": "Orb",
+    "SF": "Orb (Splittable)",
+    "FG": "Free Games",
+    "FO": "FO (feature)",
+    "SO": "SO (feature)"
+  },
   "roi": {
     "cash_meter": [0.000000, 0.844468, 1.000000, 0.884554],
     "reels": [0.045131, 0.559722, 0.954870, 0.822222]

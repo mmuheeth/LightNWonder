@@ -14,6 +14,7 @@ from app.services import ideck as ideck_service
 from app.services import meter as meter_service
 from app.services import obs as obs_service
 from app.services import ocr as ocr_service
+from app.services import paytable as paytable_service
 
 
 @pytest.fixture
@@ -68,6 +69,14 @@ def _clean_meter_state() -> Iterator[None]:
     meter_service.reset()
     yield
     meter_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_paytable_state() -> Iterator[None]:
+    """Drop parsed maths files, so one test's math.xml is not another's answer."""
+    paytable_service.reset()
+    yield
+    paytable_service.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -18,6 +18,7 @@ from typing import Any
 
 __all__ = [
     "DEFAULT_RULES",
+    "PAYTABLE_LOADED",
     "TOUCH_REGISTERED",
     "DetectedEvent",
     "EventRule",
@@ -284,6 +285,23 @@ def _on(message_name: str) -> str:
 TOUCH_REGISTERED = re.compile(r"\b(?:TouchMsg|TouchEventNotificationMsg)\b")
 
 
+# The game names the paytable it loaded here, and ``paytable`` is byte-identical
+# to the folder holding that paytable's maths -- which is what lets
+# :mod:`app.services.paytable` join a running game to its ``math.xml``. Shared
+# with the ``paytable-changed`` rule below rather than written twice: the same
+# line answers "did it just change" (forwards, while following) and "what is
+# loaded now" (backwards, once, via :func:`app.utils.log_search.last_match`).
+#
+# ``supported`` is optional so an older log that stops after the id still
+# matches -- a rule's ``None`` groups are dropped from its fields by
+# :func:`match`, so the event gains a field only when the line carries one.
+PAYTABLE_LOADED = re.compile(
+    r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
+    r" current paytableId\[(?P<paytable>[^\]]+)\]"
+    r"(?: current supported denoms\[(?P<supported>[^\]]*)\])?"
+)
+
+
 # Ordered (first match wins, narrow before broad) and deliberately a *visual*
 # list only -- internal bookkeeping the log names but that produces no frame
 # distinguishable from its neighbors is left out. ``capture=False`` keeps a
@@ -352,10 +370,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
     ),
     EventRule(
         event="paytable-changed",
-        pattern=re.compile(
-            r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
-            r" current paytableId\[(?P<paytable>[^\]]+)\]"
-        ),
+        pattern=PAYTABLE_LOADED,
         summary="Paytable is now {paytable}",
         only_on_change=True,
     ),

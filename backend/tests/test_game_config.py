@@ -26,6 +26,9 @@ FULL = {
     "process": "ExampleGame.exe",
     "log": r"C:\logs\Game\ExampleGame.log",
     "obs": {"window_source": "Game Window"},
+    "game_config": r"C:\re\games\ExampleGame\GameConfig",
+    "win_geometry": r"C:\re\games\ExampleGame\GameConfig\winGeometry.xml",
+    "symbols": {"wc": "WILD", "AA": "Ox", "BB": ""},
     "roi": {"cash_meter": [0.13, 0.75, 0.86, 0.78]},
     "button_targets": {"take_win": [0.124, 0.917]},
     "events": {
@@ -51,6 +54,10 @@ def test_every_block_is_read(tmp_path: Path) -> None:
     assert game.process == "ExampleGame.exe"
     assert game.obs_window_source == "Game Window"
     assert game.log_path == Path(r"C:\logs\Game\ExampleGame.log")
+    assert game.game_config_dir == Path(r"C:\re\games\ExampleGame\GameConfig")
+    assert game.win_geometry_path == Path(
+        r"C:\re\games\ExampleGame\GameConfig\winGeometry.xml"
+    )
     assert game.roi["cash_meter"] == [0.13, 0.75, 0.86, 0.78]
     assert game.button_targets["take_win"] == [0.124, 0.917]
 
@@ -101,6 +108,9 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
             },
             "not a valid regex",
         ),
+        ({"name": "X", "game_config": ["a"]}, "'game_config' in .* must be a string"),
+        ({"name": "X", "symbols": ["WC"]}, "'symbols' in .* must be a JSON object"),
+        ({"name": "X", "symbols": {"WC": 1}}, "'symbols.WC' in .* must be a string"),
     ],
     ids=[
         "malformed-json",
@@ -109,6 +119,9 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         "process-not-a-string",
         "obs-not-an-object",
         "obs-window-source-not-a-string",
+        "game-config-not-a-string",
+        "symbols-not-an-object",
+        "symbol-name-not-a-string",
         "name-not-a-string",
         "roi-not-an-object",
         "button-targets-not-an-object",
@@ -209,6 +222,45 @@ def test_huffnpufflink_declares_its_own_bet_rule() -> None:
     found = rules["bet-changed"].pattern.search(real)
     assert found is not None
     assert found.group("total_bet") == "7500.000"
+
+
+def test_a_symbol_name_is_keyed_by_the_code_the_maths_writes(
+    tmp_path: Path,
+) -> None:
+    """Codes are upper-cased on the way in, since the maths writes them that
+    way and a config typed in lower case should still match.
+
+    A blank name is dropped rather than kept: the block is written with every
+    code as a checklist, and an empty entry means "not named yet", not "named
+    the empty string".
+    """
+    game = load_game_config(write(tmp_path, FULL))
+
+    assert game.symbols == {"WC": "WILD", "AA": "Ox"}
+    assert "BB" not in game.symbols
+
+
+def test_fortuneox_names_every_symbol_its_maths_declares() -> None:
+    """The one thing about a game's maths that cannot be read from it: these
+    files carry no display text in any element, so an unnamed code would show
+    as a bare `WC` on the Game Config page."""
+    game = load_game_config(GAMES_DIR / "FortuneOx.json")
+
+    assert game.symbols["WC"] == "WILD"
+    assert game.symbols["AA"] == "Ox"
+    assert game.symbols["FF"] == "King"
+    assert len(game.symbols) == 18
+
+
+def test_fortuneox_points_at_its_installed_maths() -> None:
+    """The paytable page has nothing to read without these two, and neither is
+    derivable from anything else in the config."""
+    game = load_game_config(GAMES_DIR / "FortuneOx.json")
+
+    assert game.game_config_dir is not None
+    assert game.game_config_dir.name == "GameConfig"
+    assert game.win_geometry_path is not None
+    assert game.win_geometry_path.name == "winGeometry.xml"
 
 
 def test_fortuneox_needs_no_rules_of_its_own() -> None:

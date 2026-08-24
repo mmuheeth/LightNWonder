@@ -71,8 +71,10 @@ backend/
     │   ├── event_capture.py Event Based Capture runtime settings
     │   ├── ocr.py           Tesseract OCR settings, and finding the engine
     │   ├── paylines.py      match threshold, default line set, overlay size
+    │   ├── paytable.py      how far back to read the log for the loaded paytable
     │   └── game_config/     active selection plus per-game process, logs,
-    │                         ROIs, reel bounds, paylines and targets
+    │                         ROIs, reel bounds, paylines, targets, the game's
+    │                         installed GameConfig directory and symbol names
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -80,6 +82,12 @@ backend/
     │   ├── game_log.py      parses the game's log and names its events
     │   ├── log_tail.py      rotation-aware cursor over a growing file, and the
     │                         follower that polls one for new lines
+    │   ├── log_search.py    reads a log backwards for the last line matching a
+    │                         pattern -- the opposite question to log_tail's
+    │   ├── game_math.py     reads a paytable folder's math.xml (symbols, reel
+    │                         strips, combos) and its gameConfig.cfg identity
+    │   ├── win_geometry.py  reads winGeometry.xml: where each payline runs, and
+    │                         converts a line to a game config's [row, column]
     │   ├── image_roi.py     crops a config's named region out of a frame, by
     │                         fractions, so it survives a resolution change
     │   ├── click_target.py   reads a config's named click targets, by fractions,
@@ -110,7 +118,8 @@ backend/
     │   ├── ocr.py           engine status, options and what was read
     │   ├── roi.py           region catalog, and one extracted crop
     │   ├── grid.py          reel grid shape, and one split into tiles
-    │   └── paylines.py      line sets, one line's verdict and its evidence
+    │   ├── paylines.py      line sets, one line's verdict and its evidence
+    │   └── paytable.py      the loaded paytable, its maths and its geometry
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -127,6 +136,7 @@ backend/
         │                      and reads one of its own splits back
         ├── paylines.py       matches a split's tiles against the patterns that pay
         ├── meter.py          turns a cash-meter crop into its five values
+        ├── paytable.py       joins the game's log to the maths it installed
         └── roi.py            cuts one configured region out of a screenshot
 ```
 
@@ -1249,6 +1259,141 @@ One region failing does not fail the read: ask for four and the broken one comes
 back with `error` set beside the three that worked. A region name the game does not
 declare is different — that is a 404, because a typo and an unreadable meter should
 not arrive looking the same.
+
+## The loaded paytable (game config)
+
+```
+GET /api/paytable/                       the maths the running game has loaded
+GET /api/paytable/?paytable_id=<id>      another paytable of the same game
+```
+
+One request answers the whole Game Config tab: which paytable is loaded, the
+symbols and what each one does, every reel strip, the combos that pay, and the
+payline set in play.
+
+### The join is the point
+
+Three things have to agree, and each is owned by someone else:
+
+- **the game's log** names the paytable it loaded — `[WagerGameApp.UpdatePayTable]
+  ... current paytableId[FortuneOx-1101YX-1c-90]`, written on every denomination
+  change;
+- **the game's install** has one directory per paytable under its `GameConfig`
+  directory, named *byte-identically* to that id, holding `math.xml` and
+  `gameConfig.cfg`, with a single `winGeometry.xml` beside them shared by all of
+  them;
+- **the game config in this repo** points at that directory (`game_config`) and
+  is the only place a two-letter symbol code gets a readable name (`symbols`).
+
+`app/services/paytable.py` is the only module that knows all three, and it
+**reports how the join was made** rather than presenting the result as fact.
+`source.origin` is `log` (the game said so), `requested` (a caller named an id)
+or `only` (the game ships exactly one paytable and the log has not spoken), and
+`source.log_line` / `logged_at` carry the line itself. That line also names the
+denomination in play and every denomination the cabinet accepts
+(`denomination` / `supported_denominations`) — each one loads a *different*
+paytable folder, so together they are the set of maths a session can move
+between without restarting the game. A page showing the wrong
+maths is a stale log or a hand-typed id, and only saying which lets a reader
+tell them apart.
+
+The log is read **backwards** (`app/utils/log_search.py`), not forwards.
+`log_tail.py` answers *what happened after this cursor*, which is the shape for
+confirming a button press; *what did this six-megabyte file last say* is the
+opposite question, so `last_match` walks the file a window at a time from the
+end and stops at the first hit. `PAYTABLE_LOG_SCAN_BYTES` bounds how far back it
+goes (0 scans the whole file).
+
+### Failures name the half that is wrong
+
+- **409 `PAYTABLE_UNAVAILABLE`** — the game config declares no `game_config`
+  directory, or it is not on this machine. Nothing to retry: every other
+  dashboard slice works without the game installed, and this one cannot.
+- **404 `PAYTABLE_NOT_FOUND`** — the log named a paytable that the install has
+  no folder for, or the requested id is not one of `available`. The message
+  names both halves, because "not found" alone would leave you unable to tell
+  whether the log or the install is behind.
+- **502 `PAYTABLE_INVALID`** — the files are there and unreadable as maths.
+
+An unreadable `winGeometry.xml` is deliberately **not** any of these: it comes
+back as `win_geometry.error` on a 200, because the symbols, strips and combos
+are all still true and a page that 404s over one of four tables is worse than
+one that says so.
+
+### What comes out of math.xml
+
+`app/utils/game_math.py` reads it by *local* element name — the file is
+namespaced (`http://scientificgames.com/slotMathXMLSchema.xsd`) and BOM-prefixed,
+and pinning the namespace would make a schema-version bump look like a corrupt
+file. Only what a reader of the maths needs: `BonusInfo`'s weight tables and
+`MysteryReplacementInfo` are left on disk.
+
+- **Names are configured; everything else about a symbol is read.** There is no
+  display text in `math.xml` anywhere — not in `SymbolSetList`, not in
+  `ReelStripList`, nowhere — so `name` comes from the game config's `symbols`
+  block, keyed by code (`{"WC": "WILD", "AA": "Ox"}`). A code with no entry falls
+  back to `Wild` for a member of `WildSymbolList` or `Scatter` for one a
+  `CountScatterCombo` counts, and is `null` otherwise, so a game nobody has named
+  yet still reads. `role` carries the same distinction as a lowercase enum and is
+  always derived; `top_pay` is the best line pay for a combo of that code alone,
+  and rows come back best-paying first with unpaid feature symbols last.
+- **Each code is counted twice, off `ReelStripList`.** `reel_stops` is stops on
+  the base game's own reels; `total_stops` and `strips` are across every strip in
+  the file. 0 beside a non-zero total is what tells a feature-only symbol from
+  one the game does not have at all. A code the symbol set merely declares comes
+  back with `on_reels: false` and zeros rather than being dropped — FortuneOx
+  declares eighteen and its strips carry seventeen, and the eighteenth is a named
+  feature symbol with an award.
+- **A strip is its stop order**, so it travels as an ordered list, not a tally.
+  `weights` runs parallel to it; a uniform column is noise and an uneven one is
+  the whole reason the column is worth reading. Strips come back with the
+  default set's reels first, in reel order.
+- **`ANY` is not a symbol.** It is a combo's trailing wildcard, so
+  `[X, X, X, ANY, ANY]` is three of a kind on reels 1–3 and says nothing about
+  reels 4 and 5 — the same *leading run* rule `services/paylines.py` reads a
+  split by. `match_length` is that run's length.
+- **The line pays come back twice: as declared, and pivoted.** Because a combo
+  is one symbol repeated with an `ANY` tail, every pay is really a
+  (symbol, run length, value) triple — so `pay_lengths` + `pay_table` is that
+  grid, a row per symbol and a column per run, which is how every paytable a
+  player has seen is laid out. Symbols with an identical row are merged (a game
+  gives its card ranks one profile, and five identical rows say less than one
+  row naming five symbols), and the merge is on the values alone, so two symbols
+  share a row only when they pay the same at *every* length. `payline_combos`
+  stays as the faithful reading, and a combo mixing two symbols lives only there
+  — it has no per-symbol row to sit in.
+- **Line combos and scatter combos are never one list.** They answer different
+  questions — a run along a line, versus a count anywhere on screen.
+
+### Which payline set is in play
+
+`winGeometry.xml` declares every set the *game* has (40, 20 and 5 for FortuneOx)
+and sits at the `GameConfig` root, shared by all 53 paytable folders. Which one
+this paytable plays comes from **`gameConfig.cfg`'s `NumberOfLines`**, not from
+`math.xml`'s `DefaultConfiguration/PaylineSetID` — the same `math.xml` ships in
+folders that play 5, 20 and 40 lines, so its own default cannot be the answer.
+`win_geometry.resolved_from` says which authority answered (`game_config`,
+`math_default` or `unresolved`).
+
+Each line comes back in both forms: `elements` is `[reel, position]` 0-indexed,
+which is what the file writes, and `grid` is `[row, column]` 1-indexed, which is
+what a game config's `paylines` block uses. Sending both is what makes the two
+comparable — the hand-copied JSON block exists because
+`services/paylines.py` checks a screenshot on a machine that may not have the
+game installed, while this file only exists on one that does.
+
+### Configuration
+
+```
+game_config     the game's installed GameConfig directory
+win_geometry    its winGeometry.xml (defaults to <game_config>/winGeometry.xml)
+symbols         display name per symbol code; blank means "not named yet"
+```
+
+Neither path is checked at config-load time: the game's install is not part of
+this repo, and a config that names it stays valid on a machine without it. The
+service reading the file is where a missing one becomes an error. `symbols` keys
+are upper-cased on load, since that is how the maths writes them.
 
 ## Game selection
 

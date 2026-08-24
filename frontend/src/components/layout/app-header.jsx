@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   // still the Captures page.
   { to: "/", label: "Dashboard", end: true },
   { to: "/captures", label: "Captures" },
+  { to: "/game-config", label: "Game Config" },
 ];
 
 export function AppHeader() {

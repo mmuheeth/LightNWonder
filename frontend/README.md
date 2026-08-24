@@ -63,7 +63,9 @@ src/
 │   ├── obs/                OBS Studio control: connect, screenshot, record
 │   ├── roi/                crops a configured region out of the latest shot
 │   ├── grid/               splits the reels of the latest shot into tiles
-│   └── paylines/           checks a split's tiles against the patterns that pay
+│   ├── paylines/           checks a split's tiles against the patterns that pay
+│   └── paytable/           the maths the running game loaded: symbols, reel
+│                       strips, combos, and the payline set in play
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -150,6 +152,35 @@ Its one piece of client state is the threshold override, held as a raw string fo
 the same reason the grid panel holds its trim that way: it is a number to be found
 by trying it against a fixed split and reading `stats.matched_min` /
 `stats.rejected_max` on the result.
+
+`features/paytable/` is the one slice that is a whole page rather than a
+dashboard card, and the reason is the data: four tables and a 200-row reel strip
+do not survive half a row. It is also the simplest possible slice -- one
+parameterised query and no mutations, since nothing on the page changes anything
+in the game.
+
+Two conventions in it are worth copying. Its query key takes the paytable id
+(`queryKeys.paytable.view(id)`), because inspecting another paytable of the same
+game is a *different answer* rather than a refetch of this one, so switching back
+is instant. And it has no `refetchInterval` at all: the answer only moves when
+the game changes denomination, and each request parses close to a megabyte of
+XML, so a standing poll would cost far more than it could ever notice.
+
+It renders four of the response's cards and not all of it: the symbol table and
+the scatter awards stay on the wire and off the page. Worth knowing when reading
+`api.js`, whose JSDoc documents the whole payload -- the slice is deliberately
+not a one-to-one rendering of it, and adding a card is a component, not an
+endpoint.
+
+Symbol *names* are the one thing on the page not read from the game's own files:
+`math.xml` has no display text in any element, so they come from the backend's
+`symbols` config block and travel alongside every code. The components do not
+know or care -- name and code arrive on the same object.
+
+Its one error case is worth copying too. `win_geometry.error` arrives on a
+successful response -- one file of four could not be read -- so it renders as a
+plain `Alert` beside the tables that are still true, not as an `ApiErrorAlert`,
+which is for a request that failed.
 
 ## Talking to the API
 

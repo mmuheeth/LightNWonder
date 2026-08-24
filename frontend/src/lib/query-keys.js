@@ -22,6 +22,12 @@ export const queryKeys = Object.freeze({
     all: ["grid"],
     layout: () => [...queryKeys.grid.all, "layout"],
   }),
+  paytable: Object.freeze({
+    all: ["paytable"],
+    // Parameterised: inspecting another paytable of the same game is a
+    // different answer, not a refetch of the loaded one.
+    view: (paytableId) => [...queryKeys.paytable.all, "view", paytableId ?? null],
+  }),
   paylines: Object.freeze({
     all: ["paylines"],
     layout: () => [...queryKeys.paylines.all, "layout"],

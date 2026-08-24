@@ -84,6 +84,41 @@ def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
     return parsed
 
 
+def _path(raw: Any, *, where: str) -> Path | None:
+    """Read an optional absolute path to something the game installed.
+
+    Not checked for existence here: the game's own install is not part of this
+    repo and a config that names it stays valid on a machine without it. The
+    service that reads the file is where a missing one becomes an error.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise GameConfigError(f"{where} must be a string")
+    value = raw.strip()
+    return Path(value) if value else None
+
+
+def _symbols(raw: Any, *, path: Path) -> dict[str, str]:
+    """Read the optional ``symbols`` block: display name per symbol code.
+
+    The one thing about a game's maths that is declared rather than read, and
+    only because the maths files contain no display text at all. Codes are
+    upper-cased on the way in so a config written ``wc`` still matches the
+    ``WC`` the maths writes; a blank name is dropped rather than kept, since the
+    block is written with every code as a checklist and an empty entry means
+    "not named yet", not "named the empty string".
+    """
+    block = _object(raw, where=f"'symbols' in {path}")
+    names: dict[str, str] = {}
+    for code, label in block.items():
+        if not isinstance(label, str):
+            raise GameConfigError(f"'symbols.{code}' in {path} must be a string")
+        if label.strip():
+            names[str(code).strip().upper()] = label.strip()
+    return names
+
+
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
     """Read the optional ``events`` block: extra rules, and defaults to drop.
 
@@ -150,6 +185,13 @@ def load_game_config(path: Path) -> GameConfig:
         process=process,
         obs_window_source=obs_window_source,
         log_path=Path(log) if log else None,
+        game_config_dir=_path(
+            document.get("game_config"), where=f"'game_config' in {path}"
+        ),
+        win_geometry_path=_path(
+            document.get("win_geometry"), where=f"'win_geometry' in {path}"
+        ),
+        symbols=freeze_mapping(_symbols(document.get("symbols"), path=path)),
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
         reel_bounds=freeze_mapping(
             _object(document.get("reel_bounds"), where=f"'reel_bounds' in {path}")

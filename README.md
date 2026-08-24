@@ -122,7 +122,9 @@ backend/app/
 ├── exceptions/     base.py hierarchy, handlers.py     ← the only error renderer
 ├── services/       business logic (games.py, obs.py, ideck.py, event_capture.py)
 ├── config/         game data that ships with the code, and its reader
-├── utils/          win32 interop, panel/game log formats, log tail, safe paths
+├── utils/          win32 interop, panel/game log formats, log tail and
+│                  backwards log search, the game's own math and geometry XML,
+│                  safe paths
 ├── middleware/     request id, timing, access log
 └── core/           settings, logging, request context
 
@@ -356,6 +358,48 @@ is several lines at once. A pay count cannot be checked by reading it, which is
 why a picture comes back with every line. See
 [backend/README.md](backend/README.md#checking-the-paylines) for the block
 format, the threshold, and the failure codes.
+
+## Game Config
+
+The **Game Config** tab shows the maths the running game has actually loaded.
+The game writes a `paytableId` to its own log on every denomination change
+(`FortuneOx-1101YX-1c-90`), that string is byte-identical to a directory under
+the game's installed `GameConfig` folder, and that directory's `math.xml` is the
+symbols, the reel strips and the combos that pay.
+
+The page is that join, and it shows its working: the id leads, with the log line
+and timestamp it was read out of one click away under **Where this came from**,
+because a page showing the wrong maths is a stale log or a hand-picked id and
+only saying which lets you tell. Four cards, read down: **Current paytable**
+(the id, its return, the denomination in play and the ones it can move to),
+**Win geometry** (which payline set is live, each line drawn on the reels it
+runs across), **Payline combos** (a row per symbol, a column per run length --
+a paytable poster), and **Reel strips** (every stop in order, one column per
+reel).
+
+The API is fuller than the page: it also carries the symbol table it draws those
+names from and the scatter/feature awards, both readable at
+`GET /api/paytable/`.
+
+Two things are worth knowing before reading it:
+
+- **A symbol row joins two files.** What each code *is* -- what it pays, how
+  much of the reels it occupies, whether it substitutes or scatters -- is read
+  from `math.xml`. What it is *called* comes from the `symbols` block of
+  `backend/app/config/game_config/games/<Game>.json`, because these files carry
+  no display text in any element: `WC` becomes "WILD" there or nowhere. Reel
+  counts come from `<ReelStripList>`, so a code the symbol set merely declares
+  is listed with zeros rather than dropped -- it is named and it awards, it just
+  cannot land in this paytable.
+- **The line count comes from the paytable, not the maths.** The same `math.xml`
+  ships in folders that play 5, 20 and 40 lines, so `gameConfig.cfg`'s
+  `NumberOfLines` picks which set of `winGeometry.xml` is in play. The card says
+  which file answered.
+
+The dropdown at the top reads any other paytable the game ships without the game
+running on it. See
+[backend/README.md](backend/README.md#the-loaded-paytable-game-config) for the
+endpoint, the failure codes and the file formats.
 
 ## Notes
 

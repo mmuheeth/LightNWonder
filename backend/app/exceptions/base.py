@@ -196,6 +196,31 @@ class GameConfigInvalidError(AppException):
     message = "A game configuration could not be loaded"
 
 
+# --- Paytable -------------------------------------------------------------
+# The maths lives in the game's own install, not in this repo, so the split is
+# by who has to fix it: 409 the machine (the game isn't installed, or its config
+# names no GameConfig directory), 404 the request or the log (that paytable id
+# has no folder), 502 the files themselves (present but unreadable as maths).
+
+
+class PaytableUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "PAYTABLE_UNAVAILABLE"
+    message = "The active game declares no installed GameConfig directory"
+
+
+class PaytableNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "PAYTABLE_NOT_FOUND"
+    message = "No paytable folder matches that id"
+
+
+class PaytableInvalidError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "PAYTABLE_INVALID"
+    message = "The game's maths files could not be read"
+
+
 # --- Event Based Capture --------------------------------------------------
 # Same 409-vs-404 split: 409 means the caller must act first, 404 means the
 # run they asked for isn't there.

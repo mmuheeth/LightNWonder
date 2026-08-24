@@ -16,9 +16,17 @@ network service.
 The dashboard covers the first three, plus `features/games` for choosing the
 active game, `features/roi` for cropping a configured region out of the latest
 screenshot, `features/grid` for splitting that screenshot's reels into a matrix of
-tiles and `features/paylines` for checking which of the game's winning patterns
-those tiles satisfy. `game-input` and `ocr` are backend-only so far — endpoints
+tiles, `features/paylines` for checking which of the game's winning patterns
+those tiles satisfy, and `features/paytable` for the maths the running game
+actually loaded. `game-input` and `ocr` are backend-only so far — endpoints
 and services with no `src/features/` slice — so don't go hunting for their UI.
+
+`features/paytable` is the only slice that is a whole route (`/game-config`,
+the "Game Config" tab) rather than a dashboard card, because a payline grid and
+a 200-row reel strip do not survive half a row. It renders four cards —
+current paytable, win geometry, payline combos, reel strips — out of a response
+that also carries the symbol table those names come from and the scatter awards;
+the slice is deliberately not a one-to-one rendering of the payload.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
 and current; read the relevant one before changing an integration.
@@ -95,7 +103,8 @@ namespace, not the functions: `from app.services import obs as obs_service`. Onl
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
 inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
-`GameInputSettings`, `OcrSettings`, `FrameSettings` and `PaylineSettings`
+`GameInputSettings`, `OcrSettings`, `FrameSettings`, `PaylineSettings` and
+`PaytableSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
@@ -112,10 +121,25 @@ needs nothing per-game.
 `PUT /api/games/active` — no restart, no `.env` edit. Adding a game is adding a
 JSON file.
 
+Two keys point *out* of the repo, at the game's own install: `game_config`
+(its `GameConfig` directory) and `win_geometry` (that directory's
+`winGeometry.xml`). Neither is checked at load time: the install is not part of
+this repo and a config naming it stays valid on a machine without it, so the
+service reading the file is where a missing one becomes an error.
+
+A third, `symbols`, is the display name per two-letter symbol code. It is the
+one thing about a game's maths that is *declared* rather than read, and only
+because it cannot be read — see below.
+
 **Foreign formats get their own `app/utils` module**, deliberately ignorant of
 who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
 log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
-`log_tail.py` (rotation-aware cursor), `win32.py` (the only ctypes),
+`log_tail.py` (rotation-aware cursor), `log_search.py` (the opposite
+question — reads a log *backwards* for the last line matching a pattern),
+`game_math.py` (a paytable folder's `math.xml` and `gameConfig.cfg`),
+`win_geometry.py` (`winGeometry.xml`, plus the conversion between its
+0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
+`win32.py` (the only ctypes),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
 `image_roi.py` (crops a named region out of a frame),
 `letterbox.py` (finds the part of a frame the game fills),
@@ -229,6 +253,64 @@ filtered to `pays >= 2` with `dataclasses.replace(drawing, break_point=None)`,
 not a second drawing pass. A line's label on either picture is just `Line 4` --
 `pays` is already numeric data on the response, not something to repeat as text
 on the picture.
+
+**`services/paytable.py` is a three-way join, and it reports how it joined.**
+The game's log names the paytable it loaded (`paytableId[FortuneOx-1101YX-1c-90]`,
+written on every denomination change); that string is byte-identical to a
+directory under the game's installed `GameConfig` folder; and the game config in
+this repo is what points at that folder and names its symbol codes. This is the
+only module that knows all three, so every response carries `source.origin`
+(`log` / `requested` / `only`) and the log line itself — a page showing the wrong
+maths is a stale log or a hand-typed id, and only saying which lets a reader
+tell. Failures split by whose fault it is: 409 the machine (no install), 404 the
+log or the request (that id has no folder — and the message names *both* halves),
+502 the files (present but unreadable). An unreadable `winGeometry.xml` is
+deliberately none of those: it comes back as `win_geometry.error` on a 200,
+because the symbols, strips and combos above it are all still true.
+
+It is also the one service that caches, keyed on each file's mtime *and* size,
+because `math.xml` is close to a megabyte — hence a `reset()` and a `conftest.py`
+entry, unlike `roi`/`grid`/`paylines`.
+
+**Which payline set is in play comes from the paytable, not from the maths.**
+`winGeometry.xml` sits at the `GameConfig` root and is shared by all 53 of
+FortuneOx's paytable folders; the same `math.xml` ships in folders that play 5,
+20 and 40 lines, so its own `DefaultConfiguration/PaylineSetID` cannot be the
+answer. `gameConfig.cfg`'s `NumberOfLines` is, and `resolved_from` says which
+file answered. Lines travel in both forms — `elements` as the file writes them
+(`[reel, position]`, 0-indexed) and `grid` as a config's `paylines` block writes
+them (`[row, column]`, 1-indexed) — because the hand-copied JSON block exists so
+`services/paylines.py` can check a screenshot on a machine without the game
+installed, and the two are only comparable if both forms are sent.
+
+**A symbol row is two files joined, and the split is not arbitrary.** Which
+codes exist, what they pay and how much of the reels they occupy are *read* from
+`math.xml`; what to call them is *declared* in the game config's `symbols` block.
+That block exists because these files carry no display text in any element — not
+in `SymbolSetList`, not in `ReelStripList`, nowhere — so `WC` becomes "WILD"
+there or nowhere. Underneath it `ROLE_LABELS` supplies `Wild`/`Scatter` from
+what the maths' structure implies (`GameMath.roles()`: in `WildSymbolList` →
+wild, counted by a `CountScatterCombo` → scatter), so a game whose config names
+nothing yet is still readable.
+
+**Counts come from `ReelStripList`, and each code is counted twice.**
+`GameMath.reel_symbols()` reads the strips — what can actually land — for stops
+on the base game's own reels *and* across every strip in the file, because 0
+beside a non-zero total is what tells a feature-only symbol from one this game
+does not have. A code the symbol set only declares is still listed
+(`on_reels: false`, all zeros): FortuneOx declares eighteen and strips carry
+seventeen, and the eighteenth is a named feature symbol with an award, so
+dropping it would silently shorten the table the config was written against.
+
+**`ANY` in a combo is not a symbol** — it is the trailing wildcard, so
+`[X, X, X, ANY, ANY]` is the same *leading run* rule `services/paylines.py`
+reads a split by. Because of that, every line pay is really a (symbol, run
+length, value) triple, and the response carries both shapes: `payline_combos`
+as `math.xml` declares them, and `pay_lengths`/`pay_table` pivoted into the grid
+a paytable poster actually is (`GameMath.line_pays()` + `_pay_table()`), with
+symbols paying identically at every length merged into one row. Don't drop the
+declared list — a combo mixing two symbols has no per-symbol row to sit in and
+would vanish with it.
 
 **Grid always writes its output; ROI only writes the cash meter.** A split goes
 to `obs-captured-files/grid/<frame stem>/` — `reels.png` plus `tiles/r1c1.png`,
