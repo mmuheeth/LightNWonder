@@ -1,4 +1,4 @@
-import { Circle, Images, RefreshCw, ScanEye, Square } from "lucide-react";
+import { Circle, RefreshCw, ScanEye, Square } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
@@ -162,13 +162,6 @@ export function EventCapturePanel() {
                   Start tracking
                 </Button>
               )}
-
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/captures">
-                  <Images />
-                  View captures
-                </Link>
-              </Button>
             </div>
 
             {finished ? (

@@ -4,6 +4,7 @@ import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CaptureRunView } from "@/features/event-capture/capture-run-view";
+import { EventCapturePanel } from "@/features/event-capture/event-capture-panel";
 import { useCaptureRuns } from "@/features/event-capture/use-event-capture";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +44,7 @@ function RunButton({ run, isSelected, onSelect }) {
 }
 
 // The selected run lives in the URL, not state, so a run can be linked to —
-// the dashboard card does exactly that after a run finishes.
+// the capture card above does exactly that after a run finishes.
 export function CapturesPage() {
   const { runId } = useParams();
   const navigate = useNavigate();
@@ -54,11 +55,13 @@ export function CapturesPage() {
   return (
     <div className="space-y-6">
       <div className="space-y-1 border-b pb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Captures</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Event Capture</h1>
         <p className="text-muted-foreground text-sm">
           Every event-based capture run, with the screenshot taken for each event.
         </p>
       </div>
+
+      <EventCapturePanel />
 
       {isPending ? (
         <Skeleton className="h-64 w-full" />
@@ -66,7 +69,7 @@ export function CapturesPage() {
         <ApiErrorAlert error={error} onRetry={() => refetch()} />
       ) : runs.length === 0 ? (
         <p className="text-muted-foreground text-sm">
-          No runs yet. Start one from the Event Based Capture card on the dashboard.
+          No runs yet. Start one from the Event Based Capture card above.
         </p>
       ) : (
         <div className="grid gap-6 md:grid-cols-[16rem_1fr]">

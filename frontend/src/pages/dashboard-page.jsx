@@ -1,5 +1,3 @@
-import { EventCapturePanel } from "@/features/event-capture/event-capture-panel";
-import { GridPanel } from "@/features/grid/grid-panel";
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
 import { PaylinePanel } from "@/features/paylines/payline-panel";
@@ -22,9 +20,7 @@ export function DashboardPage() {
       <div className="grid gap-6 md:grid-cols-2">
         <ObsPanel />
         <IDeckPanel />
-        <EventCapturePanel />
         <RoiPanel />
-        <GridPanel />
       </div>
 
       {/* Its own row rather than a cell of the two-column grid: the

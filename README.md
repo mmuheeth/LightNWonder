@@ -173,7 +173,7 @@ landing, a bet or denomination change, a win, a gamble offer. Press *Start
 tracking*, play, press *Stop tracking*; everything in between becomes one record
 under `backend/obs-captured-files/event-capture/<date>_<time>/`: the screenshots plus a
 `run.json` naming each event, the values pulled out of its log line, and the
-image taken for it. The **Captures** page replays a run as screenshots paired
+image taken for it. The **Event Capture** page replays a run as screenshots paired
 with their event details.
 
 The log-reading half is deliberately generic. `app/utils/game_log.py` turns log

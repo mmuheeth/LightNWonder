@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -74,22 +74,16 @@ afterEach(() => {
 });
 
 describe("RoiPanel", () => {
-  it("lists the active game's regions with their qualified names", async () => {
+  it("names the game and the frame an extraction would use", async () => {
     mockApi();
 
     renderWithProviders(<RoiPanel />);
 
     expect(await screen.findByText("FortuneOx")).toBeInTheDocument();
-    const select = screen.getByLabelText("Region");
-    expect([...select.options].map((option) => option.textContent)).toEqual([
-      "roi.cash_meter",
-      "roi.win_meter",
-    ]);
-    // The frame an extraction would use is named before anyone presses Extract.
     expect(screen.getByText(/1280×720/)).toBeInTheDocument();
   });
 
-  it("extracts the selected region and shows the crop", async () => {
+  it("extracts the cash meter and shows the crop", async () => {
     const request = mockApi();
     const user = userEvent.setup();
 
@@ -114,22 +108,6 @@ describe("RoiPanel", () => {
     expect(post[0].data).toEqual({ region: "cash_meter" });
   });
 
-  it("extracts whichever region the dropdown was changed to", async () => {
-    const request = mockApi();
-    const user = userEvent.setup();
-
-    renderWithProviders(<RoiPanel />);
-    await screen.findByText("FortuneOx");
-
-    await user.selectOptions(screen.getByLabelText("Region"), "win_meter");
-    await user.click(screen.getByRole("button", { name: /extract/i }));
-
-    await waitFor(() => {
-      const post = request.mock.calls.find(([config]) => config.method === "POST");
-      expect(post[0].data).toEqual({ region: "win_meter" });
-    });
-  });
-
   it("refuses to extract before a screenshot has been taken", async () => {
     mockApi({ regions: catalog({ latestFrame: null }) });
 
@@ -141,15 +119,15 @@ describe("RoiPanel", () => {
     expect(screen.getByText(/take one from the OBS panel/i)).toBeInTheDocument();
   });
 
-  it("shows why a malformed region cannot be extracted", async () => {
+  it("shows why a malformed cash meter region cannot be extracted", async () => {
     mockApi({
       regions: catalog({
         regions: [
           {
-            region: "bad",
-            label: "roi.bad",
+            region: "cash_meter",
+            label: "roi.cash_meter",
             roi: [0, 0, 1, 1],
-            error: "roi.bad: left (0.5) must be less than right (0.2)",
+            error: "roi.cash_meter: left (0.5) must be less than right (0.2)",
           },
         ],
       }),

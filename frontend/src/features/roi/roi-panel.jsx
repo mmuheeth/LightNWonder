@@ -1,5 +1,4 @@
-import { ChevronDown, Crop, RefreshCw, Scissors } from "lucide-react";
-import { useState } from "react";
+import { Crop, RefreshCw, Scissors } from "lucide-react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { StatRow } from "@/components/stat-row";
@@ -23,36 +22,36 @@ function formatCapturedAt(value) {
   return Number.isNaN(at.getTime()) ? "—" : at.toLocaleTimeString();
 }
 
+const CASH_METER_REGION = "cash_meter";
+
 /**
- * Cut a configured region out of the latest screenshot and show it. Regions
- * come from the active game's `roi` block; the frame is the newest shot the
- * OBS panel's Screenshot button wrote. Extracting the cash meter also reads
- * it, so `<MeterValues>` renders below the picture rather than in its own card.
+ * Cut the cash meter out of the latest screenshot and show it. The region
+ * comes from the active game's `roi.cash_meter`; the frame is the newest shot
+ * the OBS panel's Screenshot button wrote. Extracting it also reads the
+ * meter, so `<MeterValues>` renders below the picture rather than in its own
+ * card.
  */
 export function RoiPanel() {
   const { data, error, isPending, isFetching, refetch } = useRoiRegions();
   const extract = useExtractRoi();
 
-  // Kept as the name rather than an index so a config reload can't silently re-point it.
-  const [region, setRegion] = useState("");
   const regions = data?.regions ?? [];
-  const selected = region || regions[0]?.region || "";
-  const selectedRegion = regions.find((option) => option.region === selected);
+  const selectedRegion = regions.find((option) => option.region === CASH_METER_REGION);
   const frame = data?.latest_frame ?? null;
 
   // Says why Extract is refused rather than just disabling it.
   const regionError = selectedRegion?.error ?? null;
-  const canExtract = Boolean(frame) && Boolean(selected) && !regionError;
+  const canExtract = Boolean(frame) && Boolean(selectedRegion) && !regionError;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Crop className="size-4" />
-          Extract ROI
+          Extract Cash Meter
         </CardTitle>
         <CardDescription>
-          Cropping a configured region out of the latest screenshot
+          Cropping the cash meter out of the latest screenshot
         </CardDescription>
         <CardAction>
           <Button
@@ -94,50 +93,15 @@ export function RoiPanel() {
             </div>
 
             <div className="space-y-2 border-t pt-4">
-              <label
-                htmlFor="roi-region"
-                className="text-muted-foreground block text-[0.65rem] font-semibold tracking-[0.16em] uppercase"
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => extract.mutate({ region: CASH_METER_REGION })}
+                disabled={!canExtract || extract.isPending}
               >
-                Region
-              </label>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative min-w-0 flex-1">
-                  <select
-                    id="roi-region"
-                    aria-label="Region"
-                    value={selected}
-                    onChange={(event) => setRegion(event.target.value)}
-                    disabled={regions.length === 0}
-                    className="border-input bg-background text-foreground hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] h-9 w-full min-w-0 cursor-pointer appearance-none rounded-md border px-3 pr-9 font-mono text-sm shadow-xs transition-[color,box-shadow,background-color] outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
-                  >
-                    {regions.length === 0 ? (
-                      <option value="">No regions configured</option>
-                    ) : (
-                      regions.map((option) => (
-                        <option
-                          key={option.region}
-                          value={option.region}
-                          className="bg-background text-foreground"
-                        >
-                          {option.label}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                  <span className="text-muted-foreground pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                    <ChevronDown className="size-4" />
-                  </span>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => extract.mutate({ region: selected })}
-                  disabled={!canExtract || extract.isPending}
-                >
-                  <Scissors />
-                  Extract
-                </Button>
-              </div>
+                <Scissors />
+                Extract
+              </Button>
               {regionError ? (
                 <p className="text-destructive text-xs">{regionError}</p>
               ) : null}

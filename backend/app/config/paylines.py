@@ -19,7 +19,7 @@ class PaylineSettings(BaseSettings):
     # Pixel channels are non-negative, so unrelated symbols already score
     # 0.6-0.9; same-symbol crops score 0.96+. Tune against a still frame, not
     # by intuition -- "0.7 means similar" is much too low here.
-    PAYLINE_MATCH_THRESHOLD: float = Field(default=0.85, ge=-1.0, le=1.0)
+    PAYLINE_MATCH_THRESHOLD: float = Field(default=0.90, ge=-1.0, le=1.0)
 
     # Bet config to check when a request names none; empty = numerically
     # smallest the game declares (the five-line set for every game so far).

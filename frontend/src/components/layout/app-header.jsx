@@ -9,7 +9,7 @@ const NAV_ITEMS = [
   // want their child routes to keep them highlighted -- /captures/:runId is
   // still the Captures page.
   { to: "/", label: "Dashboard", end: true },
-  { to: "/captures", label: "Captures" },
+  { to: "/event-captures", label: "Event Capture" },
   { to: "/game-config", label: "Game Config" },
 ];
 

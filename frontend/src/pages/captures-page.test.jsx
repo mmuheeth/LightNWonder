@@ -11,6 +11,17 @@ function envelope(data, message = "ok") {
   return { success: true, message, data, error: null, meta: META };
 }
 
+const STATUS = envelope({
+  active: false,
+  run_id: null,
+  game: null,
+  started_at: null,
+  duration_ms: 0,
+  event_count: 0,
+  recent_events: [],
+  errors: [],
+});
+
 const RUNS = envelope([
   {
     run_id: "2026-08-19_14-32-07",
@@ -73,7 +84,7 @@ afterEach(() => {
 
 describe("CapturesPage", () => {
   it("says what to do when nothing has been captured yet", async () => {
-    respond({ "/runs": envelope([]) });
+    respond({ "/runs": envelope([]), "/status": STATUS });
 
     renderWithProviders(<CapturesPage />);
 
@@ -83,7 +94,7 @@ describe("CapturesPage", () => {
   });
 
   it("shows the newest run's events without one having to be chosen", async () => {
-    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS });
+    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
     renderWithProviders(<CapturesPage />, { route: "/captures" });
 
@@ -94,7 +105,7 @@ describe("CapturesPage", () => {
   });
 
   it("points each screenshot at the backend's image route", async () => {
-    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS });
+    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
     renderWithProviders(<CapturesPage />, { route: "/captures" });
 
@@ -106,7 +117,7 @@ describe("CapturesPage", () => {
   });
 
   it("explains an event that has no screenshot", async () => {
-    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS });
+    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
     renderWithProviders(<CapturesPage />, { route: "/captures" });
 
@@ -116,7 +127,7 @@ describe("CapturesPage", () => {
   });
 
   it("does not show the raw log line", async () => {
-    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS });
+    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
     renderWithProviders(<CapturesPage />, { route: "/captures" });
 
@@ -127,7 +138,7 @@ describe("CapturesPage", () => {
   it("lays events out two to a row", async () => {
     // Two rather than three or four: the screenshot is the point of the card,
     // and a slot game's reels stop being readable below about half the width.
-    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS });
+    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
     renderWithProviders(<CapturesPage />, { route: "/captures" });
 
@@ -138,7 +149,7 @@ describe("CapturesPage", () => {
   });
 
   it("puts the description above the screenshot", async () => {
-    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS });
+    respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
     renderWithProviders(<CapturesPage />, { route: "/captures" });
 

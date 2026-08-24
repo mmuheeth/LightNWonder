@@ -238,7 +238,7 @@ describe("PaylinePanel", () => {
     await renderReady(layout({ latestSplit: null }));
 
     expect(screen.getByRole("button", { name: /check/i })).toBeDisabled();
-    expect(screen.getByText(/no split yet.*reel grid panel/i)).toBeInTheDocument();
+    expect(screen.getByText(/no split yet/i)).toBeInTheDocument();
   });
 
   it("reports a game with no paylines as a state rather than an error", async () => {

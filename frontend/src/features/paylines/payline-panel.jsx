@@ -134,8 +134,8 @@ function PaylineRow({ line }) {
 }
 
 /**
- * Check which paylines pay on the latest split (reads the Reel grid panel's
- * written tiles, not a screenshot — Screenshot, Split, Check). `threshold`
+ * Check which paylines pay on the latest split (reads the written tiles
+ * from a reel split, not a screenshot). `threshold`
  * isn't intuitive: cosine similarity of unrelated symbols scores 0.6-0.9, so
  * tune it against `stats.matched_min`/`rejected_max`, not intuition.
  */
@@ -277,7 +277,7 @@ export function PaylinePanel() {
               ) : null}
               {!split && !layoutError ? (
                 <p className="text-muted-foreground text-xs">
-                  No split yet — split one from the Reel grid panel first.
+                  No split yet — split the reels first.
                 </p>
               ) : null}
               {layoutError ? (

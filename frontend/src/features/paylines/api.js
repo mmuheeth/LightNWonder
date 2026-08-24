@@ -11,7 +11,7 @@ const PAYLINES_URL = `${routes.API}/paylines`;
 /**
  * Fetch the bet configurations the active game declares and the split to check.
  * An unconfigured game or nothing split yet resolves with `error` set, not a
- * rejection — `latest_split` is null until the Reel grid panel writes one.
+ * rejection — `latest_split` is null until a reel split has been written.
  *
  * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<{game: string, sets: Array<{name: string, label: string}>,

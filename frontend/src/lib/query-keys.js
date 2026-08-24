@@ -18,10 +18,6 @@ export const queryKeys = Object.freeze({
     all: ["roi"],
     regions: () => [...queryKeys.roi.all, "regions"],
   }),
-  grid: Object.freeze({
-    all: ["grid"],
-    layout: () => [...queryKeys.grid.all, "layout"],
-  }),
   paytable: Object.freeze({
     all: ["paytable"],
     // Parameterised: inspecting another paytable of the same game is a
