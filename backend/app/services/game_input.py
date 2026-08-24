@@ -12,6 +12,14 @@ game log's size beforehand and reads only what was appended after: the strong
 proof is the game naming the button hit (a config-declared ``confirm`` event),
 the fallback is :data:`app.utils.game_log.TOUCH_REGISTERED`, which only proves
 input arrived. The two are reported apart, never blurred.
+
+Unity does not react to a posted window message at all -- it reads real OS
+input, so a click here (:func:`_inject_click`) moves the actual cursor and
+injects a real button press (``SendInput``), unlike the i-deck's SDL panel,
+which is happy with a posted message and never touches the cursor. Injected
+input lands on whatever is topmost under the cursor rather than at a specific
+window, so every click brings the game to the front first and refuses to fire
+if something else still covers the target point.
 """
 
 from __future__ import annotations
@@ -251,14 +259,46 @@ async def _watch_log(
         await asyncio.sleep(_POLL_SECONDS)
 
 
-async def _post_click(hwnd: int, x: int, y: int, hold_seconds: float) -> None:
-    """Post one complete click at a client-area point. The move is not optional:
-    Unity's TouchScript pointer handler tracks position from motion messages,
-    not the button message."""
-    win32.post_mouse_move(hwnd, x, y)
-    win32.post_left_down(hwnd, x, y)
-    await asyncio.sleep(hold_seconds)
-    win32.post_left_up(hwnd, x, y)
+_CURSOR_SETTLE_SECONDS = 0.02
+"""How long to let the target see the cursor arrive before pressing -- Unity
+samples the cursor's position rather than trusting a message's coordinates,
+so the move has to land before the button does."""
+
+
+async def _inject_click(hwnd: int, x: int, y: int, hold_seconds: float) -> bool:
+    """Click a client-area point as real hardware input. Unity does not react
+    to posted window messages at all -- unlike the i-deck's SDL panel, it
+    reads the OS cursor and ``SendInput``, so landing on it means moving the
+    real cursor and injecting a real press. Returns whether the window could
+    be brought to the foreground first (informational only: a refused
+    foreground change is still worth trying, `_watch_log` is what proves
+    whether the click actually landed)."""
+    screen_x, screen_y = win32.client_to_screen(hwnd, x, y)
+    raised = win32.bring_to_front(hwnd)
+
+    previous = win32.get_cursor_pos()
+    win32.set_cursor_pos(screen_x, screen_y)
+    try:
+        await asyncio.sleep(_CURSOR_SETTLE_SECONDS)
+
+        # Injected input lands on whatever is topmost under the cursor, not
+        # at this hwnd -- firing blind risks clicking whatever is on top of
+        # the game instead (a File Explorer window, say).
+        topmost = win32.window_at(screen_x, screen_y)
+        if topmost != hwnd:
+            raise GameWindowNotFoundError(
+                f"The window under the target point is 0x{topmost:X}, not "
+                f"the game's 0x{hwnd:X}, so a click there would hit that "
+                "window instead. Bring the game window to the front and "
+                "make sure nothing else covers it, then try again."
+            )
+
+        win32.inject_left_down()
+        await asyncio.sleep(hold_seconds)
+        win32.inject_left_up()
+    finally:
+        win32.set_cursor_pos(*previous)
+    return raised
 
 
 def _require_log_for_verification() -> LogTail:
@@ -413,7 +453,7 @@ async def click(
 
         offset = tail.offset() if tail is not None else 0
         try:
-            await _post_click(window.hwnd, x, y, hold)
+            await _inject_click(window.hwnd, x, y, hold)
         except win32.WindowAccessDenied as exc:
             raise _access_denied() from exc
 
@@ -424,14 +464,17 @@ async def click(
         if tail is not None:
             confirmation, evidence, touched = await _watch_log(tail, expected, offset)
 
-            # An unfocused window can swallow the first posted click -- one retry.
+            # An unfocused window can swallow the first injected click -- one
+            # retry. `_inject_click` already brings the window to the front
+            # on every attempt, so the retry gains nothing extra there; it
+            # exists for a click that failed because the game briefly wasn't
+            # topmost yet when the first one fired.
             if confirmation is None and settings.GAME_INPUT_FOCUS_ON_RETRY:
                 logger.info("Click on %r went unconfirmed; retrying focused", name)
-                win32.focus(window.hwnd)
                 refocused = True
                 offset = tail.offset()
                 try:
-                    await _post_click(window.hwnd, x, y, hold)
+                    await _inject_click(window.hwnd, x, y, hold)
                 except win32.WindowAccessDenied as exc:
                     raise _access_denied() from exc
                 confirmation, evidence, retried_touch = await _watch_log(

@@ -83,8 +83,9 @@ class FakeGame:
     """Stands in for :mod:`app.utils.win32` and the game window behind it.
 
     ``accepts`` models the failure the design has to survive: a window that
-    ignores posted input logs nothing at all. ``accepts_after_focus`` models the
-    narrower case where only the first, unfocused click is swallowed.
+    ignores injected input logs nothing at all. ``accepts_after_focus`` models
+    the narrower case where only the first attempt is swallowed -- the second,
+    after the retry's fresh foreground/cursor sequence, lands.
     """
 
     def __init__(
@@ -98,6 +99,7 @@ class FakeGame:
         accepts_after_focus: bool = False,
         restore_works: bool = True,
         can_interact: bool = True,
+        topmost_matches: bool = True,
     ) -> None:
         self.log_path = log_path
         self.targets = targets
@@ -107,7 +109,10 @@ class FakeGame:
         self.accepts_after_focus = accepts_after_focus
         self.restore_works = restore_works
         self.can_interact = can_interact
+        self.topmost_matches = topmost_matches
         self.calls: list[tuple[str, int, int]] = []
+        self._attempts = 0
+        self._last_point = (0, 0)
 
     # --- the win32 surface the service uses ---
 
@@ -147,15 +152,41 @@ class FakeGame:
             self.accepts = True
         return True
 
-    def post_mouse_move(self, hwnd: int, x: int, y: int) -> None:  # noqa: ARG002
-        self.calls.append(("move", x, y))
+    # -- the SendInput surface used by `_inject_click` --
 
-    def post_left_down(self, hwnd: int, x: int, y: int) -> None:  # noqa: ARG002
-        self.calls.append(("down", x, y))
+    def client_to_screen(self, hwnd: int, x: int, y: int) -> tuple[int, int]:  # noqa: ARG002
+        # Identity mapping: the fake window sits at the screen origin, so
+        # client and screen coordinates coincide and the existing hit-testing
+        # (measured in client space) still applies unchanged.
+        return x, y
 
-    def post_left_up(self, hwnd: int, x: int, y: int) -> None:  # noqa: ARG002
+    def get_cursor_pos(self) -> tuple[int, int]:
+        return (0, 0)
+
+    def set_cursor_pos(self, x: int, y: int) -> None:
+        self._last_point = (x, y)
+
+    def window_at(self, x: int, y: int) -> int:  # noqa: ARG002
+        if self.window is None:
+            return 0
+        return self.window.hwnd if self.topmost_matches else self.window.hwnd + 1
+
+    def bring_to_front(self, hwnd: int) -> bool:
+        self.calls.append(("focus", hwnd, 0))
+        return True
+
+    def inject_left_down(self) -> None:
+        self.calls.append(("down", *self._last_point))
+
+    def inject_left_up(self) -> None:
+        x, y = self._last_point
         self.calls.append(("up", x, y))
-        if not self.accepts:
+        self._attempts += 1
+        # `accepts_after_focus` used to flip on the retry's explicit `focus`
+        # call; it is now equivalent to "the second attempt lands", since
+        # `bring_to_front` runs before every attempt, not just the retry.
+        accepted = self.accepts or (self.accepts_after_focus and self._attempts >= 2)
+        if not accepted:
             return
         # The real game reacts on the release. A touch anywhere in the window is
         # felt; only a touch on a button publishes that button's message.
@@ -229,9 +260,13 @@ def install(monkeypatch: pytest.MonkeyPatch, game: FakeGame) -> FakeGame:
         "can_post",
         "restore",
         "focus",
-        "post_mouse_move",
-        "post_left_down",
-        "post_left_up",
+        "client_to_screen",
+        "get_cursor_pos",
+        "set_cursor_pos",
+        "window_at",
+        "bring_to_front",
+        "inject_left_down",
+        "inject_left_up",
     ):
         monkeypatch.setattr(win32, name, getattr(game, name))
     return game
@@ -250,16 +285,17 @@ def game(monkeypatch: pytest.MonkeyPatch, game_log_file: Path) -> FakeGame:
 async def test_click_sends_move_then_down_then_up(
     client: AsyncClient, game_input_env: None, game: FakeGame
 ) -> None:
-    """The move is not decoration.
+    """The cursor moves before the button does.
 
-    The game drives its UI through TouchScript, which resolves a click against
-    the last motion it saw rather than against the button message, so dropping
-    the move would land the click wherever the game last believed the pointer was.
+    Unity samples the cursor's real position rather than trusting a message's
+    coordinates, so the click has to bring the window to front, park the real
+    cursor on the target, and only then inject the press/release -- dropping
+    the move would land the click wherever the cursor already was.
     """
     data = assert_success(
         (await client.post("/api/game-input/click", json={"target": "gamble"})).json()
     )
-    assert game.kinds() == ["move", "down", "up"]
+    assert game.kinds() == ["focus", "down", "up"]
     assert game.points("down") == [(36, 969)]
     assert (data["client_x"], data["client_y"]) == (36, 969)
     assert data["confirmed"] is True
@@ -466,7 +502,7 @@ async def test_verification_can_be_turned_off_for_one_click(
     assert data["verified"] is False
     assert data["confirmed"] is False
     assert data["confirmed_by"] is None
-    assert live.kinds() == ["move", "down", "up"]
+    assert live.kinds() == ["focus", "down", "up"]
 
 
 async def test_verification_without_a_log_refuses_rather_than_degrades(
@@ -621,6 +657,33 @@ async def test_click_refuses_a_minimized_game_when_restoring_is_off(
     response = await client.post("/api/game-input/click", json={"target": "gamble"})
     assert response.status_code == 409
     assert_failure(response.json(), code="GAME_WINDOW_NOT_FOUND")
+
+
+async def test_click_refuses_when_another_window_is_topmost(
+    client: AsyncClient,
+    game_input_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    game_log_file: Path,
+) -> None:
+    """Injected input lands on whatever is topmost, not at an hwnd.
+
+    A click must refuse rather than fire blind when something else covers the
+    target point -- the failure mode that caught a File Explorer window in
+    production for the reference implementation this mirrors.
+    """
+    live = install(
+        monkeypatch,
+        FakeGame(
+            game_log_file, dict(GAME_CONFIG["button_targets"]), topmost_matches=False
+        ),
+    )
+    response = await client.post("/api/game-input/click", json={"target": "gamble"})
+    assert response.status_code == 409
+    payload = response.json()
+    assert_failure(payload, code="GAME_WINDOW_NOT_FOUND")
+    assert "not the game" in payload["message"]
+    # No press was injected once the mismatch was caught.
+    assert "down" not in live.kinds()
 
 
 async def test_click_reports_windows_blocking_input(

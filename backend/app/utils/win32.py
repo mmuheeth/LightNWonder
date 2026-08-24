@@ -1,9 +1,18 @@
 """Minimal Win32 interop for driving another process's window -- the only
 ``ctypes`` in the codebase, so tests can monkeypatch it wholesale and the
-suite still collects on a non-Windows machine. Nothing here moves the physical
-cursor; a press is delivered as window messages. ``post_*`` uses
-``PostMessageW`` rather than ``SendMessageW`` so an async caller never stalls
-behind a busy window.
+suite still collects on a non-Windows machine.
+
+Two delivery mechanisms live here because the i-deck and the game need
+different ones. ``post_*`` uses ``PostMessageW`` rather than ``SendMessageW``
+so an async caller never stalls behind a busy window, and reaches the i-deck's
+SDL panel, which re-reads its message queue -- it never moves the physical
+cursor. Unity does not react to posted mouse messages at all: it reads real OS
+input, so reaching the game means moving the actual cursor
+(``set_cursor_pos``) and injecting a real click (``inject_left_down`` /
+``inject_left_up`` via ``SendInput``), which is why those two, unlike
+``post_*``, land wherever is topmost under the cursor rather than at a
+specific ``hwnd`` -- ``bring_to_front`` and ``window_at`` exist to make that
+safe.
 """
 
 from __future__ import annotations
@@ -29,6 +38,16 @@ WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 MK_LBUTTON = 0x0001
+
+# Unity reads real OS input (cursor position + SendInput), not the posted
+# window messages above -- those reach SDL's i-deck panel but land silently
+# nowhere on the game's own window. GA_ROOT resolves whatever HWND is under a
+# screen point up to its top-level window, for the "is the game really
+# topmost" check `inject_click` needs but `post_*` never did.
+GA_ROOT = 2
+INPUT_MOUSE = 0
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 
 ERROR_ACCESS_DENIED = 5
 
@@ -63,6 +82,28 @@ class _Rect(ctypes.Structure):
         ("right", ctypes.c_long),
         ("bottom", ctypes.c_long),
     )
+
+
+class _Point(ctypes.Structure):
+    _fields_ = (("x", ctypes.c_long), ("y", ctypes.c_long))
+
+
+class _MouseInput(ctypes.Structure):
+    _fields_ = (
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    )
+
+
+class _Input(ctypes.Structure):
+    # SendInput's union covers keyboard/hardware input too, but this process
+    # only ever sends the mouse variant, so the union is spelled out as a
+    # single field rather than a real ctypes.Union.
+    _fields_ = (("type", ctypes.c_ulong), ("mi", _MouseInput))
 
 
 @dataclass(frozen=True)
@@ -132,6 +173,24 @@ def _lib() -> Any:
         ctypes.POINTER(ctypes.c_ulong),
     )
     lib.GetWindowThreadProcessId.restype = ctypes.c_ulong
+    lib.GetCursorPos.argtypes = (ctypes.POINTER(_Point),)
+    lib.GetCursorPos.restype = ctypes.c_int
+    lib.SetCursorPos.argtypes = (ctypes.c_int, ctypes.c_int)
+    lib.SetCursorPos.restype = ctypes.c_int
+    lib.ClientToScreen.argtypes = (ctypes.c_void_p, ctypes.POINTER(_Point))
+    lib.ClientToScreen.restype = ctypes.c_int
+    lib.WindowFromPoint.argtypes = (_Point,)
+    lib.WindowFromPoint.restype = ctypes.c_void_p
+    lib.GetAncestor.argtypes = (ctypes.c_void_p, ctypes.c_uint)
+    lib.GetAncestor.restype = ctypes.c_void_p
+    lib.AttachThreadInput.argtypes = (ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int)
+    lib.AttachThreadInput.restype = ctypes.c_int
+    lib.BringWindowToTop.argtypes = (ctypes.c_void_p,)
+    lib.BringWindowToTop.restype = ctypes.c_int
+    lib.GetForegroundWindow.argtypes = ()
+    lib.GetForegroundWindow.restype = ctypes.c_void_p
+    lib.SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int)
+    lib.SendInput.restype = ctypes.c_uint
 
     _user32 = lib
     return _user32
@@ -150,6 +209,8 @@ def _kernel32() -> Any:
     lib.OpenProcess.restype = ctypes.c_void_p
     lib.CloseHandle.argtypes = (ctypes.c_void_p,)
     lib.CloseHandle.restype = ctypes.c_int
+    lib.GetCurrentThreadId.argtypes = ()
+    lib.GetCurrentThreadId.restype = ctypes.c_ulong
 
     _kernel32_lib = lib
     return _kernel32_lib
@@ -367,6 +428,100 @@ def post_left_down(hwnd: int, x: int, y: int) -> None:
 def post_left_up(hwnd: int, x: int, y: int) -> None:
     """Release the left button at ``(x, y)`` in client coordinates."""
     _post(hwnd, WM_LBUTTONUP, 0, x, y)
+
+
+def client_to_screen(hwnd: int, x: int, y: int) -> tuple[int, int]:
+    """A client-area point of ``hwnd``, in screen coordinates -- what
+    ``set_cursor_pos``/``window_at`` need, since a click target only knows
+    the client-fraction point ``to_point`` resolved."""
+    point = _Point(x, y)
+    _lib().ClientToScreen(hwnd, ctypes.byref(point))
+    return point.x, point.y
+
+
+def get_cursor_pos() -> tuple[int, int]:
+    """The real cursor's current screen position, to restore after a click."""
+    point = _Point()
+    _lib().GetCursorPos(ctypes.byref(point))
+    return point.x, point.y
+
+
+def set_cursor_pos(x: int, y: int) -> None:
+    """Move the real cursor to a screen point. ``SendInput`` reads this
+    position rather than a message's coordinates, so a Unity window -- unlike
+    the i-deck's SDL one -- only sees a click here."""
+    if not _lib().SetCursorPos(x, y):
+        code = ctypes.get_last_error()
+        raise OSError(
+            code,
+            f"SetCursorPos({x}, {y}) failed -- is the session locked, or a "
+            "screensaver running? Either owns the input desktop.",
+        )
+
+
+def window_at(x: int, y: int) -> int:
+    """The top-level window under a screen point, or ``0`` if none. Only
+    meaningful before an injected click, which lands on whatever is topmost
+    there -- a posted message ignores z-order entirely, so ``post_*`` never
+    needed this."""
+    lib = _lib()
+    hwnd = lib.WindowFromPoint(_Point(x, y)) or 0
+    if not hwnd:
+        return 0
+    return lib.GetAncestor(hwnd, GA_ROOT) or hwnd
+
+
+def bring_to_front(hwnd: int) -> bool:
+    """Raise ``hwnd`` and give it the foreground. Returns whether it actually
+    landed there -- ``SetForegroundWindow`` is refused unless the caller
+    already owns the foreground, hence attaching this thread's input queue to
+    the target's first. The one function here that steals focus; needed only
+    because ``inject_click`` follows the cursor/topmost window, not an HWND."""
+    lib, kernel32 = _lib(), _kernel32()
+    target_thread = lib.GetWindowThreadProcessId(hwnd, None)
+    our_thread = kernel32.GetCurrentThreadId()
+    attached = (
+        bool(lib.AttachThreadInput(our_thread, target_thread, True))
+        if target_thread != our_thread
+        else False
+    )
+    try:
+        lib.BringWindowToTop(hwnd)
+        lib.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            lib.AttachThreadInput(our_thread, target_thread, False)
+    return bool(lib.GetForegroundWindow() == hwnd)
+
+
+def _send_input(flags: int, what: str) -> None:
+    lib = _lib()
+    event = _Input(type=INPUT_MOUSE, mi=_MouseInput(0, 0, 0, flags, 0, None))
+    ctypes.set_last_error(0)
+    if lib.SendInput(1, ctypes.byref(event), ctypes.sizeof(_Input)) == 1:
+        return
+    code = ctypes.get_last_error()
+    detail = f"SendInput({what}) was blocked"
+    if code == ERROR_ACCESS_DENIED:
+        raise WindowAccessDenied(code, detail)
+    raise OSError(code, detail)
+
+
+def inject_left_down() -> None:
+    """Press the left button as real hardware input, at the cursor's current
+    position. Deliberately carries no coordinates of its own --
+    ``MOUSEEVENTF_ABSOLUTE`` normalizes to a second coordinate space, so
+    moving with ``set_cursor_pos`` first and injecting without movement keeps
+    everything in the one space ``ClickTarget`` already speaks."""
+    _send_input(MOUSEEVENTF_LEFTDOWN, "LEFTDOWN")
+
+
+def inject_left_up() -> None:
+    """Release the left button as real hardware input. A failure here is
+    worse than the click failing outright -- the button can be left stuck
+    down -- but there is nothing more this layer can do about it than say
+    so; the caller's log already names the target and window."""
+    _send_input(MOUSEEVENTF_LEFTUP, "LEFTUP")
 
 
 def reset() -> None:
