@@ -24,10 +24,6 @@ function numeric(value) {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)));
 }
 
-function amount(value) {
-  return typeof value === "number" ? value.toFixed(2) : "—";
-}
-
 /** A similarity score at the precision the clusters are actually apart by. */
 function score(value) {
   return typeof value === "number" ? value.toFixed(4) : "—";
@@ -382,52 +378,6 @@ function LineRow({ line, image }) {
 }
 
 /**
- * How well the scores separated, which is what says whether the threshold is
- * anywhere near right.
- *
- * `matched_min` and `rejected_max` are the two numbers a working cut sits
- * between, and they are why the raw scores are on screen at all: cosine
- * similarity of unrelated symbols starts around 0.6 rather than 0, so a threshold
- * that sounds generous calls almost every pair a match.
- */
-function SimilarityStats({ paylines }) {
-  const stats = paylines.stats;
-  if (!stats) return null;
-
-  return (
-    <div className="space-y-2">
-      <h3 className="text-muted-foreground text-[0.65rem] font-semibold tracking-[0.16em] uppercase">
-        Similarity
-      </h3>
-      <div className="border-border/60 bg-muted/20 grid grid-cols-2 gap-x-3 gap-y-4 rounded-lg border p-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Figure
-          label="Threshold"
-          value={score(paylines.threshold)}
-          hint="same-symbol cut"
-        />
-        <Figure label="Pairs" value={stats.comparisons} hint="distinct" />
-        <Figure label="Matched" value={stats.matches} />
-        <Figure
-          label="Range"
-          value={`${score(stats.score_min)}–${score(stats.score_max)}`}
-        />
-        {/* The threshold should sit between these two. */}
-        <Figure
-          label="Lowest match"
-          value={score(stats.matched_min)}
-          hint="counted as the same"
-        />
-        <Figure
-          label="Highest reject"
-          value={score(stats.rejected_max)}
-          hint="counted as different"
-        />
-      </div>
-    </div>
-  );
-}
-
-/**
  * The lines the *running* game plays, checked against the reels this spin landed,
  * and priced against its own paytable.
  *
@@ -501,60 +451,6 @@ export function PaylineValidationCard({ paylines, detailed }) {
                 paytable does not pay is not a result to report. Both are still
                 on the payload (`summary`, `runs_found`) for the timeline and for
                 anyone reading the record. */}
-            {expected ? (
-              <div className="border-border/60 bg-muted/20 space-y-3 rounded-lg border p-3">
-                <p className="text-muted-foreground text-[0.65rem] font-semibold tracking-[0.16em] uppercase">
-                  What it should have paid
-                </p>
-                <div className="grid grid-cols-2 gap-x-3 gap-y-4 sm:grid-cols-4">
-                  <Figure
-                    label="Paying lines"
-                    value={expected.paying_lines}
-                    hint={`of ${paylines.lines.length}`}
-                  />
-                  <Figure
-                    label="Credits"
-                    value={span(expected.credits_min, expected.credits_max)}
-                    hint={expected.exact ? "exact" : "symbol-dependent"}
-                  />
-                  <Figure label="Denom" value={numeric(expected.denomination)} />
-                  <Figure
-                    label="Total bet"
-                    value={amount(expected.total_bet)}
-                    hint="off the meter"
-                  />
-                  <Figure
-                    label="Bet credits"
-                    value={numeric(expected.bet_credits)}
-                    hint="bet ÷ denom"
-                  />
-                  <Figure
-                    label="Per line"
-                    value={numeric(expected.credits_per_line)}
-                    hint={`÷ ${expected.line_count ?? "?"} lines`}
-                  />
-                  <Figure
-                    label="Expected win"
-                    value={span(expected.cash_min, expected.cash_max, amount)}
-                  />
-                  <Figure
-                    label="Meter win"
-                    value={amount(expected.observed_win)}
-                    hint="what it paid"
-                  />
-                </div>
-                <p
-                  className={cn(
-                    "text-xs break-words",
-                    expected.verdict === "failed"
-                      ? "text-destructive"
-                      : "text-muted-foreground",
-                  )}
-                >
-                  {expected.detail}
-                </p>
-              </div>
-            ) : null}
 
             {overlay ? (
               <img
@@ -582,8 +478,6 @@ export function PaylineValidationCard({ paylines, detailed }) {
                 No line pays
               </div>
             )}
-
-            <SimilarityStats paylines={paylines} />
 
             {/* Gathered once as well as marked per line: a spin where the reels
                 and the maths disagree anywhere is worth noticing without

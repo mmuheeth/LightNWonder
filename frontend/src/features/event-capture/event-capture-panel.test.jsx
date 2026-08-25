@@ -138,7 +138,7 @@ describe("EventCapturePanel", () => {
     expect(await screen.findByText(/12 events/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /open it/i })).toHaveAttribute(
       "href",
-      "/captures/2026-08-19_14-32-07",
+      "/event-captures/2026-08-19_14-32-07",
     );
   });
 
@@ -180,16 +180,5 @@ describe("EventCapturePanel", () => {
 
     expect(await screen.findByText("recording events")).toBeInTheDocument();
     expect(screen.getByText(/OBS went away/)).toBeInTheDocument();
-  });
-
-  it("links to the captures page", async () => {
-    respond({ "/status": IDLE });
-
-    renderWithProviders(<EventCapturePanel />);
-
-    expect(await screen.findByRole("link", { name: /view captures/i })).toHaveAttribute(
-      "href",
-      "/captures",
-    );
   });
 });

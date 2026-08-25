@@ -13,8 +13,8 @@ export default function App() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<DashboardPage />} />
-        <Route path="captures" element={<CapturesPage />} />
-        <Route path="captures/:runId" element={<CapturesPage />} />
+        <Route path="event-captures" element={<CapturesPage />} />
+        <Route path="event-captures/:runId" element={<CapturesPage />} />
         <Route path="game-config" element={<GameConfigPage />} />
         <Route path="analyze-spin" element={<AnalyzeSpinPage />} />
         <Route path="*" element={<NotFoundPage />} />

@@ -79,7 +79,7 @@ export function CapturesPage() {
                 key={run.run_id}
                 run={run}
                 isSelected={run.run_id === selected}
-                onSelect={(id) => navigate(`/captures/${id}`)}
+                onSelect={(id) => navigate(`/event-captures/${id}`)}
               />
             ))}
           </nav>

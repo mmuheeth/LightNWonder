@@ -168,7 +168,7 @@ export function EventCapturePanel() {
               <p className="text-muted-foreground text-xs">
                 Saved run <span className="font-mono">{finished.run_id}</span> with{" "}
                 {finished.event_count} events.{" "}
-                <Link to={`/captures/${finished.run_id}`} className="underline">
+                <Link to={`/event-captures/${finished.run_id}`} className="underline">
                   Open it
                 </Link>
               </p>

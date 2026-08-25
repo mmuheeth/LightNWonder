@@ -96,7 +96,7 @@ describe("CapturesPage", () => {
   it("shows the newest run's events without one having to be chosen", async () => {
     respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
-    renderWithProviders(<CapturesPage />, { route: "/captures" });
+    renderWithProviders(<CapturesPage />, { route: "/event-captures" });
 
     expect(await screen.findByText(/Bet changed to 1000.000/)).toBeInTheDocument();
     // The values the rule pulled out of the log line, beside the screenshot.
@@ -107,7 +107,7 @@ describe("CapturesPage", () => {
   it("points each screenshot at the backend's image route", async () => {
     respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
-    renderWithProviders(<CapturesPage />, { route: "/captures" });
+    renderWithProviders(<CapturesPage />, { route: "/event-captures" });
 
     const image = await screen.findByAltText(/bet-changed at/i);
     expect(image).toHaveAttribute(
@@ -119,7 +119,7 @@ describe("CapturesPage", () => {
   it("explains an event that has no screenshot", async () => {
     respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
-    renderWithProviders(<CapturesPage />, { route: "/captures" });
+    renderWithProviders(<CapturesPage />, { route: "/event-captures" });
 
     // The event is still listed -- a failed capture must not hide what happened.
     expect(await screen.findByText("Reels stopped")).toBeInTheDocument();
@@ -129,7 +129,7 @@ describe("CapturesPage", () => {
   it("does not show the raw log line", async () => {
     respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
-    renderWithProviders(<CapturesPage />, { route: "/captures" });
+    renderWithProviders(<CapturesPage />, { route: "/event-captures" });
 
     await screen.findByText(/Bet changed to 1000.000/);
     expect(screen.queryByText(/FortuneOx:9244 DBG/)).not.toBeInTheDocument();
@@ -140,7 +140,7 @@ describe("CapturesPage", () => {
     // and a slot game's reels stop being readable below about half the width.
     respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
-    renderWithProviders(<CapturesPage />, { route: "/captures" });
+    renderWithProviders(<CapturesPage />, { route: "/event-captures" });
 
     const summary = await screen.findByText(/Bet changed to 1000.000/);
     const list = summary.closest("ul");
@@ -151,7 +151,7 @@ describe("CapturesPage", () => {
   it("puts the description above the screenshot", async () => {
     respond({ "/runs/2026-08-19_14-32-07": RUN, "/runs": RUNS, "/status": STATUS });
 
-    renderWithProviders(<CapturesPage />, { route: "/captures" });
+    renderWithProviders(<CapturesPage />, { route: "/event-captures" });
 
     const summary = await screen.findByText(/Bet changed to 1000.000/);
     const card = summary.closest("li");
