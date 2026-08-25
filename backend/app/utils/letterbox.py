@@ -18,6 +18,7 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "ContentBox",
     "content_box",
+    "is_blank",
 ]
 
 # Luminance where a bar stops: OBS pads with pure black, game edges start above 180.
@@ -114,3 +115,21 @@ def content_box(
         frame_width=image.width,
         frame_height=image.height,
     )
+
+
+def is_blank(image: Image.Image, *, threshold: int = DEFAULT_THRESHOLD) -> bool:
+    """Whether nothing in ``image`` clears ``threshold`` -- an all-black capture.
+
+    The same measurement :func:`content_box` makes and deliberately does not act
+    on: there, nothing above the threshold means "do not trim", because a fade to
+    black is a normal thing for a screenshot to catch and one bad crop beats an
+    error on the frame after it. A caller that took the frame *on purpose* wants
+    the opposite answer -- an empty frame is a capture that did not happen, and
+    every reading taken off it is meaningless rather than merely dark. So the
+    fact is exposed and what to do about it is left to whoever asked.
+    """
+    if image.width <= 0 or image.height <= 0:
+        return True
+    limit = min(max(int(threshold), 0), 255)
+    mask = image.convert("L").point(lambda value: 255 if value > limit else 0)
+    return mask.getbbox() is None

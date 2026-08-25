@@ -15,13 +15,21 @@ reached) since the pairs after a break are evidence the break was real. Each
 line gets its own picture with a break marker, paying or not; the combined
 overlay draws only paying lines and never the break ring, since several lines
 share it. Holds no state, so no ``reset()``.
+
+:func:`check` reads the set out of the active game's ``paylines`` block;
+:func:`check_lines` takes one it was handed, which is how
+:mod:`app.services.analyze_spin` checks the lines the *running* game declares
+in its own ``winGeometry.xml``. Both go through :func:`_evaluate_set`, so a
+line set from either source is scored, drawn and written identically.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Collection, Sequence
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from PIL import Image
@@ -43,6 +51,7 @@ from app.schemas.paylines import (
     PaylineCheckResult,
     PaylineLayout,
     PaylineLine,
+    PaylineOverlay,
     PaylineSetOption,
     PaylineSource,
     PaylineStats,
@@ -225,24 +234,28 @@ def _centre(box: tuple[int, int, int, int]) -> tuple[int, int]:
 
 def _line_drawing(
     index: int,
-    line: payline_config.Payline,
+    positions: Sequence[str],
     pays: int,
     break_position: str | None,
     tiles: dict[str, reel_grid.PlacedTile],
 ) -> payline_overlay.DrawnLine:
     """One line, as the overlay wants it -- paying or not. ``points`` is the
-    confirmed run and nothing more, empty when ``pays`` is 0."""
-    boxes = {position.name: tiles[position.name].box for position in line.positions}
+    confirmed run and nothing more, empty when ``pays`` is 0.
+
+    Takes position *names* rather than a parsed line, so a caller holding only a
+    finished :class:`PaylineCheckResult` can rebuild the same drawing -- which is
+    what :func:`redraw` does, and why the two cannot draw a line differently."""
+    boxes = {name: tiles[name].box for name in positions}
     centres = {name: _centre(box) for name, box in boxes.items()}
 
-    matched = line.positions[:pays]
-    rest = line.positions[pays:]
+    matched = positions[:pays]
+    rest = positions[pays:]
 
     return payline_overlay.DrawnLine(
         colour=payline_overlay.colour(index),
-        points=[centres[position.name] for position in matched],
-        trail=[centres[position.name] for position in rest],
-        matched_boxes=[boxes[position.name] for position in matched],
+        points=[centres[name] for name in matched],
+        trail=[centres[name] for name in rest],
+        matched_boxes=[boxes[name] for name in matched],
         break_box=boxes[break_position] if break_position is not None else None,
     )
 
@@ -362,24 +375,58 @@ async def layout() -> PaylineLayout:
     return await asyncio.to_thread(_layout)
 
 
-def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
-    """Blocking half of :func:`check`."""
-    name, config = _active_config()
-    grid = _grid(config)
-    chosen = request.set or _default_set(_set_names(config))
-    line_set = _read_set(config, chosen)
-    threshold = (
-        request.threshold
-        if request.threshold is not None
-        else settings.PAYLINE_MATCH_THRESHOLD
-    )
+@dataclasses.dataclass(frozen=True)
+class ImageOptions:
+    """Which pictures one check comes back with.
 
-    split = grid_service.read_split(grid_service.resolve_split(request.split))
+    Two knobs rather than one flag because the two pictures answer different
+    questions and cost wildly different amounts: the combined overlay is one
+    image, and per-line pictures are one *per line* -- forty of them for a
+    forty-line set, which is fine to return to a panel that asked for them and
+    not fine to attach to something polling. ``"paying"`` is the middle ground:
+    the lines a reader would actually open.
+    """
+
+    overlay: bool = True
+    """Whether the combined picture of every paying line comes back inline. It
+    is written to disk either way."""
+
+    lines: Literal["all", "paying", "none"] = "all"
+    """Which lines get their own tracking picture."""
+
+
+def _wants_line_image(options: ImageOptions, *, paying: bool) -> bool:
+    """Whether one line's own picture is being asked for."""
+    return options.lines == "all" or (options.lines == "paying" and paying)
+
+
+def _evaluate_set(
+    game: str,
+    config: GameConfig,
+    line_set: payline_config.PaylineSet,
+    *,
+    split_name: str | None,
+    threshold: float | None,
+    images: ImageOptions,
+) -> PaylineCheckResult:
+    """Compare one set of lines against one written split.
+
+    Takes the set rather than reading it, so the same comparison serves a set
+    declared in this repo's game config *and* one assembled from the running
+    game's own ``winGeometry.xml`` (see :mod:`app.services.analyze_spin`).
+    Everything below the set -- the grid geometry, the tiles, the threshold, the
+    drawing -- is identical either way, and having two copies of it is how the
+    two would drift apart.
+    """
+    grid = _grid(config)
+    cut = threshold if threshold is not None else settings.PAYLINE_MATCH_THRESHOLD
+
+    split = grid_service.read_split(grid_service.resolve_split(split_name))
     if (split.rows, split.columns) != (grid.row_count, grid.column_count):
-        # A conflict, not a 500 — the config may be right and the split merely old.
+        # A conflict, not a 500 -- the config may be right and the split merely old.
         raise PaylineSourceStaleError(
             f"{split.name} is a {split.rows}x{split.columns} split but "
-            f"{name} now declares a {grid.row_count}x{grid.column_count} grid -- "
+            f"{game} now declares a {grid.row_count}x{grid.column_count} grid -- "
             "split the frame again"
         )
     try:
@@ -396,8 +443,14 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
     lines: list[PaylineLine] = []
     paying_drawings: list[payline_overlay.DrawnLine] = []
     for index, line in enumerate(line_set.lines):
-        steps, pays, break_position = _evaluate(line, scores, threshold)
-        drawing = _line_drawing(index, line, pays, break_position, tiles)
+        steps, pays, break_position = _evaluate(line, scores, cut)
+        drawing = _line_drawing(
+            index,
+            [position.name for position in line.positions],
+            pays,
+            break_position,
+            tiles,
+        )
         paying = pays >= _MIN_PAYING
         if paying:
             # Just the path on the combined picture -- several lines share it.
@@ -405,7 +458,7 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
 
         line_image = (
             payline_overlay.draw(split.crop, [drawing], scale=scale)
-            if request.include_images
+            if _wants_line_image(images, paying=paying)
             else None
         )
         lines.append(
@@ -425,35 +478,165 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
 
     overlay = payline_overlay.draw(split.crop, paying_drawings, scale=scale)
     directory = split.directory / _OUTPUT_DIR
-    file_name = f"{chosen}.png"
+    file_name = f"{line_set.name}.png"
     _write(overlay, directory, file_name)
 
-    stats = _stats(lines, scores, threshold)
+    stats = _stats(lines, scores, cut)
     logger.info(
         "Checked the %s payline set of %s against %s at threshold %.4f: %s "
         "(%d of %d pairs matched)",
-        chosen,
-        name,
+        line_set.name,
+        game,
         split.name,
-        threshold,
+        cut,
         _summarise(lines),
         stats.matches,
         stats.comparisons,
     )
     return PaylineCheckResult(
-        game=name,
-        set=chosen,
-        threshold=threshold,
+        game=game,
+        set=line_set.name,
+        threshold=cut,
         source=_describe(split),
         summary=_summarise(lines),
         lines=lines,
         stats=stats,
         output_dir=str(directory),
         output_file=file_name,
-        overlay_image=_encode(overlay) if request.include_images else None,
+        overlay_image=_encode(overlay) if images.overlay else None,
+    )
+
+
+def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
+    """Blocking half of :func:`check`."""
+    name, config = _active_config()
+    chosen = request.set or _default_set(_set_names(config))
+    return _evaluate_set(
+        name,
+        config,
+        _read_set(config, chosen),
+        split_name=request.split,
+        threshold=request.threshold,
+        images=(
+            ImageOptions(overlay=True, lines="all")
+            if request.include_images
+            else ImageOptions(overlay=False, lines="none")
+        ),
     )
 
 
 async def check(request: PaylineCheckRequest) -> PaylineCheckResult:
     """Evaluate one bet configuration's lines against one split reel grid."""
     return await asyncio.to_thread(_check, request)
+
+
+def _check_lines(
+    line_set: payline_config.PaylineSet,
+    *,
+    split: str | None,
+    threshold: float | None,
+    images: ImageOptions,
+) -> PaylineCheckResult:
+    """Blocking half of :func:`check_lines`."""
+    name, config = _active_config()
+    return _evaluate_set(
+        name,
+        config,
+        line_set,
+        split_name=split,
+        threshold=threshold,
+        images=images,
+    )
+
+
+async def check_lines(
+    line_set: payline_config.PaylineSet,
+    *,
+    split: str | None = None,
+    threshold: float | None = None,
+    images: ImageOptions | None = None,
+) -> PaylineCheckResult:
+    """Evaluate a caller-supplied set of lines against one split reel grid.
+
+    The public door for lines that did not come from the active game's
+    ``paylines`` block -- :mod:`app.services.analyze_spin` builds one out of the
+    running game's ``winGeometry.xml``. The active game still supplies the grid
+    geometry (``reel_bounds``), because that is where the tiles are, not which
+    patterns pay.
+    """
+    return await asyncio.to_thread(
+        _check_lines,
+        line_set,
+        split=split,
+        threshold=threshold,
+        images=images or ImageOptions(),
+    )
+
+
+def _redraw(
+    result: PaylineCheckResult, names: Collection[str], *, file_name: str
+) -> PaylineOverlay:
+    """Blocking half of :func:`redraw`."""
+    _, config = _active_config()
+    grid = _grid(config)
+    split = grid_service.read_split(grid_service.resolve_split(result.source.split))
+    tiles = _placed_tiles(grid, split)
+    scale = payline_overlay.scale_for(
+        split.crop.width, settings.PAYLINE_OVERLAY_MIN_WIDTH
+    )
+
+    wanted = set(names)
+    drawings = [
+        # `index` has to be the line's place in the *whole* set, not in the
+        # subset being drawn, or a filtered overlay would recolour the lines it
+        # kept and stop matching the swatches beside them.
+        _line_drawing(index, line.positions, line.pays, None, tiles)
+        for index, line in enumerate(result.lines)
+        if line.name in wanted
+    ]
+    overlay = payline_overlay.draw(
+        split.crop,
+        [dataclasses.replace(one, detailed=False) for one in drawings],
+        scale=scale,
+    )
+    directory = split.directory / _OUTPUT_DIR
+    _write(overlay, directory, file_name)
+    logger.info(
+        "Redrew the %s overlay of %s as %d of %d line(s): %s",
+        result.set,
+        split.name,
+        len(drawings),
+        len(result.lines),
+        directory / file_name,
+    )
+    return PaylineOverlay(
+        output_dir=str(directory),
+        output_file=file_name,
+        image_data=_encode(overlay),
+    )
+
+
+async def redraw(
+    result: PaylineCheckResult,
+    names: Collection[str],
+    *,
+    file_name: str | None = None,
+) -> PaylineOverlay:
+    """Draw the combined overlay again, over a chosen subset of the same lines.
+
+    For the caller that can only decide which lines matter *after* the check has
+    run -- :mod:`app.services.analyze_spin` needs the measured pairs before it can
+    read the game's reel stops, and only then knows which runs the paytable
+    actually pays. Rebuilt from the result rather than re-evaluated, so the
+    picture cannot disagree with the numbers it came from, and it goes through
+    the same :func:`_line_drawing` so a redrawn line is drawn identically to a
+    first-pass one, colour included.
+
+    ``file_name`` defaults to the one the check already wrote, which **replaces**
+    it: one picture per (split, set) is the whole convention there, and leaving a
+    superseded overlay beside the current one is how a reader ends up looking at
+    the wrong evidence.
+    """
+    return await asyncio.to_thread(
+        _redraw, result, names, file_name=file_name or result.output_file
+    )

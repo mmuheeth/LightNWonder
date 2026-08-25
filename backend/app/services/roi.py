@@ -8,7 +8,8 @@ return as data URIs and nothing is written, except ``cash_meter``, which is also
 kept on disk and read via :mod:`app.services.meter`. Regions resolve against
 :func:`content_box` (the game's content, not the canvas), since letterbox bars
 change width as the window resizes — see :mod:`app.utils.letterbox`.
-:func:`resolve_frame`/:func:`open_frame`/:func:`content_box`/:func:`resolve_box`/
+:func:`resolve_frame`/:func:`open_frame`/:func:`is_blank`/:func:`content_box`/
+:func:`resolve_box`/
 :func:`describe`/:func:`describe_path`/:func:`encode_png` are public so
 :mod:`app.services.grid` and :mod:`app.services.ocr` share this reading instead of
 re-deriving it. Holds no state, so no ``reset()``.
@@ -140,6 +141,26 @@ def open_frame(path: Path) -> Image.Image:
         raise RoiExtractFailedError(
             f"{path.name} could not be read as an image: {exc}"
         ) from exc
+
+
+def is_blank(path: Path) -> bool:
+    """Whether the frame at ``path`` has nothing in it.
+
+    Here rather than in the caller because this module already owns opening a
+    frame, and because the threshold has to be the same one regions are resolved
+    against -- a frame nothing can be cropped out of and a frame that is blank
+    are the same measurement (:func:`app.utils.letterbox.is_blank`). An
+    unreadable file is reported as *not* blank: that is a different failure with
+    a different message, and whoever reads the frame next will give it.
+    """
+    try:
+        with Image.open(path) as image:
+            image.load()
+            return letterbox.is_blank(
+                image, threshold=settings.FRAME_LETTERBOX_THRESHOLD
+            )
+    except OSError:
+        return False
 
 
 def content_box(image: Image.Image) -> letterbox.ContentBox:

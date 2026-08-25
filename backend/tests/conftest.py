@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
+from app.services import analyze_spin as analyze_spin_service
 from app.services import event_capture as event_capture_service
 from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
@@ -90,3 +91,16 @@ async def _clean_event_capture_state() -> AsyncIterator[None]:
     await event_capture_service.reset()
     yield
     await event_capture_service.reset()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_analyze_spin_state() -> AsyncIterator[None]:
+    """Cancel any spin a test left running, drop its subscribers and its lock.
+
+    Async for the same reason as its event-capture sibling: ending the run means
+    awaiting its cancellation, and a task cancelled but never awaited is the
+    pending-task warning that ``filterwarnings = error`` turns into a failure.
+    """
+    await analyze_spin_service.reset()
+    yield
+    await analyze_spin_service.reset()

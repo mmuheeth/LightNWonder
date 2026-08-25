@@ -341,3 +341,29 @@ class PaylineCheckFailedError(AppException):
     status_code = HTTPStatus.BAD_GATEWAY
     error_code = "PAYLINE_CHECK_FAILED"
     message = "The paylines could not be checked against the split"
+
+
+# --- Analyze spin ---------------------------------------------------------
+# One run exists process-wide, so the only HTTP failures are about that: 409
+# when a run is or is not in the state the caller assumed, and 409 again when
+# the machine cannot host a run at all. Everything a run does *while* running
+# fails on its own step, with the underlying service's own error -- an
+# unconfirmed press is still `IDECK_PRESS_NOT_CONFIRMED`, not a spin error.
+
+
+class SpinAnalysisAlreadyRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "SPIN_ANALYSIS_ALREADY_RUNNING"
+    message = "A spin analysis is already in progress"
+
+
+class SpinAnalysisNotRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "SPIN_ANALYSIS_NOT_RUNNING"
+    message = "No spin analysis is in progress"
+
+
+class SpinAnalysisUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "SPIN_ANALYSIS_UNAVAILABLE"
+    message = "The active game cannot be analysed on this machine"

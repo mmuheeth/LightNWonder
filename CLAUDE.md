@@ -21,12 +21,21 @@ those tiles satisfy, and `features/paytable` for the maths the running game
 actually loaded. `game-input` and `ocr` are backend-only so far — endpoints
 and services with no `src/features/` slice — so don't go hunting for their UI.
 
-`features/paytable` is the only slice that is a whole route (`/game-config`,
-the "Game Config" tab) rather than a dashboard card, because a payline grid and
-a 200-row reel strip do not survive half a row. It renders four cards —
+Two slices are whole routes rather than dashboard cards, both because their
+content does not survive half a row.
+
+`features/paytable` (`/game-config`, the "Game Config" tab) renders four cards —
 current paytable, win geometry, payline combos, reel strips — out of a response
 that also carries the symbol table those names come from and the scatter awards;
 the slice is deliberately not a one-to-one rendering of the payload.
+
+`features/analyze-spin` (`/analyze-spin`, the "Analyze Spin" tab) is every other
+integration in one press: it records, screenshots, spins the i-deck, follows the
+game log to the result, clicks take-win if anything was won, screenshots each
+moment, stops recording, and then validates the cash meter and the paylines over
+the frames it took. It is the only slice whose live half is not react-query — a
+run publishes a snapshot per step over a WebSocket — and the only one that
+composes other features' services rather than wrapping one of its own.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
 and current; read the relevant one before changing an integration.
@@ -95,16 +104,17 @@ Adding a backend resource is three files plus one line: `app/schemas/<thing>.py`
 ## Backend architecture
 
 **Services are module-level singletons, not classes.** `obs.py`, `ideck.py`,
-`event_capture.py`, `game_input.py` and `ocr.py` each hold their state (client,
-lock, running run, cached engine) in module globals and expose a `reset()` that
-`tests/conftest.py` calls autouse before and after every test. Callers import the
-namespace, not the functions: `from app.services import obs as obs_service`. Only
-`event_capture.reset()` is async — it has a watcher task to cancel.
+`event_capture.py`, `game_input.py`, `ocr.py` and `analyze_spin.py` each hold
+their state (client, lock, running run, cached engine) in module globals and
+expose a `reset()` that `tests/conftest.py` calls autouse before and after every
+test. Callers import the namespace, not the functions: `from app.services import
+obs as obs_service`. Only `event_capture.reset()` and `analyze_spin.reset()` are
+async — both have a task to cancel.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
 inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
-`GameInputSettings`, `OcrSettings`, `FrameSettings`, `PaylineSettings` and
-`PaytableSettings`
+`GameInputSettings`, `OcrSettings`, `FrameSettings`, `PaylineSettings`,
+`PaytableSettings` and `AnalyzeSpinSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
@@ -139,6 +149,8 @@ question — reads a log *backwards* for the last line matching a pattern),
 `game_math.py` (a paytable folder's `math.xml` and `gameConfig.cfg`),
 `win_geometry.py` (`winGeometry.xml`, plus the conversion between its
 0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
+`reel_stops.py` (a spin's logged stops plus the strips become the symbols that
+were on screen -- naming them, never deciding what paid),
 `win32.py` (the only ctypes),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
 `image_roi.py` (crops a named region out of a frame),
@@ -323,6 +335,104 @@ and only names matching a tile's own pattern are touched. ROI's own
 `_SAVED_REGION` writes `cash-meter/<frame>.png` and every other region comes back
 as a data URI only.
 
+**`services/analyze_spin.py` is orchestration and nothing else.** It owns no
+image handling, no XML, no win32 — it is the *order* the other services go in
+(OBS record/screenshot, i-deck press, game log wait, game-input click, then ROI's
+meter and grid+paylines), and every step carries the underlying service's own
+error code. `_step` also has one convention worth knowing: a body that sets
+`step.error` **without raising** is recorded as failed and the run carries on,
+for the step that did its work and knows the result is unusable. Six things it
+exists to get right:
+
+- **A losing spin is proven by silence.** The game logs `[WinBangDone]` when the
+  win meter counts up and logs nothing at all when there is no win, so "no win"
+  is that line's absence within `ANALYZE_SPIN_WIN_WAIT_SECONDS`. Set below the
+  longest count-up, a win comes back as a loss — the only setting here that
+  produces a confidently wrong answer rather than a timeout.
+- **The steps exist before they run.** A run is created with all twelve
+  `pending`, so a failure on step four leaves the rest visibly unreached, and
+  take-win on a losing spin is `skipped` — a different fact from unreached.
+- **Cancellation is cooperative, never `task.cancel()`.** Every wait polls and
+  every poll checks a flag, so a cancelled run unwinds through its own code and
+  no `finally` runs under a pending `CancelledError` (which is also what keeps
+  `filterwarnings = error` happy). `abort()` in the lifespan runs *before* OBS
+  disconnects, because the one thing worth getting right at shutdown is OBS not
+  being left recording.
+- **Screenshots go where the validations read**: the dashboard screenshot dir
+  (`OBS_SCREENSHOT_SUBDIR`), not a per-run one, because `roi.py` and `grid.py`
+  open a frame *by name* there. `frame_path()` delegates to
+  `roi.resolve_frame()` rather than re-deriving the guards.
+- **An empty frame is read back, not trusted.** OBS renders nothing for a moment
+  after its window source is re-pointed and reports a successful write of the
+  black frame anyway, so `prepare` settles after retargeting and every capture is
+  probed with `roi.is_blank` and retried. A frame that stays blank sets
+  `blank` on itself and fails its step *without raising* — see the
+  error-without-raising convention on `_step`.
+- **The two validations cannot fail each other**, and each catches its own
+  exceptions so the run reaches both. A validation that runs and reports `failed`
+  is a *completed* step; only one that could not run at all fails.
+
+**Payline validation is three judgements from three sources, kept strictly
+apart.** This is the invariant to preserve if anything here is refactored:
+
+- **The picture decides what landed.** `pays` is the leading run of tiles cosine
+  similarity found alike, and every pair's score travels on `steps` — a run of
+  two is a claim about two numbers and is not checkable without them. Nothing
+  about the win comes out of the log: a checker that read the answer there would
+  agree with the game by construction and could never catch a reel drawing the
+  wrong symbol.
+- **The paytable decides whether it pays.** `paying` (two or more tiles alike) is
+  *evidence*; `awarded` is the win. A run of two of a symbol paying from three is
+  cancelled — `awarded: false`, a `note` naming `min_pay_length`, no credits, and
+  excluded from `expected`. `services/paylines.py` deliberately stops at "two or
+  more" because what pays what is not its business; `analyze_spin` has the
+  paytable, so the call belongs there — including `summary`, which is written
+  from the awards rather than reused from the check.
+- **A cancelled run is not a result.** Its per-line picture is dropped from the
+  payload and the combined overlay is redrawn over the awarded lines only, via
+  `paylines.redraw()` — which rebuilds from the finished result through the same
+  `_line_drawing`, so a redrawn line cannot differ from a first-pass one, and
+  replaces the file the check wrote. Skipped when nothing was cancelled. Its
+  `steps` survive: the scores are the evidence, and a run the maths would have
+  paid one symbol longer means the threshold is worth revisiting.
+- **"Pays" means credits, everywhere.** A line *matches* five symbols and *pays*
+  twenty-five. Never use the word for the run length — that is `pays` the field,
+  and rendering it as "pays 5" is what made a run of five read as five credits.
+- **The logged reel stops only name the symbols.**
+  `ReelSet.SetStops(ReelsStopData)` (`game_log.REEL_STOPS`, deliberately *not* a
+  `DEFAULT_RULES` entry — it is nothing to screenshot) plus `math.xml`'s strips
+  give the code at every grid position, via `utils/reel_stops.py`. That is the
+  one thing similarity cannot say about a run, and what turns "something paying
+  at three" into one combo (`_combo_for`) and one credit value. Without stops the
+  award stays a range (`value_min`/`value_max`, `exact: false`) rather than being
+  guessed.
+- Both readings are reported per line, and `agrees: false` is an *output*, not an
+  error: a wild standing in, or reels drawing what the maths did not say landed.
+- **A stop index does not say which row it is.** `ANALYZE_SPIN_REEL_STOP_ANCHOR`
+  defaults to `auto`, which builds top/middle/bottom and keeps whichever agrees
+  best with the pairs similarity already measured. `stop_anchor_decided` says
+  when that was a tie, so an ambiguous spin does not look certain.
+
+**Which lines exist still comes from the game's own geometry.**
+`services/paylines.check_lines()` is the public door for a line set the caller
+assembled — `analyze_spin` builds one from the paytable's applicable
+`winGeometry.xml` set, so the lines are the ones the *running* game plays rather
+than the hand-copy in `games/<Game>.json` (which exists for machines without the
+game installed). Both entry points funnel through `_evaluate_set`, so a set from
+either source is scored, drawn and written identically; the geometry set is named
+`geometry-<id>` so its overlay never overwrites a config-sourced one. It is built
+by handing a dict to `utils/paylines.read_set()` rather than constructing the
+dataclasses, because that is where a line is checked to run left to right.
+
+**The progress stream is the only WebSocket, and the only non-envelope JSON.**
+`WS /api/analyze-spin/stream` sends a whole `SpinAnalysisState` on connect and one
+per change — snapshots, not deltas, so a late or lossy subscriber is still
+correct. It carries no images; `GET /status?include_images=true` is the report.
+The endpoint runs a push task and a receive task and takes whichever finishes
+first, because a one-way stream that never reads would only notice a closed tab
+on its next send. Vite needs `ws: true` on the `/api` proxy or the upgrade gets
+the HTML index.
+
 **Request correlation.** `RequestContextMiddleware` is registered last, so it
 runs outermost. The id lives both in a `ContextVar` (for loggers and envelope
 builders) and on the ASGI scope, because Starlette's `ServerErrorMiddleware`
@@ -400,6 +510,13 @@ one directory. Shared plumbing is in `src/lib/`.
   reference for a functional `refetchInterval` — 2s while a run is live,
   `false` when idle, so no panel polls without a reason to. That slice also
   owns `captureImageUrl()`, the one fetch that bypasses `apiRequest`.
+- **`features/analyze-spin/` is the one live view that is not react-query.** A
+  run pushes a snapshot per step over a WebSocket, so `useSpinStream` holds it in
+  component state and `useSpinReport` fetches only the pictures (which the stream
+  omits) once the run ends. `useSpinView` composes the two and uses the report's
+  images only when its `run_id` matches the live one — the stream can already be
+  on a new run while the report holds the last. Don't turn this into a poll, and
+  don't copy the pattern into a slice whose data changes at human speed.
 - `features/obs/` is still the reference slice for the query + mutate shape.
 - Tailwind v4 has no `tailwind.config.js`; theming is CSS-first in
   `src/index.css` (`@theme inline` + `:root`/`.dark` oklch values).

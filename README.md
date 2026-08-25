@@ -401,6 +401,53 @@ running on it. See
 [backend/README.md](backend/README.md#the-loaded-paytable-game-config) for the
 endpoint, the failure codes and the file formats.
 
+## Analyze Spin
+
+The **Analyze Spin** tab is every other feature in one press. It starts a
+recording, screenshots the machine at rest, spins it on the i-deck, follows the
+game's own log until the reels stop, finds out whether anything was won, takes
+the win if there was, screenshots each of those moments, stops the recording —
+and then grades what it collected. Two screenshots on a losing spin, three on a
+winning one.
+
+Progress arrives over a WebSocket, so the page shows the sequence happening
+rather than a spinner: every step of the run exists from the first frame, and one
+that fails says so where it stands, carrying the error the equivalent direct
+request would have given. A step that was deliberately not run — take-win, on a
+spin that won nothing — reads as *skipped*, which is a different fact from never
+having got there.
+
+Then two validations, deliberately independent so neither can fail the other:
+
+- **The cash meter**, read off every screenshot the run took, with the
+  arithmetic between them checked: the bet came off the balance, the win
+  registered, the win went onto the balance when it was collected, the win cell
+  cleared. Each check shows what it expected, what it read and the sum it did,
+  because a failing one is nearly always one misread digit and the numbers are
+  the answer.
+- **The paylines**, checked against the lines the *running game* declares —
+  its own `winGeometry.xml`, reached through the paytable its log named, not the
+  hand-copied block in this repo's game config.
+
+  Two independent sources, and which does what is the point. **The picture
+  decides what paid**: each line is read by cosine similarity between the tiles
+  it runs through, so nothing about the win comes out of the log — a checker that
+  read the answer there would agree with the game by construction and could never
+  catch a reel drawing the wrong symbol. **The game's logged reel stops name the
+  symbols**: they say which symbol sits at every position, which is the one thing
+  similarity cannot tell you about a run it found, and what turns "something
+  paying at three" into one combo and one credit value out of the game's own
+  maths. Where the two disagree is reported rather than resolved — a wild
+  standing in, or reels drawing what the maths did not say landed. Without a
+  stops line the award honestly stays a range.
+
+The one number worth tuning is `ANALYZE_SPIN_WIN_WAIT_SECONDS`. There is no log
+line saying a spin lost, so a loss is proven by the win meter's count-up *not*
+arriving — set it below the longest count-up the game animates and a win comes
+back as a loss. See
+[backend/README.md](backend/README.md#analyze-spin) for the endpoints, the step
+list and the failure modes.
+
 ## Notes
 
 - Health is mounted at the backend **root** (`/health`, `/health/live`,

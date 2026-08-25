@@ -19,6 +19,7 @@ from typing import Any
 __all__ = [
     "DEFAULT_RULES",
     "PAYTABLE_LOADED",
+    "REEL_STOPS",
     "TOUCH_REGISTERED",
     "DetectedEvent",
     "EventRule",
@@ -299,6 +300,25 @@ PAYTABLE_LOADED = re.compile(
     r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
     r" current paytableId\[(?P<paytable>[^\]]+)\]"
     r"(?: current supported denoms\[(?P<supported>[^\]]*)\])?"
+)
+
+
+# Where each reel landed, one index per reel into that reel's strip. Written
+# before the stop animation plays, so it arrives ahead of the reels-stopped
+# transition rather than with it.
+#
+# Deliberately not a DEFAULT_RULES entry, for the same reason the rest of the
+# raw pre-animation bookkeeping is not: it produces no frame distinguishable
+# from its neighbours, so it is nothing to screenshot. It is a module-level
+# pattern like PAYTABLE_LOADED instead -- something a service asks the log for
+# on purpose, rather than something a run notices going past.
+#
+# What it is for is naming symbols, never deciding wins: with math.xml's strips
+# these indices say *which* symbol sat at every grid position, which is the one
+# question cosine similarity cannot answer about a run it found. See
+# :mod:`app.utils.reel_stops`.
+REEL_STOPS = re.compile(
+    r"ReelSet\.SetStops\(ReelsStopData\):\s*\[(?P<stops>[\d,\s]+)\]"
 )
 
 

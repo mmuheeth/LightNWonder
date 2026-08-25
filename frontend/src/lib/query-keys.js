@@ -18,6 +18,17 @@ export const queryKeys = Object.freeze({
     all: ["roi"],
     regions: () => [...queryKeys.roi.all, "regions"],
   }),
+  grid: Object.freeze({
+    all: ["grid"],
+    layout: () => [...queryKeys.grid.all, "layout"],
+  }),
+  analyzeSpin: Object.freeze({
+    all: ["analyze-spin"],
+    // The report is the same endpoint asked for its pictures, and they only
+    // exist once a run has finished -- so it is its own key rather than a
+    // parameter on one, and the progress stream never invalidates it mid-run.
+    report: () => [...queryKeys.analyzeSpin.all, "report"],
+  }),
   paytable: Object.freeze({
     all: ["paytable"],
     // Parameterised: inspecting another paytable of the same game is a

@@ -11,6 +11,7 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import NoDecode, SettingsConfigDict
 
 from app.config.agents import AgentSettings
+from app.config.analyze_spin import AnalyzeSpinSettings
 from app.config.event_capture import EventCaptureSettings
 from app.config.frame import FrameSettings
 from app.config.game_input import GameInputSettings
@@ -46,6 +47,7 @@ class Settings(
     FrameSettings,
     PaylineSettings,
     PaytableSettings,
+    AnalyzeSpinSettings,
 ):
     """Complete runtime configuration for the API."""
 

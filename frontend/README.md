@@ -64,8 +64,10 @@ src/
 │   ├── roi/                crops a configured region out of the latest shot
 │   ├── grid/               splits the reels of the latest shot into tiles
 │   ├── paylines/           checks a split's tiles against the patterns that pay
-│   └── paytable/           the maths the running game loaded: symbols, reel
-│                       strips, combos, and the payline set in play
+│   ├── paytable/           the maths the running game loaded: symbols, reel
+│   │                   strips, combos, and the payline set in play
+│   └── analyze-spin/       drives one spin and grades it: live progress over a
+│                       WebSocket, then the meter and payline validations
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -181,6 +183,39 @@ Its one error case is worth copying too. `win_geometry.error` arrives on a
 successful response -- one file of four could not be read -- so it renders as a
 plain `Alert` beside the tables that are still true, not as an `ApiErrorAlert`,
 which is for a request that failed.
+
+`features/analyze-spin/` is the one slice whose live half is **not** react-query,
+and the exception is worth understanding before copying it anywhere else. A run
+publishes a snapshot on every step transition and every game-log line it reads --
+a dozen or more in twenty seconds -- and polling an endpoint fast enough to catch
+those is worse in every way than the WebSocket the backend already offers. So the
+slice is split by what each half is *for*:
+
+- `useSpinStream` is the run as it happens, straight off the socket into
+  component state. Every frame is a whole `{active, run}` state rather than a
+  delta, so a dropped frame or a subscriber that joins mid-spin is still correct,
+  and the socket sends the current state on connect -- there is no gap to fill on
+  mount. It reconnects on its own and surfaces `connected`, because a backend
+  restart under a dev server is routine and a page that silently stopped updating
+  looks exactly like a spin that silently stalled.
+- `useSpinReport` is the *pictures*. The stream deliberately carries none: forty
+  line images per push would make it the slowest part of a spin. So they are
+  fetched once, from `GET /status?include_images=true`, at the moment the stream
+  says a run has finished -- which is also the moment they exist.
+
+`useSpinView` composes the two and is where the one subtlety lives: the stream can
+already be on a new run while the report still holds the last one, so pictures are
+used only when both name the same `run_id`. Showing the previous spin's reels
+beside this spin's verdict would be worse than showing none.
+
+Everything else in the slice follows the conventions above -- native `<details>`
+for the per-line evidence and the log events, line colours taken from the server,
+`spinFrameUrl()` as the one fetch outside `apiRequest` (a screenshot cannot unwrap
+the envelope). Two rendering decisions are worth naming: the whole twelve-step
+sequence renders from the first frame, `pending` rows included, so a run that dies
+on the press shows the eight things that never happened; and `pending`, `skipped`,
+`completed` and `failed` are four visually distinct states, because a *skipped*
+take-win on a losing spin and a *broken* one are different facts.
 
 ## Talking to the API
 

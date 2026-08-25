@@ -13,6 +13,7 @@ __all__ = [
     "PaylineCheckResult",
     "PaylineLayout",
     "PaylineLine",
+    "PaylineOverlay",
     "PaylineSetOption",
     "PaylineSource",
     "PaylineStats",
@@ -233,4 +234,20 @@ class PaylineCheckResult(BaseModel):
             "Base64 data URI of the reels with every paying line drawn over "
             "them. Null when the request asked for files only."
         ),
+    )
+
+
+class PaylineOverlay(BaseModel):
+    """One combined picture of some lines over the reels, and where it landed.
+
+    Returned by a redraw rather than a check: the lines worth drawing are not
+    always known when the lines are evaluated (see
+    :func:`app.services.paylines.redraw`), and the picture is then the only part
+    that changes.
+    """
+
+    output_dir: str = Field(description="Absolute directory it was written to.")
+    output_file: str = Field(description="What it was written as.")
+    image_data: str = Field(
+        description="Base64 data URI of the reels with those lines drawn over them."
     )

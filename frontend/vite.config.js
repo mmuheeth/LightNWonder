@@ -13,8 +13,10 @@ export default defineConfig(({ mode }) => {
   const backend = env.BACKEND_PROXY_TARGET || "http://127.0.0.1:8001";
 
   // Going through the proxy keeps API requests same-origin in development, so
-  // cookies work and CORS never applies.
-  const proxy = { "/api": { target: backend, changeOrigin: true } };
+  // cookies work and CORS never applies. `ws` is not optional: the Analyze Spin
+  // progress stream is a WebSocket under the same /api prefix, and without it
+  // the upgrade is answered with the HTML index instead.
+  const proxy = { "/api": { target: backend, changeOrigin: true, ws: true } };
 
   return {
     plugins: [react(), tailwindcss()],

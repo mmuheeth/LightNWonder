@@ -24,6 +24,7 @@ from app.exceptions.base import AppException
 from app.middleware import RequestContextMiddleware
 from app.schemas.response import ApiResponse
 from app.schemas.system import ServiceInfo
+from app.services import analyze_spin as analyze_spin_service
 from app.services import database as database_service
 from app.services import event_capture as event_capture_service
 from app.services import obs as obs_service
@@ -59,6 +60,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Before OBS goes: a run still going needs its manifest sealed, and
         # sealing it takes one last screenshot-free read, not a live socket.
         await event_capture_service.abort()
+        # This one needs the socket, not just the absence of it: a spin
+        # interrupted mid-run would otherwise leave OBS still recording.
+        await analyze_spin_service.abort()
         await database_service.disconnect(app.state.db)
         app.state.db = None
         await obs_service.disconnect()

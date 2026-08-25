@@ -72,6 +72,7 @@ backend/
     │   ├── ocr.py           Tesseract OCR settings, and finding the engine
     │   ├── paylines.py      match threshold, default line set, overlay size
     │   ├── paytable.py      how far back to read the log for the loaded paytable
+    │   ├── analyze_spin.py  which keys drive one spin, and how long each stage may take
     │   └── game_config/     active selection plus per-game process, logs,
     │                         ROIs, reel bounds, paylines, targets, the game's
     │                         installed GameConfig directory and symbol names
@@ -86,6 +87,9 @@ backend/
     │                         pattern -- the opposite question to log_tail's
     │   ├── game_math.py     reads a paytable folder's math.xml (symbols, reel
     │                         strips, combos) and its gameConfig.cfg identity
+    │   ├── reel_stops.py    turns a spin's logged reel stops plus the strips into
+    │                         the symbols that were on screen -- naming them, never
+    │                         deciding what paid
     │   ├── win_geometry.py  reads winGeometry.xml: where each payline runs, and
     │                         converts a line to a game config's [row, column]
     │   ├── image_roi.py     crops a config's named region out of a frame, by
@@ -119,7 +123,8 @@ backend/
     │   ├── roi.py           region catalog, and one extracted crop
     │   ├── grid.py          reel grid shape, and one split into tiles
     │   ├── paylines.py      line sets, one line's verdict and its evidence
-    │   └── paytable.py      the loaded paytable, its maths and its geometry
+    │   ├── paytable.py      the loaded paytable, its maths and its geometry
+    │   └── analyze_spin.py  one driven spin: its steps, and the two validations
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
     │   └── handlers.py      the only place error responses are built
@@ -137,7 +142,9 @@ backend/
         ├── paylines.py       matches a split's tiles against the patterns that pay
         ├── meter.py          turns a cash-meter crop into its five values
         ├── paytable.py       joins the game's log to the maths it installed
-        └── roi.py            cuts one configured region out of a screenshot
+        ├── roi.py            cuts one configured region out of a screenshot
+        └── analyze_spin.py   drives one spin through all of the above, then
+                              validates the meter and the paylines over it
 ```
 
 Adding a resource is three files plus one line:
@@ -255,6 +262,9 @@ raise ConflictError(
 | `EventCaptureNotRunningError` | 409 | `EVENT_CAPTURE_NOT_RUNNING` |
 | `EventCaptureLogUnavailableError` | 409 | `EVENT_CAPTURE_LOG_UNAVAILABLE` |
 | `EventCaptureRunNotFoundError` | 404 | `EVENT_CAPTURE_RUN_NOT_FOUND` |
+| `SpinAnalysisAlreadyRunningError` | 409 | `SPIN_ANALYSIS_ALREADY_RUNNING` |
+| `SpinAnalysisNotRunningError` | 409 | `SPIN_ANALYSIS_NOT_RUNNING` |
+| `SpinAnalysisUnavailableError` | 409 | `SPIN_ANALYSIS_UNAVAILABLE` |
 
 Add your own by subclassing:
 
@@ -1558,6 +1568,284 @@ applies — the game runs elevated on these machines, so the backend must be too
 `GET /api/game-input/status` reports `access_denied` rather than leaving you to
 guess. Elevate the backend by launching it from the VS Code terminal — see
 [`docs/elevation.md`](../docs/elevation.md).
+
+## Analyze Spin
+
+Everything above, in order, from one button. Records, screenshots, spins, follows
+the game's log to the result, collects a win if there is one, and then runs the
+cash meter and payline validations over the frames it took.
+
+```
+POST /api/analyze-spin/start          spin once, and validate it
+GET  /api/analyze-spin/status         the run in progress, or the last one
+POST /api/analyze-spin/cancel         ask the run in progress to stop
+GET  /api/analyze-spin/frames/{file}  one screenshot the run took
+WS   /api/analyze-spin/stream         progress, one snapshot per change
+```
+
+```bash
+# spin, and return as soon as it is under way
+curl -s -X POST localhost:8001/api/analyze-spin/start
+# where it got to
+curl -s localhost:8001/api/analyze-spin/status
+# the same, plus the meter crops, the annotated reels and the paying lines
+curl -s 'localhost:8001/api/analyze-spin/status?include_images=true'
+```
+
+`app/services/analyze_spin.py` is **orchestration and nothing else** — it owns no
+image handling, no XML, no win32. Every piece already existed; this is the order
+they go in:
+
+| #   | Step              | What it uses                                             |
+| --- | ----------------- | -------------------------------------------------------- |
+| 1   | `prepare`         | OBS connect + window select, and the paytable the game loaded |
+| 2   | `record-start`    | `POST /api/obs/recording/start`, into `analyze-spin/<run>` |
+| 3   | `frame-initial`   | a screenshot, before anything moves                      |
+| 4   | `spin`            | the i-deck key, *and* the game's own `SpinButtonMsg`     |
+| 5   | `reels-stop`      | the log's `stateSpinWithStops` → `stateReelSpinDone`     |
+| 6   | `win-detect`      | the win meter count-up, or its absence                   |
+| 7   | `frame-outcome`   | a screenshot of the result                               |
+| 8   | `take-win`        | a click into the game's window (`take_win`) — win only   |
+| 9   | `frame-collected` | a screenshot once the win is on the balance — win only   |
+| 10  | `record-stop`     | `POST /api/obs/recording/stop`                           |
+| 11  | `meter`           | `roi.cash_meter` on every frame, then the arithmetic between them |
+| 12  | `paylines`        | the reels split, checked against the *running game's* own lines |
+
+So a losing spin takes two screenshots and a winning one takes three, and
+`take-win`/`frame-collected` come back `skipped` rather than absent — a different
+fact from never having got there.
+
+### Six things worth knowing
+
+- **A losing spin is proven by silence.** The game logs the win meter counting up
+  (`[WinBangDone]`) when there is something to collect and logs nothing at all
+  when there is not, so "no win" is the absence of that line within
+  `ANALYZE_SPIN_WIN_WAIT_SECONDS`. That wait is paid in full on every losing
+  spin, and it is the one setting here that can produce a confidently wrong
+  answer rather than a timeout: set below the game's longest count-up, a win is
+  reported as a loss. Everything else fails loudly.
+
+- **A confirmed press is not a spin.** `/api/ideck/press` proves the *panel*
+  registered the key, and the deck's layout belongs to the cabinet rather than
+  the theme — so a key the panel confirms may be one this game binds nothing to.
+  Step 4 therefore also waits for the game to publish `SpinButtonMsg`, and says
+  which half failed.
+
+- **Screenshots go where the validations read.** They are written into the
+  dashboard's own screenshot directory (`OBS_SCREENSHOT_SUBDIR`), not a per-run
+  one, because that is where `services/roi.py` and `services/grid.py` open a
+  frame *by name*. `run.frames[].file_name` is that name;
+  `GET /api/analyze-spin/frames/{file}` serves it.
+
+- **An empty frame is caught rather than accepted.** OBS renders nothing for a
+  moment after its window-capture source is re-pointed, and it reports a
+  perfectly successful write of the black frame that comes out — an error
+  nowhere, and every reading taken off it is meaningless rather than merely
+  dark. So `prepare` waits `ANALYZE_SPIN_SOURCE_SETTLE_SECONDS` after
+  retargeting, and every capture is *read back*
+  (`roi.is_blank`, the same threshold regions are resolved against) and retried
+  up to `ANALYZE_SPIN_BLANK_RETRIES` times. One that stays blank sets `blank` on
+  the frame and fails its step without ending the run — the spin and the eight
+  steps after it are still worth having.
+
+- **Cancelling is cooperative.** Every wait polls and every poll checks the flag,
+  so the run stops itself — tidying up its recording and sealing its `run.json`
+  on the way — rather than being torn down mid-call. The cost is that a cancel
+  lands only once whatever call is in flight returns.
+
+- **The two validations cannot fail each other.** A machine with no Tesseract
+  still gets its payline check; one without the game installed still gets its
+  meter arithmetic. A validation that *runs* and reports `failed` is a completed
+  step — only one that could not run at all fails.
+
+### The stream is the one thing outside the envelope
+
+`WS /api/analyze-spin/stream` sends a whole `{active, run}` state on connect and
+one per change after that. Not deltas: a client that joins mid-spin or drops a
+frame is still correct. It carries **no images** — a snapshot goes out on every
+step transition and every recognised log line, and forty line pictures per push
+would make the stream the slowest part of a spin. `GET /status` with
+`include_images=true` is the report.
+
+A WebSocket frame is not a response: it has no status code and no request id, so
+it is the payload itself rather than `{success, message, data, error, meta}`.
+That and the two file-serving routes are the only exceptions in this API.
+
+> In development the Vite proxy needs `ws: true` to forward the upgrade, which
+> `frontend/vite.config.js` sets. Without it the handshake is answered with the
+> HTML index.
+
+### The cash meter validation is arithmetic, not a rule
+
+`roi.cash_meter` is read off each frame — which is
+[Reading the meter](#reading-the-meter-values), so it needs Tesseract — and each
+check is stated as a relation between two of those readings, with the sum that
+decided it:
+
+| Check                          | Relation                                          |
+| ------------------------------ | ------------------------------------------------- |
+| `bet-stable`                   | the bet reads the same before and after           |
+| `bet-deducted`                 | balance after = balance before − bet              |
+| `win-registered` / `win-empty` | the WIN cell agrees with what the log said        |
+| `win-collected`                | balance after collecting = balance at the result + the win |
+
+There is deliberately **no "the win meter cleared" check**: these games leave the
+last win showing on the WIN cell after it has been collected, so an empty one
+would be the surprise. The balance moving is the proof of collection, and that is
+`win-collected` above.
+
+Every check carries `expected`, `actual` and the arithmetic as a sentence,
+because a failed check is nearly always one misread digit and the numbers are the
+answer — "failed" is a consequence. `indeterminate` is a third verdict, not a
+soft failure: an unreadable meter and a wrong balance need different fixes. Two
+amounts count as equal within `ANALYZE_SPIN_METER_TOLERANCE`, which absorbs the
+OCR of the last decimal and nothing larger.
+
+### The payline validation: three judgements, kept apart
+
+Three sources, and which one answers what is the whole point.
+
+**The picture decides what landed.** The result frame's reels are split and each
+line is read by cosine similarity between the tiles it runs through, exactly as
+[Checking the paylines](#checking-the-paylines) describes — so `pays` is the
+leading run of tiles that *look* alike. Nothing about the win is taken from the
+log: a checker that read the answer there would agree with the game by
+construction and could never catch a reel drawing the wrong symbol. Every pair's
+score travels on `steps`, because a line that "pays 2" is a claim about two
+numbers and the verdict is not checkable without them.
+
+**The logged reel stops name the symbols.** The game writes where each reel
+landed (`ReelSet.SetStops(ReelsStopData): [25,134,11,58,163]`), and `math.xml`
+says what sits at every stop of every strip, so between them the grid is known.
+That answers the one thing similarity cannot say about a run it found — *which*
+symbol it is made of — which is what turns "something paying at three" into one
+combo and one credit value. `app/utils/reel_stops.py` does the placing, and knows
+nothing about paytables or screenshots.
+
+**The paytable decides whether it pays, and nothing else does.** A run of two of
+a symbol whose row starts at three is a *real run and no win* — so it comes back
+`awarded: false` with a `note` saying what it would have needed ("Jack pays from
+3 on, so this run of 2 awards nothing"), contributes nothing to the expected
+award, and is shown under *Cancelled* rather than as a paying line.
+`app/services/paylines.py` deliberately stops at "two or more", because what pays
+what is not its business; this is the module that has the paytable, so this is
+where that call belongs.
+
+So per line the response carries all three readings, never collapsed:
+
+| field | from | meaning |
+| --- | --- | --- |
+| `pays` | the picture | leading run of tiles similarity found alike |
+| `steps` | the picture | every adjacent pair's cosine score, `matched` and `counted` |
+| `paying` | the picture | whether that run is two or more — **evidence, not a win** |
+| `run_from_stops` | the log + maths | leading run of identical codes on the same line |
+| `agrees` | both | whether those two run lengths match |
+| `symbol` / `symbol_name` | the log + maths | the code that run is made of |
+| `min_pay_length` | the paytable | shortest run that symbol pays at |
+| `awarded` | the paytable | **whether this line earns anything** |
+| `combo_id` / `combo_symbols` | `math.xml` | the combo the run matched |
+| `credits` | `math.xml` | what that combo pays, per line at one credit |
+| `candidates` | the paytable | every row that pays at this run length — what the picture alone narrows to |
+
+`runs_found` and `awarded_lines` report the two counts apart, and `summary` is
+written from the awards rather than reused from the payline check — a summary
+reading "Line 2 pays 2" for a run the maths awards nothing for is the exact
+confusion that split exists to remove. **"Pays" is credits throughout, never the
+run length**: a line *matches* five symbols and *pays* twenty-five, and one word
+for both is how a run of five gets read as five credits.
+
+A cancelled run is not presented as a result anywhere. Its own tracking picture
+is dropped from the payload, and the combined overlay is **redrawn** over the
+awarded lines only — `services/paylines.redraw()` rebuilds it from the finished
+result rather than re-evaluating, going back through the same `_line_drawing` so
+a redrawn line is identical to a first-pass one (colour included, since the index
+stays the line's place in the whole set). It replaces the file the check wrote:
+one picture per (split, set) is the convention, and a superseded overlay left
+beside the current one is how a reader ends up looking at the wrong evidence. The
+redraw is skipped entirely when nothing was cancelled. What survives on a
+cancelled line is its `steps` — the scores are still worth reading, and a run the
+picture found that the maths *would* have paid one symbol longer is a threshold
+worth revisiting.
+
+`agrees: false` is the interesting output rather than an error: either a wild is
+standing in (similarity sees a different picture and the maths sees a different
+code, so neither is wrong) or the reels drew something the maths did not say
+landed. It is surfaced per line and counted once on the card.
+
+**Which lines exist still comes from the game's own geometry**, not the
+`paylines` block of `app/config/game_config/games/<Game>.json`. That block is a
+hand-copy kept so a screenshot can be checked on a machine without the game
+installed; here the game *is* installed, so:
+
+1. the game's log names the paytable it loaded;
+2. that paytable's `gameConfig.cfg` says `NumberOfLines`;
+3. that selects a `paylineSetID` in the shared `winGeometry.xml`;
+4. its lines convert to the `[row, column]` form a split is read in.
+
+Read once, in step 1, so a denomination change mid-run cannot have the validation
+grading the spin against the wrong maths. The set is handed to
+`services/paylines.check_lines()` — the same comparison `/api/paylines/check`
+runs, taking a set rather than reading one — and written as
+`paylines/geometry-<set>.png` beside the tiles, so a geometry-sourced check never
+overwrites a config-sourced one. It goes back through
+`app/utils/paylines.read_set()` rather than building the dataclasses directly,
+because that is where a line is checked to run left to right, and a backtracking
+line would otherwise compare a tile with itself and score a perfect match.
+
+**A stop index does not say which row it is.** One number per reel, three rows on
+screen: whether it means the top, middle or bottom visible symbol is a
+convention these files never state, and the wrong one shifts every symbol by a
+row into a plausible grid of the wrong spin. So `ANALYZE_SPIN_REEL_STOP_ANCHOR`
+defaults to `auto`, which builds all three and keeps whichever agrees best with
+the pairs similarity already measured off the picture — the only evidence there
+is. The response reports `stop_anchor`, `stop_agreed`/`stop_compared` and
+`stop_anchor_decided`, so an ambiguous spin says so instead of looking certain.
+Pin the anchor once a game's alignment is settled.
+
+**Without the stops, an award is a range and says so.** `value_min`/`value_max`
+bound it, `exact` is false, and the candidate rows are listed rather than one
+being picked. That is the honest answer when the log did not carry a stops line
+for this spin — not a failure.
+
+The money conversion is spelled out field by field on `expected`, because it runs
+through the denomination and the line count and a wrong verdict is nearly always
+one of those:
+
+```
+bet_credits      = total_bet (off the meter) / denomination (off the log)
+credits_per_line = bet_credits / line_count
+cash             = credits × credits_per_line × denomination
+```
+
+It rests on one assumption, stated on the schema and nowhere else: a line combo's
+value is credits per line at one credit staked on that line. Anything missing
+makes the verdict `indeterminate` rather than a guess.
+
+### Failures, and what they are not
+
+`start` refuses only what this process can check without touching the machine:
+409 when a run is already going, 409 when the active game declares no `log` to
+follow a spin through, 500 when its config will not parse. Everything else fails
+on its own **step**, carrying the error the equivalent direct request would have
+given — an unconfirmed press is still `IDECK_PRESS_NOT_CONFIRMED` on
+`steps[].error_code`, not a spin error. A run whose spin completed but whose
+validation could not run ends `failed` with a usable record rather than a lost
+one.
+
+Out of scope, deliberately: **features**. A bonus or a free-spin sequence between
+the reels stopping and the win counting up will time out on step 6 or miss its
+take-win, and the run's `events` list is what says so — the free-spin win meter's
+own `WinBangDone` is not one of the shipped rules. One spin, base game.
+
+### Configuration
+
+Every setting is in [.env.example](.env.example) under *Analyze Spin*, with the
+reasoning. `ANALYZE_SPIN_SPIN_BUTTON` (default `Rebet`) and
+`ANALYZE_SPIN_TAKE_WIN_TARGET` (default `take_win`) are the two that are really
+per-cabinet and per-game; `ANALYZE_SPIN_WIN_WAIT_SECONDS` is the one to tune
+first. Each run's record is written to
+`obs-captured-files/analyze-spin/<run>/run.json`, and its video under the
+recording root beside it.
 
 ## Logging
 
