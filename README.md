@@ -372,16 +372,25 @@ read the answer out of the game's own log. So this is the one reading that can
 disagree with the game, which is the only kind that could catch a reel drawing
 the wrong symbol.
 
-EfficientNet-B0, transfer-learned on the artwork under `backend/dataset/` (one
-folder per two-letter symbol code), then read back against the tiles the reel
-grid already wrote. Its own tab, `/image-classifier`.
+A network transfer-learned on the artwork under `backend/dataset/` (one folder per
+two-letter symbol code), then read back against the tiles the reel grid already
+wrote. Its own tab, `/image-classifier`.
+
+**Two engines, both kept at once.** EfficientNet-B0 (5.3M parameters) and ResNet34
+(21.8M) share every transform, so only the backbone differs — and each has its own
+checkpoint, so training one leaves the other alone. Train and classify each take
+an optional `architecture`, and the page has a picker on both cards. The point is
+comparison: two independently-fitted networks agreeing about a tile is worth more
+than one of them being confident.
 
 ```bash
 # what can be trained on, and what is wrong with it
 curl localhost:8001/api/image-classifier/dataset
-# fit a model -- about four minutes on CPU; returns as soon as it is under way
+# fit a model -- minutes on CPU; returns as soon as it is under way
 curl -X POST localhost:8001/api/image-classifier/train -d '{}' -H 'Content-Type: application/json'
-# follow it
+# or the other engine
+curl -X POST localhost:8001/api/image-classifier/train -d '{"architecture": "resnet34"}' -H 'Content-Type: application/json'
+# follow it, and see which engines are trained
 curl localhost:8001/api/image-classifier/status
 # name the tiles of the newest split
 curl -X POST localhost:8001/api/image-classifier/classify -d '{}' -H 'Content-Type: application/json'
@@ -390,7 +399,7 @@ curl -X POST localhost:8001/api/image-classifier/classify -d '{}' -H 'Content-Ty
 Three things are worth knowing before reading a result.
 
 **The artwork is not what the classifier sees, and putting the background back is
-the whole feature.** Eight of the nine symbols ship as transparent cut-outs with
+the whole feature.** All but one of the symbols ship as transparent cut-outs with
 no background at all, while the reel grid writes tiles where the symbol already
 sits on the game's dark purple field. Train on the cut-outs directly and the
 network learns that a symbol sits on *nothing* -- which is how an earlier
@@ -403,21 +412,20 @@ black 2% of the time. One sample per class is written to
 is the first thing to look at if accuracy disappoints.
 
 **A tile below the confidence floor is an answer, not a gap.** FortuneOx declares
-eighteen symbol codes and the artwork covers nine -- the wilds, the mysteries and
-both cash orbs have none -- so the model is regularly shown something it has no
-class for. A softmax cannot say "none of these", only spread its mass, so
-`CLASSIFIER_MIN_CONFIDENCE` is where that gets decided: the tile comes back with
-`symbol: null`, `label: "unknown"` and **its ranked candidates still attached**,
-because a rejection with no numbers behind it is not checkable.
+eighteen symbol codes and the artwork does not cover all of them, so the model is
+regularly shown something it has no class for. A softmax cannot say "none of
+these", only spread its mass, so `CLASSIFIER_MIN_CONFIDENCE` is where that gets
+decided: the tile comes back with `symbol: null`, `label: "unknown"` and **its
+ranked candidates still attached**, because a rejection with no numbers behind it
+is not checkable. `GET /dataset` reports which codes still have no artwork.
 
-The default of 0.65 is measured rather than chosen. Across 210 real tiles from 14
-splits, 29% score below 0.50 and the widest empty band in the whole distribution
-runs from **0.563 to 0.681**. Everything from 0.681 up is a real symbol -- the
-weakest being `JJ` (Ten) tiles at 0.681-0.76, checked by eye -- and the highest
-thing the model has no class for is a cash orb at 0.563. So the cut belongs inside
-that band, placed nearer the symbol edge than the middle because naming an
-untrained symbol is a silent wrong answer while rejecting a real one is a visible
-non-answer the reported probabilities explain.
+The default is **0.90**, deliberately far stricter than where the classes actually
+separate — measured, the widest empty band in the distribution sits around
+0.56-0.68, so a much lower floor would still name every symbol on the reference
+split correctly. At 0.90 a correct reading is rejected whenever the model is only
+fairly sure, and that is the intended trade: the grids mean *the model was sure*,
+while the per-tile table shows the leading candidate and its percentage anyway,
+greyed with the figure in red. Two different questions, answered separately.
 
 **Accuracy is two numbers and they are never averaged.** A class here is an
 animation *loop* of 48 near-identical frames, so no split of it is honestly
@@ -429,9 +437,10 @@ re-augments the training pictures, so it measures robustness to the augmentation
 rather than generalisation. The five classes holding a single picture contribute
 to the first number not at all, and the payload says so.
 
-On the reference split `2026-08-24_14-16-16_002_spin-stop` the shipped model names
-all twelve real symbols correctly (0.713-0.990) and rejects all three cash orbs
-(0.390, 0.550, 0.563).
+On the reference split `2026-08-24_14-16-16_002_spin-stop` ResNet34 reads all
+fifteen tiles correctly; ten clear 90% (92.6-98.7%) and five do not — the two Arm
+Bands at 88.5% and 89.3%, and the three Orbs at 43-58%, which are correct
+identifications the floor declines to commit to.
 
 ## Game Config
 

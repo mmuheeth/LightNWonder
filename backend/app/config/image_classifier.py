@@ -18,13 +18,24 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-__all__ = ["BackgroundStyle", "ImageClassifierSettings"]
+__all__ = ["Architecture", "BackgroundStyle", "ImageClassifierSettings"]
 
 # How a cut-out symbol is given the background the game draws it on. `plate` is
 # the measured reel cell (see app/utils/symbol_dataset.py); `solid` is the flat
 # field colour with no texture, gradient or frame; `none` composites over black
 # and is only useful for proving the background is what matters.
 BackgroundStyle = Literal["plate", "solid", "none"]
+
+# Which network to fit. Both take the same 224px ImageNet-normalised input and the
+# same transforms, so a model of either kind is trained and read the same way and
+# only the backbone differs -- which is the point: two independent architectures
+# disagreeing about a tile is worth more than one of them being confident.
+#
+# EfficientNet-B0 is 5.3M parameters, ResNet34 is 21.8M. On CPU the larger one is
+# not necessarily the slower one (ResNet is plain convolutions, while
+# EfficientNet's depthwise separable ones are poorly served by CPU kernels), so
+# pick on measured accuracy rather than on parameter count.
+Architecture = Literal["efficientnet_b0", "resnet34"]
 
 
 class ImageClassifierSettings(BaseSettings):
@@ -55,25 +66,26 @@ class ImageClassifierSettings(BaseSettings):
     # cash orb with conviction. Below this a tile reports `unknown` and still
     # carries its top few probabilities, which is the honest answer.
     #
-    # 0.65 is measured, not guessed, and unlike the payline check's cosine
-    # threshold it sits in an actual gap. Over 210 real tiles from 14 written
-    # splits: 29% score below 0.50, and the widest empty band in the whole
-    # distribution runs from **0.563 to 0.681**. Everything from 0.681 up is a
-    # real symbol -- the weakest are `JJ` (Ten) tiles at 0.681-0.76, checked by
-    # eye -- and the highest thing the model has no class for is a cash orb at
-    # 0.563. So the cut belongs inside that band and 0.65 is inside it.
+    # 0.90 is a deliberately strict cut, chosen so that a *named* tile is one the
+    # model was nearly certain about, and it is well above where the classes
+    # actually separate. Measured over 210 real tiles from 14 written splits: 29%
+    # score below 0.50, the widest empty band runs 0.563-0.681, and everything
+    # from 0.681 up is a real symbol -- so a floor anywhere in that band would name
+    # every symbol correctly. At 0.90 the weakest real class is rejected too: `JJ`
+    # (Ten) scores 0.68-0.76 and `HH` (Jack) around 0.84, so those come back blank
+    # in the grid even though the reading was right.
     #
-    # Placed nearer the symbol edge than the midpoint on purpose. The two
-    # mistakes are not equally bad: naming a symbol the model was never trained
-    # on is a silent wrong answer, while rejecting a real symbol is a visible
-    # non-answer that the reported probabilities immediately explain.
+    # That is the intended trade. Nothing is hidden by it: a tile below the floor
+    # still carries its ranked candidates, and the dashboard shows the leading one
+    # and its probability in the per-tile table, greyed. So the grid means "the
+    # model was sure" and the table means "this is what it thought" -- two
+    # different questions, answered separately.
     #
     # Re-measure against written splits rather than adjusting by intuition, and
-    # re-measure after *any* change to the transforms -- an earlier build put this
-    # at 0.70 on numbers taken before the evaluation transform was fixed, which
-    # then rejected genuine Ten tiles at 0.681. The better fix is artwork for the
-    # missing nine codes.
-    CLASSIFIER_MIN_CONFIDENCE: float = Field(default=0.65, ge=0.0, le=1.0)
+    # re-measure after *any* change to the transforms: an earlier build put this at
+    # 0.70 on numbers taken before the evaluation transform was fixed, which then
+    # rejected genuine Ten tiles at 0.681 while looking principled.
+    CLASSIFIER_MIN_CONFIDENCE: float = Field(default=0.90, ge=0.0, le=1.0)
 
     # How many of the ranked probabilities travel back per tile. Three is enough
     # to see whether a rejection was a close call or the model had no idea.
@@ -98,6 +110,12 @@ class ImageClassifierSettings(BaseSettings):
     CLASSIFIER_SAMPLES_PER_EPOCH: int = Field(default=320, ge=8, le=100_000)
 
     CLASSIFIER_BATCH_SIZE: int = Field(default=16, ge=1, le=512)
+
+    # Which network a train request fits when it names none, and which trained
+    # model a classify request reads when it names none. Both architectures can be
+    # trained and kept at once -- each has its own checkpoint file -- so this is a
+    # default rather than a mode.
+    CLASSIFIER_ARCHITECTURE: Architecture = "efficientnet_b0"
 
     CLASSIFIER_LR_HEAD: float = Field(default=1e-3, gt=0.0)
     CLASSIFIER_LR_FINETUNE: float = Field(default=1e-4, gt=0.0)
@@ -138,15 +156,23 @@ class ImageClassifierSettings(BaseSettings):
         """Absolute directory holding the checkpoint and its metrics."""
         return self.CLASSIFIER_MODEL_DIR.expanduser().resolve()
 
-    @property
-    def classifier_checkpoint_path(self) -> Path:
-        """The trained model itself."""
-        return self.classifier_model_dir / "model.pt"
+    def classifier_checkpoint_for(self, architecture: str) -> Path:
+        """The trained model of one architecture.
+
+        One file per architecture rather than one file overall, so training the
+        second kind does not destroy the first and the two can be compared on the
+        same split.
+        """
+        return self.classifier_model_dir / f"model-{architecture}.pt"
+
+    def classifier_metrics_for(self, architecture: str) -> Path:
+        """What that architecture's last run measured, beside the model itself."""
+        return self.classifier_model_dir / f"metrics-{architecture}.json"
 
     @property
-    def classifier_metrics_path(self) -> Path:
-        """What the last training run measured, beside the model it measured."""
-        return self.classifier_model_dir / "metrics.json"
+    def classifier_checkpoint_path(self) -> Path:
+        """The default architecture's trained model."""
+        return self.classifier_checkpoint_for(self.CLASSIFIER_ARCHITECTURE)
 
     @property
     def classifier_sample_dir(self) -> Path:

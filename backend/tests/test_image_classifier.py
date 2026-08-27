@@ -107,14 +107,21 @@ def captures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def model_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect the model directory, and with it every per-architecture path.
+
+    ``classifier_checkpoint_for`` is a method rather than a property, and the
+    ``classifier_checkpoint_path`` property is built on top of it -- so patching
+    the method alone covers both, and the two cannot disagree about where a
+    checkpoint lives.
+    """
     directory = tmp_path / "model"
     monkeypatch.setattr(
         type(settings), "classifier_model_dir", property(lambda _self: directory)
     )
     monkeypatch.setattr(
         type(settings),
-        "classifier_checkpoint_path",
-        property(lambda _self: directory / "model.pt"),
+        "classifier_checkpoint_for",
+        lambda _self, architecture: directory / f"model-{architecture}.pt",
     )
     monkeypatch.setattr(
         type(settings),
@@ -170,15 +177,28 @@ def active_game(game) -> Path:
 class FakeCheckpoint:
     """A stand-in for a loaded model, carrying only what the service reads."""
 
-    def __init__(self, classes: list[str], *, version: int = 1) -> None:
+    def __init__(
+        self,
+        classes: list[str],
+        *,
+        version: int = 1,
+        architecture: str = "efficientnet_b0",
+    ) -> None:
         self.classes = classes
         self.image_size = 64
+        self.architecture = architecture
         self.transform_version = version
         self.dataset_fingerprint = "fixture"
         self.trained_at = "2026-08-28T00:00:00"
         self.metrics: dict[str, Any] = {}
-        self.path = Path("model.pt")
+        self.path = Path(f"model-{architecture}.pt")
         self.model = object()
+
+    @property
+    def label(self) -> str:
+        import app.utils.symbol_model as symbol_model
+
+        return symbol_model.architecture_label(self.architecture)
 
     @property
     def stale(self) -> bool:
@@ -208,7 +228,12 @@ def stub_model(monkeypatch: pytest.MonkeyPatch):
         return np.asarray(rows, dtype=np.float64)
 
     def fake_load(path):
-        return FakeCheckpoint(list(state["classes"]), version=state["version"])
+        # Derive the architecture from the filename, so the stub behaves like the
+        # real loader: asking for one engine's model must not hand back another's.
+        name = Path(path).stem.removeprefix("model-") or "efficientnet_b0"
+        return FakeCheckpoint(
+            list(state["classes"]), version=state["version"], architecture=name
+        )
 
     monkeypatch.setattr(symbol_model, "predict", fake_predict)
     monkeypatch.setattr(symbol_model, "load", fake_load)
@@ -230,7 +255,7 @@ def stub_model(monkeypatch: pytest.MonkeyPatch):
 def trained(model_dir: Path, stub_model) -> Path:
     """A checkpoint file that exists, so the service believes a model is there."""
     model_dir.mkdir(parents=True, exist_ok=True)
-    path = model_dir / "model.pt"
+    path = model_dir / f"model-{settings.CLASSIFIER_ARCHITECTURE}.pt"
     path.write_bytes(b"not really a model; symbol_model.load is stubbed")
     classifier_service.reset()
     return path
@@ -384,9 +409,14 @@ async def test_classify_names_every_tile_and_arranges_them_row_major(
         ]
     )
 
+    # An explicit floor: this test is about *arrangement*, so it must not move
+    # when the shipped default does. The floor has its own tests below.
     data = assert_success(
         (
-            await client.post("/api/image-classifier/classify", json={"split": "shot"})
+            await client.post(
+                "/api/image-classifier/classify",
+                json={"split": "shot", "min_confidence": 0.5},
+            )
         ).json()
     )
 

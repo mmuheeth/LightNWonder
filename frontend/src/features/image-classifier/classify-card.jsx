@@ -2,7 +2,6 @@ import { useState } from "react";
 import { RefreshCw, ScanSearch } from "lucide-react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
-import { Figure, FigureGrid } from "@/components/figure";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -14,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { SymbolGrid } from "@/features/image-classifier/symbol-grid";
+import { percent } from "@/features/image-classifier/percent";
 import { TileStats } from "@/features/image-classifier/tile-stats";
 import { cn } from "@/lib/utils";
 
@@ -27,15 +27,24 @@ import { cn } from "@/lib/utils";
 export function ClassifyCard({ status, splits, classify }) {
   const [split, setSplit] = useState("");
   const [floor, setFloor] = useState("");
+  const [engine, setEngine] = useState("");
 
-  const ready = status?.state === "ready" || status?.state === "stale";
+  const engines = status?.architectures ?? [];
+  // Only a trained engine can answer, so an untrained one is listed but not
+  // offered -- the Training card above is where it gets fitted.
+  const usable = engines.filter((option) => option.trained);
   const available = splits.data?.splits ?? [];
   const result = classify.data ?? null;
+  const ready = usable.length > 0;
+  const defaultFloor = status?.min_confidence ?? 0.9;
 
   function run() {
     classify.mutate({
       ...(split ? { split } : {}),
-      ...(floor === "" ? {} : { min_confidence: Number(floor) }),
+      ...(engine ? { architecture: engine } : {}),
+      // Typed as a percentage because that is how it is read back; the API speaks
+      // probabilities, so this is the one place the two units meet.
+      ...(floor === "" ? {} : { min_confidence: Number(floor) / 100 }),
       // The per-tile pictures are no longer rendered -- the ringed overlay is the
       // one picture shown -- and fifteen base64 PNGs are most of the payload.
       include_images: false,
@@ -51,9 +60,10 @@ export function ClassifyCard({ status, splits, classify }) {
         </CardTitle>
         <CardDescription>
           Reads the tiles the reel grid wrote and names each one. Confidence is a
-          probability over the {status?.model?.classes?.length ?? 0} trained symbols
-          only — a tile showing something with no training artwork cannot come back as
-          &ldquo;none of these&rdquo;, so it comes back below the floor as unknown.
+          probability over the trained symbols only — a tile showing something with no
+          training artwork cannot come back as &ldquo;none of these&rdquo;, so it comes
+          back below the floor and the grids leave it blank. The per-tile table still
+          shows what it would have guessed.
         </CardDescription>
         <CardAction>
           <Button
@@ -91,18 +101,42 @@ export function ClassifyCard({ status, splits, classify }) {
             </select>
           </div>
 
-          <div className="w-32 space-y-1.5">
+          <div className="w-44 space-y-1.5">
+            <Label htmlFor="classifier-engine" className="text-xs">
+              Engine
+            </Label>
+            <select
+              id="classifier-engine"
+              value={engine}
+              onChange={(event) => setEngine(event.target.value)}
+              className="border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            >
+              <option value="">
+                Default ({engines.find((option) => option.is_default)?.label ?? "none"})
+              </option>
+              {usable.map((option) => (
+                <option key={option.name} value={option.name}>
+                  {option.label}
+                  {option.holdout_accuracy != null
+                    ? ` · ${percent(option.holdout_accuracy)}`
+                    : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="w-28 space-y-1.5">
             <Label htmlFor="classifier-floor" className="text-xs">
-              Floor
+              Floor %
             </Label>
             <input
               id="classifier-floor"
               type="number"
               min={0}
-              max={1}
-              step={0.05}
+              max={100}
+              step={1}
               value={floor}
-              placeholder={String(status?.min_confidence ?? 0.7)}
+              placeholder={(defaultFloor * 100).toFixed(0)}
               onChange={(event) => setFloor(event.target.value)}
               className="border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 py-1 font-mono text-sm tabular-nums focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
@@ -135,24 +169,6 @@ export function ClassifyCard({ status, splits, classify }) {
           <div className="space-y-4 border-t pt-4">
             <p className="text-sm">{result.summary}</p>
 
-            <FigureGrid>
-              <Figure
-                label="Split"
-                value={result.split}
-                hint={`${result.rows}×${result.columns}`}
-              />
-              <Figure
-                label="Named"
-                value={`${result.named}/${result.named + result.unknown}`}
-                hint={`${result.unknown} below the floor`}
-              />
-              <Figure
-                label="Floor"
-                value={result.min_confidence.toFixed(2)}
-                hint="probability, not similarity"
-              />
-            </FigureGrid>
-
             <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
               <SymbolGrid grid={result.symbol_grid} title="Codes" />
               <SymbolGrid grid={result.label_grid} title="Symbols" mono={false} />
@@ -178,7 +194,7 @@ export function ClassifyCard({ status, splits, classify }) {
               </div>
             ) : null}
 
-            <TileStats tiles={result.tiles} />
+            <TileStats tiles={result.tiles} floor={result.min_confidence} />
           </div>
         ) : null}
       </CardContent>

@@ -22,7 +22,28 @@ const STATUS = {
   state: "ready",
   detail: null,
   threads: 6,
-  min_confidence: 0.7,
+  min_confidence: 0.9,
+  architecture: "efficientnet_b0",
+  architectures: [
+    {
+      name: "efficientnet_b0",
+      label: "EfficientNet-B0",
+      trained: true,
+      is_default: true,
+      trained_at: "2026-08-28T02:10:31",
+      holdout_accuracy: 1,
+      detail: null,
+    },
+    {
+      name: "resnet34",
+      label: "ResNet34",
+      trained: true,
+      is_default: false,
+      trained_at: "2026-08-28T02:32:21",
+      holdout_accuracy: 1,
+      detail: null,
+    },
+  ],
   model: { classes: ["AA", "BB", "CC"], image_size: 224 },
   dataset: { exists: true, classes: [], warnings: [] },
   training: null,
@@ -40,8 +61,14 @@ const RESULT = {
   split: "shot",
   rows: 1,
   columns: 2,
-  min_confidence: 0.7,
-  model: { classes: ["AA", "BB", "CC"], image_size: 224, metrics: {} },
+  min_confidence: 0.9,
+  model: {
+    classes: ["AA", "BB", "CC"],
+    image_size: 224,
+    architecture: "efficientnet_b0",
+    label: "EfficientNet-B0",
+    metrics: {},
+  },
   symbol_grid: [["AA", null]],
   label_grid: [["Ox", null]],
   tiles: [
@@ -74,7 +101,7 @@ const RESULT = {
   ],
   named: 1,
   unknown: 1,
-  summary: "1 of 2 tiles named; 1 below 0.70",
+  summary: "1 of 2 tiles named; 1 below 0.90",
   output_dir: "grid/shot/classifier",
   overlay_file: "symbols.png",
   overlay_image: PIXEL,
@@ -122,7 +149,7 @@ describe("ClassifyCard", () => {
     expect(cellsOf(names)).toEqual(["Ox", "—"]);
   });
 
-  it("lists every tile as a row, naming the rejected one as unknown", async () => {
+  it("shows a rejected tile's best guess as a percentage, not as unknown", async () => {
     vi.spyOn(http, "request").mockResolvedValue({ data: envelope(RESULT) });
 
     const tables = await classify();
@@ -138,11 +165,25 @@ describe("ClassifyCard", () => {
           .map((cell) => cell.textContent),
       ),
     ).toEqual([
-      ["Ox", "AA", "r1c1", "0.980"],
-      // A rejection keeps its row and its number: "unknown" is the expected
-      // answer for a symbol with no training artwork, not a missing one.
-      ["unknown", "—", "r1c2", "0.420"],
+      ["Ox", "AA", "r1c1", "98.0%"],
+      // The floor decides the *grid*; this table still reports what the model
+      // thought, so a rejected tile names its leading candidate rather than
+      // going blank. Only the styling says it did not clear the floor.
+      ["Ox", "AA", "r1c2", "42.0%"],
     ]);
+  });
+
+  it("marks the rejected row's figure with the destructive colour", async () => {
+    vi.spyOn(http, "request").mockResolvedValue({ data: envelope(RESULT) });
+
+    const tables = await classify();
+    const rows = within(tables[tables.length - 1])
+      .getAllByRole("row")
+      .slice(1);
+
+    const [named, rejected] = rows.map((row) => within(row).getAllByRole("cell")[3]);
+    expect(named.className).not.toMatch(/text-destructive/);
+    expect(rejected.className).toMatch(/text-destructive/);
   });
 
   it("sends the split and the floor the operator chose", async () => {
@@ -152,15 +193,34 @@ describe("ClassifyCard", () => {
 
     renderWithProviders(<Harness />);
     await userEvent.selectOptions(screen.getByLabelText("Split"), "shot");
-    await userEvent.type(screen.getByLabelText("Floor"), "0.85");
+    await userEvent.selectOptions(screen.getByLabelText("Engine"), "resnet34");
+    // Typed as a percentage, because that is how the whole page reads them.
+    await userEvent.type(screen.getByLabelText("Floor %"), "85");
     await userEvent.click(screen.getByRole("button", { name: /classify/i }));
 
     await waitFor(() => expect(request).toHaveBeenCalled());
+    // Sent as a probability: the API speaks fractions and the field speaks
+    // percent, and this is the one place the two units meet.
     expect(request.mock.calls[0][0].data).toEqual({
       split: "shot",
+      architecture: "resnet34",
       min_confidence: 0.85,
       include_images: false,
     });
+  });
+
+  it("offers both trained engines and defaults to neither being named", async () => {
+    vi.spyOn(http, "request").mockResolvedValue({ data: envelope(RESULT) });
+
+    renderWithProviders(<Harness />);
+    const options = within(screen.getByLabelText("Engine")).getAllByRole("option");
+
+    expect(options.map((option) => option.value)).toEqual([
+      "",
+      "efficientnet_b0",
+      "resnet34",
+    ]);
+    expect(options[0].textContent).toMatch(/Default \(EfficientNet-B0\)/);
   });
 
   it("never asks for the per-tile pictures, since none are rendered", async () => {

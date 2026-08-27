@@ -1,5 +1,4 @@
 import { ApiErrorAlert } from "@/components/api-error-alert";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { GameSelector } from "@/features/games/game-selector";
 import { ClassifyCard } from "@/features/image-classifier/classify-card";
@@ -12,23 +11,16 @@ import {
   useTrainClassifier,
 } from "@/features/image-classifier/use-image-classifier";
 
-const STATE_BADGE = {
-  ready: "secondary",
-  training: "default",
-  stale: "outline",
-  untrained: "outline",
-  not_installed: "destructive",
-  disabled: "outline",
-  error: "destructive",
-};
-
 /**
  * Naming the symbol on a reel tile, from the picture.
  *
  * Its own route rather than a dashboard card, for the same reason Game Config and
- * Analyze Spin are: the dataset is a nine-row table, training is a five-stage list
- * with its own figures, and a classification is fifteen tiles each with a picture,
- * a name and three probabilities. None of that survives half a row.
+ * Analyze Spin are: training is a five-stage list with its own figures and engine
+ * picker, and a classification is two matrices, an annotated picture and a
+ * fifteen-row table. None of that survives half a row.
+ *
+ * The engine's state badge belongs to the Training card, not to this header --
+ * it is a fact about the model, and that card is where it gets changed.
  *
  * Nothing else in this app names a symbol from pixels -- the payline check only
  * asks whether two tiles match each other, and the reel-stop reading takes its
@@ -50,16 +42,11 @@ export function ImageClassifierPage() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">Image Classifier</h1>
           <p className="text-muted-foreground text-sm">
-            EfficientNet-B0 over the symbol artwork, then read back against the tiles
+            A network trained on the symbol artwork, then read back against the tiles
             the reel grid wrote.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          {data ? (
-            <Badge variant={STATE_BADGE[data.state] ?? "outline"}>{data.state}</Badge>
-          ) : null}
-          <GameSelector />
-        </div>
+        <GameSelector />
       </div>
 
       {status.error && !data ? (

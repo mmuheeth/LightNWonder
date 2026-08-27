@@ -147,6 +147,9 @@ class ClassifierMetrics(BaseModel):
     """
 
     classes: list[str] = Field(default_factory=list)
+    architecture: str = Field(
+        default="", description="Which network produced these figures."
+    )
     train_accuracy: float = Field(default=0.0, ge=0.0, le=1.0)
     train_loss: float = Field(default=0.0, ge=0.0)
     frame_holdout_accuracy: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -161,10 +164,31 @@ class ClassifierMetrics(BaseModel):
     seconds: float = Field(default=0.0, ge=0.0)
 
 
+class ArchitectureOption(BaseModel):
+    """One network the classifier can fit, and whether it has been."""
+
+    name: str = Field(description="Key used in requests, e.g. 'resnet34'.")
+    label: str = Field(description="Display name, e.g. 'ResNet34'.")
+    trained: bool = Field(description="Whether a checkpoint for it exists and loads.")
+    is_default: bool = Field(description="Whether a request naming none uses it.")
+    trained_at: str | None = None
+    holdout_accuracy: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Its held-back-frame accuracy, for comparing the two.",
+    )
+    detail: str | None = Field(
+        default=None, description="Why it is unusable, when it is."
+    )
+
+
 class ModelSummary(BaseModel):
     """The checkpoint currently answering, if there is one."""
 
     path: str
+    architecture: str = Field(description="Which network these weights are for.")
+    label: str = Field(description="That network's display name, e.g. 'ResNet34'.")
     trained_at: str = Field(description="When the checkpoint was written.")
     classes: list[str] = Field(default_factory=list)
     image_size: int = Field(ge=1)
@@ -213,6 +237,7 @@ class TrainingRun(BaseModel):
     """A training run, live or finished."""
 
     run_id: str
+    architecture: str = Field(default="", description="Which network this run fitted.")
     state: TrainingRunState
     message: str = Field(description="A sentence naming where the run has got to.")
     started_at: datetime
@@ -245,7 +270,20 @@ class ClassifierStatus(BaseModel):
     torchvision_version: str | None = None
     threads: int = Field(ge=1, description="Threads torch is allowed.")
     min_confidence: float = Field(ge=0.0, le=1.0)
-    model: ModelSummary | None = None
+    architecture: str = Field(
+        default="", description="Which network a request naming none uses."
+    )
+    architectures: list[ArchitectureOption] = Field(
+        default_factory=list,
+        description=(
+            "Every network that can be fitted, and whether one is already trained. "
+            "Both can be kept at once -- each has its own checkpoint -- so this is a "
+            "list of options rather than a mode."
+        ),
+    )
+    model: ModelSummary | None = Field(
+        default=None, description="The default architecture's trained model."
+    )
     dataset: DatasetSummary
     training: TrainingRun | None = Field(
         default=None, description="The live or most recent run; null if never run."
@@ -267,6 +305,13 @@ class TrainRequest(BaseModel):
     batch_size: int | None = Field(default=None, ge=1, le=512)
     background: str | None = Field(
         default=None, description="'plate', 'solid' or 'none'."
+    )
+    architecture: str | None = Field(
+        default=None,
+        description=(
+            "Which network to fit: 'efficientnet_b0' or 'resnet34'. Each has its "
+            "own checkpoint, so fitting one leaves the other alone."
+        ),
     )
     pretrained: bool | None = None
     seed: int | None = Field(default=None, ge=0)
@@ -297,8 +342,10 @@ class ClassifiedTile(BaseModel):
     predictions: list[SymbolPrediction] = Field(
         default_factory=list,
         description=(
-            "Ranked candidates, longest first. Present whether or not the tile was "
-            "named -- a rejection is only checkable against the numbers behind it."
+            "Candidates ranked by probability, highest first. Present whether or "
+            "not the tile was named: on a named tile they show how far ahead the "
+            "winner was, and on a rejected one they are the whole evidence for the "
+            "rejection -- which is also what the dashboard shows in its place."
         ),
     )
     width: int = Field(ge=1)
@@ -329,6 +376,10 @@ class ClassifyRequest(BaseModel):
     )
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     top_k: int | None = Field(default=None, ge=1, le=20)
+    architecture: str | None = Field(
+        default=None,
+        description="Which trained model should answer; omit for the default.",
+    )
     include_images: bool = True
     include_overlay: bool = True
 

@@ -73,8 +73,9 @@ backend/
     │   ├── paylines.py      match threshold, default line set, overlay size
     │   ├── paytable.py      how far back to read the log for the loaded paytable
     │   ├── analyze_spin.py  which keys drive one spin, and how long each stage may take
-    │   ├── image_classifier.py  where the training images and the trained model
-    │                         live, the confidence floor, and torch's thread cap
+    │   ├── image_classifier.py  where the training images and the trained models
+    │                         live, which network to fit, the confidence floor,
+    │                         and torch's thread cap
     │   └── game_config/     active selection plus per-game process, logs,
     │                         ROIs, reel bounds, paylines, targets, the game's
     │                         installed GameConfig directory and symbol names
@@ -1056,8 +1057,9 @@ split merely old — split the frame again.
 The payline check answers *do these two tiles match each other*. It never learns
 what either one **is** -- and `utils/reel_stops.py`, which does name symbols, reads
 the answer out of the game's own log, so it agrees with the game by construction.
-This is the third reading: EfficientNet-B0 over the tiles themselves, and the only
-one that can disagree.
+This is the third reading: a network over the tiles themselves, and the only one
+that can disagree. Two are available -- EfficientNet-B0 and ResNet34 -- and both
+can be trained and kept at once.
 
 ```bash
 # what there is to train on, and what is wrong with it
@@ -1070,8 +1072,8 @@ curl -X POST localhost:8001/api/image-classifier/train -d '{}'
 curl localhost:8001/api/image-classifier/status
 # stop it; whatever model was already saved is untouched
 curl -X POST localhost:8001/api/image-classifier/train/cancel
-# name the tiles of one split, at a threshold of your own
-curl -X POST localhost:8001/api/image-classifier/classify -d '{"min_confidence": 0.8}'
+# name the tiles of one split, with the other engine and a floor of your own
+curl -X POST localhost:8001/api/image-classifier/classify   -d '{"architecture": "resnet34", "min_confidence": 0.8}'
 ```
 
 Four files, one per concern: `utils/symbol_dataset.py` turns artwork into training
@@ -1102,13 +1104,17 @@ earlier cosine-similarity attempt at the same problem stalled. That attempt scor
 each grid tile against every art file and reached only 0.35-0.44 on the four
 picture symbols while matching the card symbols not at all.
 
-The reason is measurable. Of FortuneOx's nine classes **exactly one** (`AA`, the
-Ox) ships with the game's field and frame drawn on it -- it is a framed portrait,
-99.4% opaque inside its own alpha box. The other eight, including `BB`/`CC`/`DD`
-which look like premium symbols, are transparent cut-outs at 0.45-0.71 opaque. The
-game composites them over the reel background at runtime. Compare a cut-out on
+The reason is measurable. Of the classes shipped so far **exactly one** (`AA`, the
+Ox) carries the game's field and frame drawn on it -- it is a framed portrait,
+99.4% opaque inside its own alpha box. Every other one, including `BB`/`CC`/`DD`
+which look like premium symbols, is a transparent cut-out at 0.45-0.71 opaque, and
+the game composites them over the reel background at runtime. Compare a cut-out on
 transparency against a tile whose symbol sits on dark purple and the background is
 most of the difference.
+
+Which is why the routing below keys on a *measured property of each file* rather
+than a list of class names: the artwork grows, and a rule written against nine
+specific codes would quietly stop applying to the tenth.
 
 So `symbol_dataset.compose()` puts it back, routing on a **measured property of
 the file** rather than a hardcoded class list -- a game whose whole set ships
@@ -1162,36 +1168,51 @@ Two more that are not the stock recipe:
   61-128px, so without this the network trains on detail that is simply absent at
   inference.
 
-### The confidence floor is where "none of these" gets decided
+### Two engines, and why both are kept
 
-FortuneOx declares eighteen symbol codes; the artwork covers nine. `WC`, `MS`,
-`MO`, `MC`, `SC`, `SF`, `FG`, `FO` and `SO` have none, and the cash orbs are on
-screen constantly. A softmax over nine classes cannot answer "none of these" -- it
-can only spread its mass -- so `CLASSIFIER_MIN_CONFIDENCE` is the answer, and a
-rejected tile keeps its `predictions` because a rejection with no numbers behind it
-cannot be checked.
+`CLASSIFIER_ARCHITECTURE` picks between **EfficientNet-B0** (5.3M parameters) and
+**ResNet34** (21.8M). Both take the same 224px ImageNet-normalised input through
+the same transforms, so the sample synthesis, augmentation, schedule, evaluation
+and checkpoint format are all shared -- only the backbone differs, which is why
+adding a third is one entry in `_ARCHITECTURES` rather than a second code path.
 
-`0.65` is measured. Over 210 real tiles from 14 splits:
+They are not a mode. **Each keeps its own checkpoint** —
+`model-<architecture>.pt` and `metrics-<architecture>.json` — so training one
+leaves the other untouched and both can answer. `POST /train` and
+`POST /classify` each take an optional `architecture`, `GET /status` lists every
+engine with whether it is trained and what it scored, and the dashboard has a
+picker on both cards. The point is comparison: two independently-fitted networks
+agreeing about a tile is worth more than one of them being confident, and when
+they disagree that is a signal about the tile rather than about either model.
 
-| band | tiles | what is in it |
-|---|---|---|
-| < 0.50 | 29% | orbs, wilds, mysteries -- no trained class |
-| 0.50-0.563 | 1% | the highest-scoring untrained symbol, a cash orb at 0.563 |
-| **0.563-0.681** | **0%** | the gap |
-| 0.681-0.78 | 5% | real symbols, weakest first: `JJ` (Ten), then `CC`, `GG` |
-| >= 0.78 | 65% | real symbols |
+On CPU the larger network is not simply the slower one -- ResNet is plain
+convolutions while EfficientNet's depthwise separable ones are poorly served by
+CPU kernels -- but measured here ResNet34 does cost roughly twice as long
+(~8 minutes against ~4.3 for the same schedule). Both reach 1.00 on held-back
+frames, so pick on behaviour against real splits rather than on either number.
 
-The widest empty band in the distribution is 0.563 to 0.681, so the cut goes in
-there rather than being balanced on one spin. It sits nearer the symbol edge than
-the midpoint deliberately: the two mistakes are not equally bad, because naming a
-symbol the model was never trained on is a silent wrong answer while rejecting a
-real symbol is a visible non-answer that its own reported probabilities explain.
+### The confidence floor
 
-**Re-measure this after any change to the transforms.** An earlier build set it to
-0.70 from numbers taken *before* the evaluation transform was fixed; on the
-corrected model that rejected genuine Ten tiles scoring 0.681. Raise it and the
-card symbols go first (they have one training picture each); lower it and the nine
-codes with no artwork start being named. The real fix is artwork for those nine.
+`CLASSIFIER_MIN_CONFIDENCE` is **0.90**, and it is deliberately far stricter than
+where the classes actually separate. Measured over 210 real tiles, the widest
+empty band in the distribution sits around 0.56-0.68, so a floor anywhere in
+there would name every symbol on the reference split correctly. At 0.90 a
+correct reading is rejected whenever the model is merely fairly sure: on that
+split ResNet34 reads all fifteen tiles right, and five of them -- the two Arm
+Bands at 88.5% and 89.3%, and the three Orbs at 43-58% -- still come back blank.
+
+That is the intended trade, and nothing is hidden by it. A tile below the floor
+keeps its ranked candidates, and the dashboard shows the leading one and its
+percentage in the per-tile table, greyed with the figure in red. So the two grids
+mean *the model was sure* and the table means *this is what it thought* -- two
+different questions, answered separately rather than blended into one number.
+
+Numbers like these move whenever the artwork or the transforms change, so treat
+any figure quoted here as an example rather than a constant, and re-measure
+against written splits. `GET /api/image-classifier/dataset` reports what is
+actually on disk now, and `missing_symbols` reports the codes the active game
+declares that still have no artwork -- which is the list that decides how often
+the floor has to do this work at all.
 
 ### Accuracy is two numbers, and averaging them would answer nothing
 
@@ -1249,9 +1270,12 @@ installed -- the same property the hand-copied `paylines` block exists to preser
 
 ### Where the output goes
 
-`CLASSIFIER_MODEL_DIR/` holds `model.pt` (weights plus classes, input size,
-normalisation, `transform_version` and a dataset fingerprint), `metrics.json` and
-`samples/`. The checkpoint is written beside and moved over, so a run interrupted
+`CLASSIFIER_MODEL_DIR/` holds `model-<architecture>.pt` (weights plus classes,
+input size, the architecture itself, normalisation, `transform_version` and a
+dataset fingerprint), a matching `metrics-<architecture>.json`, and one shared
+`samples/`. The architecture is on the checkpoint because without it `load` would
+build the default backbone and the state dict simply would not fit -- an obscure
+shape error instead of "this is a ResNet checkpoint". The checkpoint is written beside and moved over, so a run interrupted
 mid-write cannot leave a truncated file where a working one was, and it is cached
 on the file's mtime and size the way `services/paytable.py` caches `math.xml`.
 

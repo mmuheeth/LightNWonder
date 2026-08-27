@@ -35,12 +35,19 @@ import torch
 from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0
+from torchvision.models import (
+    EfficientNet_B0_Weights,
+    ResNet34_Weights,
+    efficientnet_b0,
+    resnet34,
+)
 from torchvision.transforms import v2
 
 from app.utils import symbol_dataset
 
 __all__ = [
+    "ARCHITECTURES",
+    "DEFAULT_ARCHITECTURE",
     "TRANSFORM_VERSION",
     "Checkpoint",
     "EpochRecord",
@@ -88,6 +95,41 @@ _CROP_SCALE = (0.65, 1.0)
 _EVAL_CROP = 0.90
 
 
+# The networks that can be fitted, and where each keeps its classifier head.
+#
+# Both take the same 224px ImageNet-normalised input and go through the same
+# transforms, so everything else in this module -- the sample synthesis, the
+# augmentation, the schedule, the evaluation, the checkpoint -- is shared. Only the
+# backbone and the name of its final layer differ, which is why adding a third is
+# one entry here rather than a second code path.
+#
+# `head` is the parameter-name prefix of the layer that gets replaced, and it is
+# what `_freeze` keeps trainable during the first stage. Getting it wrong would
+# silently train nothing in stage one, so it lives beside the builder that
+# replaces that exact layer.
+_ARCHITECTURES: dict[str, dict[str, Any]] = {
+    "efficientnet_b0": {
+        "label": "EfficientNet-B0",
+        "head": "classifier",
+        "weights": EfficientNet_B0_Weights.IMAGENET1K_V1,
+    },
+    "resnet34": {
+        "label": "ResNet34",
+        "head": "fc",
+        "weights": ResNet34_Weights.IMAGENET1K_V1,
+    },
+}
+
+ARCHITECTURES: tuple[str, ...] = tuple(_ARCHITECTURES)
+DEFAULT_ARCHITECTURE = "efficientnet_b0"
+
+
+def architecture_label(architecture: str) -> str:
+    """Display name for an architecture, or the key itself if it is unknown."""
+    entry = _ARCHITECTURES.get(architecture)
+    return str(entry["label"]) if entry else architecture
+
+
 class ModelError(Exception):
     """The model could not be built, trained, saved or loaded."""
 
@@ -125,6 +167,7 @@ class Metrics:
     """
 
     classes: list[str]
+    architecture: str
     train_accuracy: float
     train_loss: float
     frame_holdout_accuracy: float | None
@@ -155,11 +198,17 @@ class Checkpoint:
     model: nn.Module
     classes: list[str]
     image_size: int
+    architecture: str
     transform_version: int
     dataset_fingerprint: str
     trained_at: str
     metrics: dict[str, Any]
     path: Path
+
+    @property
+    def label(self) -> str:
+        """Display name of the network these weights are for."""
+        return architecture_label(self.architecture)
 
     @property
     def stale(self) -> bool:
@@ -270,28 +319,44 @@ class _Samples(Dataset[tuple[torch.Tensor, int]]):
         return tensor, label
 
 
-def _build(classes: int, pretrained: bool) -> nn.Module:
+def _build(classes: int, pretrained: bool, architecture: str) -> nn.Module:
+    entry = _ARCHITECTURES.get(architecture)
+    if entry is None:
+        raise ModelError(
+            f"unknown architecture {architecture!r}; expected one of "
+            f"{', '.join(ARCHITECTURES)}"
+        )
     try:
-        weights = EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
-        model = efficientnet_b0(weights=weights)
+        weights = entry["weights"] if pretrained else None
+        if architecture == "resnet34":
+            model = resnet34(weights=weights)
+            model.fc = nn.Linear(model.fc.in_features, classes)
+        else:
+            model = efficientnet_b0(weights=weights)
+            model.classifier[1] = nn.Linear(model.classifier[1].in_features, classes)
     except Exception as exc:
         raise ModelError(
-            "EfficientNet-B0's pretrained weights could not be loaded. They are a "
-            "~21MB download from download.pytorch.org on first use; set "
+            f"{entry['label']}'s pretrained weights could not be loaded. They are a "
+            "20-90MB download from download.pytorch.org on first use; set "
             "CLASSIFIER_PRETRAINED=false to train without them, or TORCH_HOME to a "
             f"cache that already has them. ({exc})"
         ) from exc
-    in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, classes)
-    # Annotated rather than returned bare: torchvision ships no py.typed, so
-    # efficientnet_b0 is Any and strict mypy will not infer a Module from it.
+    # Annotated rather than returned bare: torchvision ships no py.typed, so the
+    # builders are Any and strict mypy will not infer a Module from them.
     built: nn.Module = model
     return built
 
 
-def _freeze(model: nn.Module, *, frozen: bool) -> None:
+def _freeze(model: nn.Module, architecture: str, *, frozen: bool) -> None:
+    """Freeze everything but the head, or nothing at all.
+
+    The head's parameter prefix comes from the registry -- ResNet calls it ``fc``
+    and EfficientNet ``classifier`` -- because using the wrong one would freeze the
+    whole network and quietly train nothing during the first stage.
+    """
+    head = str(_ARCHITECTURES.get(architecture, {}).get("head", "classifier"))
     for name, parameter in model.named_parameters():
-        parameter.requires_grad = not frozen or name.startswith("classifier")
+        parameter.requires_grad = not frozen or name.startswith(head)
 
 
 def _sampler(labels: Sequence[int], samples: int, seed: int) -> WeightedRandomSampler:
@@ -417,6 +482,7 @@ def train(
     pretrained: bool,
     seed: int,
     threads: int,
+    architecture: str = DEFAULT_ARCHITECTURE,
     sample_dir: Path | None = None,
     on_epoch: Callable[[EpochRecord], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
@@ -455,7 +521,7 @@ def train(
         num_workers=0,
     )
 
-    model = _build(len(names), pretrained)
+    model = _build(len(names), pretrained, architecture)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     records: list[EpochRecord] = []
 
@@ -470,7 +536,7 @@ def train(
     # pretrained features this whole approach depends on.
     if epochs_head > 0:
         stage("head")
-        _freeze(model, frozen=True)
+        _freeze(model, architecture, frozen=True)
         optimiser = torch.optim.AdamW(
             [p for p in model.parameters() if p.requires_grad], lr=lr_head
         )
@@ -488,7 +554,7 @@ def train(
 
     if epochs_finetune > 0:
         stage("finetune")
-        _freeze(model, frozen=False)
+        _freeze(model, architecture, frozen=False)
         optimiser = torch.optim.AdamW(model.parameters(), lr=lr_finetune)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimiser, T_max=max(1, epochs_finetune)
@@ -528,6 +594,7 @@ def train(
 
     metrics = Metrics(
         classes=names,
+        architecture=architecture,
         train_accuracy=accuracy,
         train_loss=loss,
         frame_holdout_accuracy=holdout_accuracy,
@@ -549,6 +616,7 @@ def train(
         checkpoint_path,
         names,
         image_size,
+        architecture,
         symbol_dataset.fingerprint(dataset_dir),
         metrics,
     )
@@ -589,6 +657,7 @@ def _save(
     path: Path,
     classes: Sequence[str],
     image_size: int,
+    architecture: str,
     fingerprint: str,
     metrics: Metrics,
 ) -> None:
@@ -598,6 +667,10 @@ def _save(
             "state_dict": model.state_dict(),
             "classes": list(classes),
             "image_size": image_size,
+            # Which network these weights belong to. Without it `load` would build
+            # the default backbone and the state dict simply would not fit -- an
+            # obscure shape error instead of "this is a ResNet checkpoint".
+            "architecture": architecture,
             "transform_version": TRANSFORM_VERSION,
             "dataset_fingerprint": fingerprint,
             "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -610,7 +683,9 @@ def _save(
         temporary = path.with_suffix(path.suffix + ".tmp")
         torch.save(payload, temporary)
         temporary.replace(path)
-        (path.parent / "metrics.json").write_text(
+        # Named after the architecture, like the checkpoint, so training the
+        # other kind does not overwrite the first one's figures.
+        (path.parent / f"metrics-{architecture}.json").write_text(
             json.dumps(asdict(metrics), indent=2), encoding="utf-8"
         )
     except OSError as exc:
@@ -628,13 +703,15 @@ def load(path: Path) -> Checkpoint:
 
     try:
         classes = [str(name) for name in payload["classes"]]
-        model = _build(len(classes), pretrained=False)
+        architecture = str(payload.get("architecture", DEFAULT_ARCHITECTURE))
+        model = _build(len(classes), False, architecture)
         model.load_state_dict(payload["state_dict"])
         model.eval()
         return Checkpoint(
             model=model,
             classes=classes,
             image_size=int(payload["image_size"]),
+            architecture=architecture,
             transform_version=int(payload.get("transform_version", 0)),
             dataset_fingerprint=str(payload.get("dataset_fingerprint", "")),
             trained_at=str(payload.get("trained_at", "")),

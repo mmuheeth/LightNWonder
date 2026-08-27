@@ -9,6 +9,8 @@ import {
   Square,
 } from "lucide-react";
 
+import { useState } from "react";
+
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Figure, FigureGrid } from "@/components/figure";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +23,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { percent as asPercent } from "@/features/image-classifier/percent";
 import { cn } from "@/lib/utils";
 
 // The same five looks the spin timeline uses, so a stage list reads the same
@@ -56,6 +60,20 @@ const RUN_BADGE = {
   completed: "secondary",
   cancelled: "outline",
   failed: "destructive",
+};
+
+// Whether a tile can be named at all. Lives on this card rather than in the page
+// header because it is a fact about the model, and this is the card that changes
+// it -- a header badge said "untrained" beside a Train button that was the fix,
+// two feet apart.
+const STATE_BADGE = {
+  ready: "secondary",
+  training: "default",
+  stale: "outline",
+  untrained: "outline",
+  not_installed: "destructive",
+  disabled: "outline",
+  error: "destructive",
 };
 
 function percent(value) {
@@ -95,6 +113,8 @@ function StageRow({ stage }) {
  * indistinguishable from a hang.
  */
 export function TrainCard({ status, isFetching, refetch, train, cancel }) {
+  const [engine, setEngine] = useState("");
+  const engines = status?.architectures ?? [];
   const run = status?.training ?? null;
   const active = Boolean(status?.active);
   const canTrain =
@@ -114,15 +134,22 @@ export function TrainCard({ status, isFetching, refetch, train, cancel }) {
           Training
         </CardTitle>
         <CardDescription>
-          Fits EfficientNet-B0 to the symbol artwork. About four minutes on this machine
-          — it runs on the CPU, on half the cores, so the rest of the dashboard keeps
-          working while it does.
+          Fits a network to the symbol artwork. A few minutes on this machine — it runs
+          on the CPU, on half the cores, so the rest of the dashboard keeps working
+          while it does. Each engine keeps its own model, so training one leaves the
+          other alone and the two can be compared on the same split.
         </CardDescription>
         <CardAction className="flex items-center gap-2">
+          {/* One badge, not two: while a run is going the state *is* "training",
+              so the pulsing form replaces it rather than sitting beside it. */}
           {active ? (
             <Badge variant="destructive" className="gap-1">
               <Circle className="size-2 animate-pulse fill-current" />
               training
+            </Badge>
+          ) : status?.state ? (
+            <Badge variant={STATE_BADGE[status.state] ?? "outline"}>
+              {status.state}
             </Badge>
           ) : null}
           <Button
@@ -138,11 +165,40 @@ export function TrainCard({ status, isFetching, refetch, train, cancel }) {
       </CardHeader>
 
       <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="w-56 space-y-1.5">
+            <Label htmlFor="train-engine" className="text-xs">
+              Engine
+            </Label>
+            {/* A styled native select, as this app does elsewhere rather than
+                pulling in another primitive. */}
+            <select
+              id="train-engine"
+              value={engine}
+              onChange={(event) => setEngine(event.target.value)}
+              disabled={active}
+              className="border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 py-1 text-sm disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+            >
+              <option value="">
+                Default ({engines.find((o) => o.is_default)?.label ?? "none"})
+              </option>
+              {engines.map((option) => (
+                <option key={option.name} value={option.name}>
+                  {option.label}
+                  {option.trained
+                    ? option.holdout_accuracy != null
+                      ? ` · trained, ${asPercent(option.holdout_accuracy)}`
+                      : " · trained"
+                    : " · not trained"}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <Button
             variant="outline"
             size="sm"
-            onClick={() => train.mutate({})}
+            onClick={() => train.mutate(engine ? { architecture: engine } : {})}
             disabled={!canTrain || busy}
           >
             <Dumbbell />
@@ -168,7 +224,14 @@ export function TrainCard({ status, isFetching, refetch, train, cancel }) {
 
         {run ? (
           <div className="space-y-3 border-t pt-4">
-            <p className="text-sm">{run.message}</p>
+            <p className="text-sm">
+              {run.architecture ? (
+                <span className="text-muted-foreground font-mono text-xs">
+                  {run.architecture} ·{" "}
+                </span>
+              ) : null}
+              {run.message}
+            </p>
 
             {/* Hand-rolled rather than a new dependency, the same way this app
                 hand-rolls its selects and uses native <details>. */}

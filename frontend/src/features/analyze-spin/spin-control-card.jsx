@@ -1,4 +1,4 @@
-import { Circle, Film, Play, Square, Wifi, WifiOff } from "lucide-react";
+import { Circle, Dices, Film, Play, Square, Wifi, WifiOff } from "lucide-react";
 import { useState } from "react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
@@ -103,7 +103,7 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Play className="size-4" />
+          <Dices className="size-4" />
           Analyze Spin
         </CardTitle>
         <CardDescription>

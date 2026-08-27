@@ -361,15 +361,27 @@ as a data URI only.
 **`services/image_classifier.py` is the only reading that can disagree with the
 game.** `similarity.py` asks whether two tiles match *each other* and never learns
 what either is; `reel_stops.py` names symbols by reading the game's own log, so it
-agrees by construction. This names a tile from the picture — EfficientNet-B0
-(`utils/symbol_model.py`, the only module that imports torch) over the tiles
-`grid.py` already wrote. Four things it exists to get right:
+agrees by construction. This names a tile from the picture — a network in
+`utils/symbol_model.py` (the only module that imports torch) over the tiles
+`grid.py` already wrote. Five things it exists to get right:
 
+- **Two engines, both kept at once.** `CLASSIFIER_ARCHITECTURE` picks
+  EfficientNet-B0 or ResNet34; both share every transform, so only the backbone
+  differs and a third is one entry in `_ARCHITECTURES` rather than a second code
+  path. Each has its **own** `model-<arch>.pt` and `metrics-<arch>.json`, so
+  training one leaves the other answering, and `/train` and `/classify` both take
+  an optional `architecture`. That is the point — two independently-fitted
+  networks agreeing about a tile is worth more than one being confident, and a
+  disagreement says something about the tile. The architecture rides *on* the
+  checkpoint because `load` would otherwise build the default backbone and the
+  state dict would not fit: a shape error instead of "this is a ResNet".
 - **The artwork is not what it sees, and putting the background back *is* the
-  feature.** Of FortuneOx's nine classes exactly one (`AA`) ships with the game's
-  field and frame on it — a framed portrait, 0.994 opaque inside its alpha box.
-  The other eight, `BB`/`CC`/`DD` included, are transparent cut-outs at 0.45–0.71,
-  composited over the reel background by the game at runtime. An earlier
+  feature.** Of the classes shipped so far exactly one (`AA`) carries the game's
+  field and frame — a framed portrait, 0.994 opaque inside its alpha box. Every
+  other one, `BB`/`CC`/`DD` included, is a transparent cut-out at 0.45–0.71,
+  composited over the reel background by the game at runtime. The routing keys on
+  each *file's* measured opacity rather than a list of codes, because the artwork
+  grows and a rule written against nine names stops applying to the tenth. An earlier
   cosine-similarity attempt compared cut-outs against composited tiles and scored
   0.35–0.44 on the picture symbols while missing the card symbols entirely.
   `utils/symbol_dataset.py` composes each source onto a synthesised reel cell,
@@ -394,13 +406,14 @@ agrees by construction. This names a tile from the picture — EfficientNet-B0
   and wilds it has no class for; a softmax cannot say "none of these", only spread.
   `CLASSIFIER_MIN_CONFIDENCE` decides it and the rejected tile keeps its ranked
   `predictions`, because a rejection with no numbers behind it is not checkable.
-  0.65 is measured, not chosen: over 210 real tiles the widest empty band runs
-  0.563–0.681, with every tile above it a real symbol (weakest `JJ` at 0.681,
-  checked by eye) and the highest untrained thing a cash orb at 0.563. It sits
-  nearer the symbol edge on purpose — naming an untrained symbol is a *silent*
-  wrong answer, rejecting a real one is a visible non-answer. Re-measure it after
-  any transform change: an earlier build's 0.70 came from pre-fix numbers and
-  rejected genuine Tens.
+  0.90 is deliberately far above where the classes separate (the widest measured
+  empty band is around 0.56–0.68), so correct readings are rejected whenever the
+  model is only fairly sure — on the reference split ResNet34 reads all fifteen
+  tiles right and five still come back blank. That is the trade, and the per-tile
+  table is what makes it safe: it shows the leading candidate and its percentage
+  anyway, greyed with the figure in red. **The grids mean "the model was sure";
+  the table means "this is what it thought".** Any figure quoted here moves when
+  the artwork or the transforms change — re-measure rather than trusting it.
 - **Accuracy is two numbers and they are never averaged.** A class is an animation
   *loop* of 48 near-identical frames, so no split of it is honestly unseen.
   `frame_holdout_accuracy` holds a block out of the **middle** (not the end — the
