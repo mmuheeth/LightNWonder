@@ -27,6 +27,7 @@ from app.schemas.system import ServiceInfo
 from app.services import analyze_spin as analyze_spin_service
 from app.services import database as database_service
 from app.services import event_capture as event_capture_service
+from app.services import image_classifier as image_classifier_service
 from app.services import obs as obs_service
 
 logger = get_logger("main")
@@ -63,6 +64,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # This one needs the socket, not just the absence of it: a spin
         # interrupted mid-run would otherwise leave OBS still recording.
         await analyze_spin_service.abort()
+        # A training run holds no external device, so it only needs to stop
+        # being awaited -- but it does need awaiting, or the pending task
+        # outlives the loop.
+        await image_classifier_service.abort()
         await database_service.disconnect(app.state.db)
         app.state.db = None
         await obs_service.disconnect()

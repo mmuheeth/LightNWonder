@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "@/components/layout/app-layout";
 import { AnalyzeSpinPage } from "@/pages/analyze-spin-page";
+import { ImageClassifierPage } from "@/pages/image-classifier-page";
 import { CapturesPage } from "@/pages/captures-page";
 import { DashboardPage } from "@/pages/dashboard-page";
 import { GameConfigPage } from "@/pages/game-config-page";
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="event-captures/:runId" element={<CapturesPage />} />
         <Route path="game-config" element={<GameConfigPage />} />
         <Route path="analyze-spin" element={<AnalyzeSpinPage />} />
+        <Route path="image-classifier" element={<ImageClassifierPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

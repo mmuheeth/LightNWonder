@@ -12,6 +12,7 @@ from app.services import analyze_spin as analyze_spin_service
 from app.services import event_capture as event_capture_service
 from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
+from app.services import image_classifier as image_classifier_service
 from app.services import meter as meter_service
 from app.services import obs as obs_service
 from app.services import ocr as ocr_service
@@ -104,3 +105,17 @@ async def _clean_analyze_spin_state() -> AsyncIterator[None]:
     await analyze_spin_service.reset()
     yield
     await analyze_spin_service.reset()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_image_classifier_state() -> AsyncIterator[None]:
+    """Stop any training run, drop the cached model and the dataset summary.
+
+    Async like its event-capture and analyze-spin siblings: a run owns a task, and
+    a task cancelled but never awaited is the pending-task warning that
+    ``filterwarnings = error`` turns into a failure. The cached checkpoint has to
+    go too -- one test's stub model must not be another test's answer.
+    """
+    await image_classifier_service.abort()
+    yield
+    await image_classifier_service.abort()

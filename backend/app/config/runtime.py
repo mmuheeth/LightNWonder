@@ -16,6 +16,7 @@ from app.config.event_capture import EventCaptureSettings
 from app.config.frame import FrameSettings
 from app.config.game_input import GameInputSettings
 from app.config.ideck import PACKAGE_ROOT, IDeckSettings
+from app.config.image_classifier import ImageClassifierSettings
 from app.config.obs import ObsSettings
 from app.config.ocr import OcrSettings
 from app.config.paylines import PaylineSettings
@@ -48,6 +49,7 @@ class Settings(
     PaylineSettings,
     PaytableSettings,
     AnalyzeSpinSettings,
+    ImageClassifierSettings,
 ):
     """Complete runtime configuration for the API."""
 

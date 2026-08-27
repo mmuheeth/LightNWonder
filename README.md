@@ -128,10 +128,15 @@ backend/app/
 ├── middleware/     request id, timing, access log
 └── core/           settings, logging, request context
 
+backend/dataset/              symbol artwork to train on, one folder per code
+                              (gitignored -- large, and not reproducible from here)
+
 backend/obs-captured-files/    OBS screenshots and recordings (gitignored)
 ├── event-capture/      one folder per capture run: images + run.json
+├── classifier/         model.pt, metrics.json, samples/ (one per symbol)
 └── grid/               one folder per split frame: reels.png + tiles/r1c1.png…
-    └── paylines/       the annotated reels, one picture per line set checked
+    ├── paylines/       the annotated reels, one picture per line set checked
+    └── classifier/     symbols.png -- the reels with each tile's name on it
 
 frontend/src/
 ├── features/       one directory per feature (api + hooks + components)
@@ -358,6 +363,75 @@ is several lines at once. A pay count cannot be checked by reading it, which is
 why a picture comes back with every line. See
 [backend/README.md](backend/README.md#checking-the-paylines) for the block
 format, the threshold, and the failure codes.
+
+## Image Classifier
+
+Names the symbol on a reel tile **from the picture**. Nothing else here does: the
+payline check only asks whether two tiles match *each other*, and the reel stops
+read the answer out of the game's own log. So this is the one reading that can
+disagree with the game, which is the only kind that could catch a reel drawing
+the wrong symbol.
+
+EfficientNet-B0, transfer-learned on the artwork under `backend/dataset/` (one
+folder per two-letter symbol code), then read back against the tiles the reel
+grid already wrote. Its own tab, `/image-classifier`.
+
+```bash
+# what can be trained on, and what is wrong with it
+curl localhost:8001/api/image-classifier/dataset
+# fit a model -- about four minutes on CPU; returns as soon as it is under way
+curl -X POST localhost:8001/api/image-classifier/train -d '{}' -H 'Content-Type: application/json'
+# follow it
+curl localhost:8001/api/image-classifier/status
+# name the tiles of the newest split
+curl -X POST localhost:8001/api/image-classifier/classify -d '{}' -H 'Content-Type: application/json'
+```
+
+Three things are worth knowing before reading a result.
+
+**The artwork is not what the classifier sees, and putting the background back is
+the whole feature.** Eight of the nine symbols ship as transparent cut-outs with
+no background at all, while the reel grid writes tiles where the symbol already
+sits on the game's dark purple field. Train on the cut-outs directly and the
+network learns that a symbol sits on *nothing* -- which is how an earlier
+similarity-based attempt came to score 0.35-0.44 on the picture symbols and miss
+the card symbols entirely. So every training picture is composited onto a
+synthesised reel cell whose colours are measured off the 600 tiles already on
+disk: field `rgb(35, 0, 56)`, a gold divider sliver at one edge 40% of the time,
+black 2% of the time. One sample per class is written to
+`obs-captured-files/classifier/samples/` so this can be checked by looking, and it
+is the first thing to look at if accuracy disappoints.
+
+**A tile below the confidence floor is an answer, not a gap.** FortuneOx declares
+eighteen symbol codes and the artwork covers nine -- the wilds, the mysteries and
+both cash orbs have none -- so the model is regularly shown something it has no
+class for. A softmax cannot say "none of these", only spread its mass, so
+`CLASSIFIER_MIN_CONFIDENCE` is where that gets decided: the tile comes back with
+`symbol: null`, `label: "unknown"` and **its ranked candidates still attached**,
+because a rejection with no numbers behind it is not checkable.
+
+The default of 0.65 is measured rather than chosen. Across 210 real tiles from 14
+splits, 29% score below 0.50 and the widest empty band in the whole distribution
+runs from **0.563 to 0.681**. Everything from 0.681 up is a real symbol -- the
+weakest being `JJ` (Ten) tiles at 0.681-0.76, checked by eye -- and the highest
+thing the model has no class for is a cash orb at 0.563. So the cut belongs inside
+that band, placed nearer the symbol edge than the middle because naming an
+untrained symbol is a silent wrong answer while rejecting a real one is a visible
+non-answer the reported probabilities explain.
+
+**Accuracy is two numbers and they are never averaged.** A class here is an
+animation *loop* of 48 near-identical frames, so no split of it is honestly
+unseen. `frame_holdout_accuracy` is over frames held out of the middle of the loop
+-- not the end, because the loop closes and its last frame is a near-duplicate of
+its first -- and `frame_holdout_leakage` says how unlike the training frames those
+held-back ones actually were. `augmented_accuracy` covers all nine classes but
+re-augments the training pictures, so it measures robustness to the augmentation
+rather than generalisation. The five classes holding a single picture contribute
+to the first number not at all, and the payload says so.
+
+On the reference split `2026-08-24_14-16-16_002_spin-stop` the shipped model names
+all twelve real symbols correctly (0.713-0.990) and rejects all three cash orbs
+(0.390, 0.550, 0.563).
 
 ## Game Config
 

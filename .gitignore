@@ -5,8 +5,6 @@ __pycache__/
 
 # C extensions
 *.so
-assets/
-symbol-validation/
 
 # Distribution / packaging
 # These setuptools artifacts only ever appear at the repo root, so they are
@@ -269,3 +267,15 @@ Thumbs.db
 # required: git cannot re-include a file whose parent directory is excluded.
 backend/obs-captured-files/*
 !backend/obs-captured-files/.gitkeep
+
+# Local-only image data: the game's extracted symbol artwork, the hand-sorted
+# validation crops, and the classifier's training set. All three are large, none
+# is reproducible from this repo, and none is source.
+#
+# Anchored with a leading slash for the reason the setuptools block above gives:
+# unanchored, `dataset/` and `symbol-validation/` match at *any* depth, and
+# `symbol-validation/` was in fact hiding frontend/src/features/symbol-validation/
+# from version control entirely.
+/backend/assets/
+/backend/symbol-validation/
+/backend/dataset/

@@ -23,6 +23,18 @@ pillow~=12.3.0
 # Pulls in numpy, whose stubs are why mypy.ini asks for Python 3.12.
 opencv-python~=5.0.0.93
 
+# Symbol classification (app/utils/symbol_model.py). EfficientNet-B0 and its
+# ImageNet weights come from torchvision; the weights are a ~21MB download from
+# download.pytorch.org on the first train, not a package, so they cannot be
+# pinned here. On Windows the PyPI wheels are CPU-only builds, which is what is
+# wanted -- there is no NVIDIA GPU on the cabinet.
+#
+# Optional at runtime like Tesseract: the imports are lazy, so a venv without
+# these still starts the service and GET /api/image-classifier/status reports
+# `not_installed` rather than the app failing to boot.
+torch~=2.13.0
+torchvision~=0.28.0
+
 # Agentic workflows --------------------------------------------------------
 # LangChain v1 provides the provider-neutral agent API; LangGraph supplies
 # durable, stateful workflow execution underneath it.

@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { to: "/event-captures", label: "Event Capture" },
   { to: "/game-config", label: "Game Config" },
   { to: "/analyze-spin", label: "Analyze Spin" },
+  { to: "/image-classifier", label: "Image Classifier" },
 ];
 
 export function AppHeader() {

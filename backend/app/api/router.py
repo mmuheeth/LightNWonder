@@ -10,6 +10,7 @@ from app.api.endpoints import (
     games,
     grid,
     ideck,
+    image_classifier,
     obs,
     ocr,
     paylines,
@@ -29,6 +30,9 @@ api_router.include_router(game_input.router, prefix="/game-input", tags=["game-i
 api_router.include_router(ocr.router, prefix="/ocr", tags=["ocr"])
 api_router.include_router(roi.router, prefix="/roi", tags=["roi"])
 api_router.include_router(grid.router, prefix="/grid", tags=["grid"])
+api_router.include_router(
+    image_classifier.router, prefix="/image-classifier", tags=["image-classifier"]
+)
 api_router.include_router(paylines.router, prefix="/paylines", tags=["paylines"])
 api_router.include_router(paytable.router, prefix="/paytable", tags=["paytable"])
 api_router.include_router(

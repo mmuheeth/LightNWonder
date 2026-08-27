@@ -62,16 +62,21 @@ src/
 │   ├── event-capture/      start/stop log-driven capture, and read runs back
 │   ├── obs/                OBS Studio control: connect, screenshot, record
 │   ├── roi/                crops a configured region out of the latest shot
-│   ├── grid/               splits the reels of the latest shot into tiles
 │   ├── paylines/           checks a split's tiles against the patterns that pay
 │   ├── paytable/           the maths the running game loaded: symbols, reel
 │   │                   strips, combos, and the payline set in play
+│   ├── image-classifier/   trains EfficientNet-B0 on the symbol artwork, then
+│   │                   names the tiles of a split: the reels as two matrices
+│   │                   (codes and display names), the ringed overlay, and a
+│   │                   per-tile table -- or "unknown" below the floor
 │   └── analyze-spin/       drives one spin and grades it: live progress over a
 │                       WebSocket, then the meter and payline validations
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
 │   ├── api-error-alert.jsx consistent error rendering
+│   ├── figure.jsx          a labelled number, for a row of them across a card
+│   ├── stat-row.jsx        a labelled value, for a list of them down one
 │   ├── error-boundary.jsx  catches render-time crashes
 │   ├── theme-provider.jsx  applies .dark to <html>
 │   └── theme-toggle.jsx

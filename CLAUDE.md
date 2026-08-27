@@ -13,15 +13,22 @@ posted mouse clicks into the game's own Unity window — and the React dashboard
 they talk to processes, windows and log files on the developer's own PC, not to a
 network service.
 
+The one thing that is *not* host-specific is `image-classifier`: it trains
+EfficientNet-B0 on symbol artwork and reads back the tiles the reel grid already
+wrote, so it needs no running game, no OBS and no elevation. torch is a real
+dependency but a lazily imported one, so a machine without it still boots.
+
 The dashboard covers the first three, plus `features/games` for choosing the
 active game, `features/roi` for cropping a configured region out of the latest
-screenshot, `features/grid` for splitting that screenshot's reels into a matrix of
-tiles, `features/paylines` for checking which of the game's winning patterns
+screenshot, `features/paylines` for checking which of the game's winning patterns
 those tiles satisfy, and `features/paytable` for the maths the running game
 actually loaded. `game-input` and `ocr` are backend-only so far — endpoints
 and services with no `src/features/` slice — so don't go hunting for their UI.
+**`features/grid` no longer exists**: the frontend slice was deleted in
+`f0b5721` ("Dashboard Cleanup") while `/api/grid` and its `queryKeys.grid` entry
+stayed, so a reel split is a backend-only operation now.
 
-Two slices are whole routes rather than dashboard cards, both because their
+Three slices are whole routes rather than dashboard cards, all because their
 content does not survive half a row.
 
 `features/paytable` (`/game-config`, the "Game Config" tab) renders four cards —
@@ -36,6 +43,12 @@ moment, stops recording, and then validates the cash meter and the paylines over
 the frames it took. It is the only slice whose live half is not react-query — a
 run publishes a snapshot per step over a WebSocket — and the only one that
 composes other features' services rather than wrapping one of its own.
+
+`features/image-classifier` (`/image-classifier`, the "Image Classifier" tab)
+trains a model and then names the tiles of a written split. Its own route because
+a classification is fifteen tiles each carrying a picture, a code, a display name
+and three probabilities, and training is a five-stage list with its own figures.
+Its live half is a poll, not a socket, deliberately — see the service note below.
 
 `README.md`, `backend/README.md` and `frontend/README.md` are unusually detailed
 and current; read the relevant one before changing an integration.
@@ -104,17 +117,20 @@ Adding a backend resource is three files plus one line: `app/schemas/<thing>.py`
 ## Backend architecture
 
 **Services are module-level singletons, not classes.** `obs.py`, `ideck.py`,
-`event_capture.py`, `game_input.py`, `ocr.py` and `analyze_spin.py` each hold
-their state (client, lock, running run, cached engine) in module globals and
-expose a `reset()` that `tests/conftest.py` calls autouse before and after every
-test. Callers import the namespace, not the functions: `from app.services import
-obs as obs_service`. Only `event_capture.reset()` and `analyze_spin.reset()` are
-async — both have a task to cancel.
+`event_capture.py`, `game_input.py`, `ocr.py`, `analyze_spin.py` and
+`image_classifier.py` each hold their state (client, lock, running run, cached
+engine, loaded model) in module globals and expose a `reset()` that
+`tests/conftest.py` calls autouse before and after every test. Callers import the
+namespace, not the functions: `from app.services import obs as obs_service`.
+`event_capture.reset()` and `analyze_spin.reset()` are async because both have a
+task to cancel; `image_classifier` splits the two — a sync `reset()` for the
+caches and an async `abort()` for the training task, and `conftest.py` awaits the
+latter.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
 inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
 `GameInputSettings`, `OcrSettings`, `FrameSettings`, `PaylineSettings`,
-`PaytableSettings` and `AnalyzeSpinSettings`
+`PaytableSettings`, `AnalyzeSpinSettings` and `ImageClassifierSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
@@ -159,6 +175,13 @@ were on screen -- naming them, never deciding what paid),
 `click_target.py` (reads the `button_targets` block),
 `paylines.py` (reads the `paylines` block into ordered grid positions),
 `similarity.py` (cosine similarity between two pictures),
+`symbol_dataset.py` (a folder of symbol artwork read back as training pictures,
+with the reel background the cut-outs ship without put back — torch-free on
+purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
+its transforms, the training loop and a checkpoint), `symbol_overlay.py` (draws
+rings the cells that were named, over the reels -- no
+text on it, because the codes and confidences are a table beside it and drawing
+them over the artwork duplicates them at their least readable size),
 `payline_overlay.py` (draws evaluated lines over a crop, and owns their palette),
 `paths.py` (resolves untrusted filenames inside a root — use it for anything
 that came off the wire).
@@ -334,6 +357,76 @@ its own record too. Stale tiles from a differently-shaped grid are cleared,
 and only names matching a tile's own pattern are touched. ROI's own
 `_SAVED_REGION` writes `cash-meter/<frame>.png` and every other region comes back
 as a data URI only.
+
+**`services/image_classifier.py` is the only reading that can disagree with the
+game.** `similarity.py` asks whether two tiles match *each other* and never learns
+what either is; `reel_stops.py` names symbols by reading the game's own log, so it
+agrees by construction. This names a tile from the picture — EfficientNet-B0
+(`utils/symbol_model.py`, the only module that imports torch) over the tiles
+`grid.py` already wrote. Four things it exists to get right:
+
+- **The artwork is not what it sees, and putting the background back *is* the
+  feature.** Of FortuneOx's nine classes exactly one (`AA`) ships with the game's
+  field and frame on it — a framed portrait, 0.994 opaque inside its alpha box.
+  The other eight, `BB`/`CC`/`DD` included, are transparent cut-outs at 0.45–0.71,
+  composited over the reel background by the game at runtime. An earlier
+  cosine-similarity attempt compared cut-outs against composited tiles and scored
+  0.35–0.44 on the picture symbols while missing the card symbols entirely.
+  `utils/symbol_dataset.py` composes each source onto a synthesised reel cell,
+  routing on the **measured opacity of that file** rather than a class list, with
+  every constant measured off the 600 written tiles (field `rgb(35,0,56)`; a gold
+  divider sliver 40% of the time at `rgb(201,121,37)`; black 2%). It is
+  deliberately torch-free so the part most likely to be wrong is testable without
+  the ML stack, and it writes one sample per class to `samples/` because whether
+  the background went back is answerable by looking.
+- **The two transforms are a pair.** Training random-crops at scale 0.65–1.0;
+  evaluation resizes past the input and centre-crops back (`_EVAL_CROP = 0.90`,
+  torchvision's ImageNet recipe). Not symmetry — without it the network only ever
+  saw zoomed crops while inference showed it the whole tile, and `DD` scored 0.42
+  on pictures it had trained on versus 1.00 with a 10% centre zoom (holdout 0.781
+  → 1.000). `TRANSFORM_VERSION` rides on the checkpoint so an older model reports
+  `stale` rather than quietly predicting differently than it was measured. Also:
+  **no horizontal flip** (five symbols are A/K/Q/J/10 and a mirrored J is not a
+  picture the game draws), and resolution is itself an augmentation (52–140px and
+  back, because the artwork is 380–600px and tiles are 61–128px).
+- **A tile below the floor is an answer, not a gap.** The game declares eighteen
+  symbol codes and the artwork covers nine, so the model is constantly shown orbs
+  and wilds it has no class for; a softmax cannot say "none of these", only spread.
+  `CLASSIFIER_MIN_CONFIDENCE` decides it and the rejected tile keeps its ranked
+  `predictions`, because a rejection with no numbers behind it is not checkable.
+  0.65 is measured, not chosen: over 210 real tiles the widest empty band runs
+  0.563–0.681, with every tile above it a real symbol (weakest `JJ` at 0.681,
+  checked by eye) and the highest untrained thing a cash orb at 0.563. It sits
+  nearer the symbol edge on purpose — naming an untrained symbol is a *silent*
+  wrong answer, rejecting a real one is a visible non-answer. Re-measure it after
+  any transform change: an earlier build's 0.70 came from pre-fix numbers and
+  rejected genuine Tens.
+- **Accuracy is two numbers and they are never averaged.** A class is an animation
+  *loop* of 48 near-identical frames, so no split of it is honestly unseen.
+  `frame_holdout_accuracy` holds a block out of the **middle** (not the end — the
+  loop closes, so `AA`'s and `DD`'s last frames sit 0.02/255 from a retained one),
+  `frame_holdout_leakage` says how much even that leaks, and
+  `augmented_accuracy` covers all nine classes but re-augments the training
+  pictures. The five single-picture classes contribute to the holdout figure not at
+  all, and the payload names them.
+
+Two smaller conventions: **torch is imported lazily**, so the app boots without it
+and `GET /api/image-classifier/status` reports `not_installed` — the OCR/Tesseract
+bargain, verified by `torch` being absent from `sys.modules` after `create_app()`.
+And **there is no second WebSocket**: epoch ticks are ~20s apart, so the slice
+polls `/status` with `useCaptureStatus`'s functional `refetchInterval`.
+`CLASSIFIER_TORCH_THREADS` (half the cores) is load-bearing — torch takes every
+core by default and this process also drives OBS, the i-deck and the game clicks.
+
+**Unlike paylines, the classifier does not validate a split against the config.**
+`paylines._evaluate_set` must (only the config says where a line runs, so a
+differently shaped split makes its lines meaningless); a classifier names each tile
+independently and rows/columns are only how answers are arranged. So an older split
+still classifies, and the config is read for exactly one thing — the `symbols`
+block, for display names, falling back to bare codes for a game declaring none.
+`ClassifyResult.symbol_grid` is deliberately the same name and shape as
+`PaylineValidation.symbol_grid` in `schemas/analyze_spin.py`, which is the log-derived
+counterpart: making the two directly comparable is the point of the feature.
 
 **`services/analyze_spin.py` is orchestration and nothing else.** It owns no
 image handling, no XML, no win32 — it is the *order* the other services go in

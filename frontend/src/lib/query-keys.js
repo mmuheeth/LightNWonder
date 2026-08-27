@@ -45,4 +45,10 @@ export const queryKeys = Object.freeze({
     runs: () => [...queryKeys.eventCapture.all, "runs"],
     run: (runId) => [...queryKeys.eventCapture.all, "run", runId],
   }),
+  imageClassifier: Object.freeze({
+    all: ["image-classifier"],
+    status: () => [...queryKeys.imageClassifier.all, "status"],
+    dataset: () => [...queryKeys.imageClassifier.all, "dataset"],
+    splits: () => [...queryKeys.imageClassifier.all, "splits"],
+  }),
 });

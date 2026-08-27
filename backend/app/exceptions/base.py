@@ -367,3 +367,54 @@ class SpinAnalysisUnavailableError(AppException):
     status_code = HTTPStatus.CONFLICT
     error_code = "SPIN_ANALYSIS_UNAVAILABLE"
     message = "The active game cannot be analysed on this machine"
+
+
+# --- Image classifier -----------------------------------------------------
+# Training is one process-wide run, like a spin analysis, so its failures split
+# the same way: 409 when the machine or the run is not in the state the caller
+# assumed, 404 when the training images are not where they were said to be, and
+# 502 when torch itself would not finish. A missing torch is deliberately *not*
+# an error at all on the status endpoint -- it is a state, exactly as a missing
+# Tesseract is for OCR -- and only training and classifying raise for it.
+
+
+class ClassifierUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CLASSIFIER_UNAVAILABLE"
+    message = "The image classifier cannot run on this machine"
+
+
+class ClassifierUntrainedError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CLASSIFIER_UNTRAINED"
+    message = "No model has been trained yet"
+
+
+class ClassifierAlreadyTrainingError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CLASSIFIER_ALREADY_TRAINING"
+    message = "A training run is already in progress"
+
+
+class ClassifierNotTrainingError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CLASSIFIER_NOT_TRAINING"
+    message = "No training run is in progress"
+
+
+class ClassifierDatasetNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "CLASSIFIER_DATASET_NOT_FOUND"
+    message = "The training images are not where the configuration says they are"
+
+
+class ClassifierTrainFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "CLASSIFIER_TRAIN_FAILED"
+    message = "The model could not be trained"
+
+
+class ClassifierPredictFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "CLASSIFIER_PREDICT_FAILED"
+    message = "The tiles could not be classified"

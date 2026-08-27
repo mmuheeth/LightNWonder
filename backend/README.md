@@ -73,6 +73,8 @@ backend/
     │   ├── paylines.py      match threshold, default line set, overlay size
     │   ├── paytable.py      how far back to read the log for the loaded paytable
     │   ├── analyze_spin.py  which keys drive one spin, and how long each stage may take
+    │   ├── image_classifier.py  where the training images and the trained model
+    │                         live, the confidence floor, and torch's thread cap
     │   └── game_config/     active selection plus per-game process, logs,
     │                         ROIs, reel bounds, paylines, targets, the game's
     │                         installed GameConfig directory and symbol names
@@ -103,6 +105,13 @@ backend/
     │                         configuration, as 1-indexed grid positions
     │   ├── similarity.py    cosine similarity between two pictures, which is
     │                         how a glowing symbol still matches itself
+    │   ├── symbol_dataset.py turns a folder of symbol artwork into training
+    │                         pictures, putting back the reel background the
+    │                         cut-outs ship without -- no torch, deliberately
+    │   ├── symbol_model.py  the only module that imports torch: EfficientNet-B0,
+    │                         its transforms, the training loop and a checkpoint
+    │   ├── symbol_overlay.py rings each cell the classifier named, over the
+    │                         reels -- no text; the codes are a table beside it
     │   ├── payline_overlay.py draws evaluated lines over the reels, one colour
     │                         each, and owns the palette they are reported with
     │   ├── ocr.py           runs Tesseract over an image and reads its answer
@@ -122,6 +131,8 @@ backend/
     │   ├── ocr.py           engine status, options and what was read
     │   ├── roi.py           region catalog, and one extracted crop
     │   ├── grid.py          reel grid shape, and one split into tiles
+    │   ├── image_classifier.py engine state, the dataset, a training run and
+    │                         every tile of a split named
     │   ├── paylines.py      line sets, one line's verdict and its evidence
     │   ├── paytable.py      the loaded paytable, its maths and its geometry
     │   └── analyze_spin.py  one driven spin: its steps, and the two validations
@@ -140,6 +151,8 @@ backend/
         ├── grid.py           splits the reels of a screenshot into tiles,
         │                      and reads one of its own splits back
         ├── paylines.py       matches a split's tiles against the patterns that pay
+        ├── image_classifier.py names each tile's symbol from the picture, and
+        │                      owns the one training run the process may have
         ├── meter.py          turns a cash-meter crop into its five values
         ├── paytable.py       joins the game's log to the maths it installed
         ├── roi.py            cuts one configured region out of a screenshot
@@ -1037,6 +1050,230 @@ instead: only some games declare paylines, and a checkout that has split nothing
 is a state the dashboard renders rather than a request that went wrong. A stale
 split is a 409 rather than a 500 because the config may well be right and the
 split merely old — split the frame again.
+
+## Naming the symbols (image classifier)
+
+The payline check answers *do these two tiles match each other*. It never learns
+what either one **is** -- and `utils/reel_stops.py`, which does name symbols, reads
+the answer out of the game's own log, so it agrees with the game by construction.
+This is the third reading: EfficientNet-B0 over the tiles themselves, and the only
+one that can disagree.
+
+```bash
+# what there is to train on, and what is wrong with it
+curl localhost:8001/api/image-classifier/dataset
+# which splits could be classified, and which one is newest
+curl localhost:8001/api/image-classifier/splits
+# fit a model; returns as soon as the run is under way, ~4 minutes on CPU
+curl -X POST localhost:8001/api/image-classifier/train -d '{}'
+# follow it -- stages, epochs, loss, accuracy
+curl localhost:8001/api/image-classifier/status
+# stop it; whatever model was already saved is untouched
+curl -X POST localhost:8001/api/image-classifier/train/cancel
+# name the tiles of one split, at a threshold of your own
+curl -X POST localhost:8001/api/image-classifier/classify -d '{"min_confidence": 0.8}'
+```
+
+Four files, one per concern: `utils/symbol_dataset.py` turns artwork into training
+pictures (Pillow and numpy only -- **no torch**, so the part most likely to be
+wrong is testable on a machine with no ML stack), `utils/symbol_model.py` is the
+only module that imports torch, `utils/symbol_overlay.py` draws the answer on the
+reels, and `services/image_classifier.py` is the order they go in plus the one
+training run the process may have.
+
+### torch is optional, exactly like Tesseract
+
+`requirements.txt` installs torch and torchvision, but every import of them is
+*inside* a function. So a venv without them starts the service normally and
+`GET /api/image-classifier/status` reports `not_installed` with the pip command
+that fixes it; only training and classifying raise. Confirmed rather than assumed:
+importing `app.main` and building the app leaves `torch` absent from
+`sys.modules`.
+
+The state machine mirrors `OcrEngineState`: `disabled`, `not_installed`,
+`untrained`, `training`, `stale`, `error`, `ready`. None of them is an HTTP error --
+a page cannot explain a missing engine if the request that would tell it about one
+fails.
+
+### The artwork is not what the classifier sees
+
+This is the thing to understand before changing anything here, and it is why an
+earlier cosine-similarity attempt at the same problem stalled. That attempt scored
+each grid tile against every art file and reached only 0.35-0.44 on the four
+picture symbols while matching the card symbols not at all.
+
+The reason is measurable. Of FortuneOx's nine classes **exactly one** (`AA`, the
+Ox) ships with the game's field and frame drawn on it -- it is a framed portrait,
+99.4% opaque inside its own alpha box. The other eight, including `BB`/`CC`/`DD`
+which look like premium symbols, are transparent cut-outs at 0.45-0.71 opaque. The
+game composites them over the reel background at runtime. Compare a cut-out on
+transparency against a tile whose symbol sits on dark purple and the background is
+most of the difference.
+
+So `symbol_dataset.compose()` puts it back, routing on a **measured property of
+the file** rather than a hardcoded class list -- a game whose whole set ships
+pre-composited needs no special case, and one that mixes the two kinds gets each
+of them right:
+
+- opaque box >= `DENSE_OPACITY` (0.90): already a finished cell, used as-is.
+- anything else: alpha-composited onto a synthesised plate at 0.72-0.95 of the
+  plate's shorter side, centred with a nudge.
+
+Every constant in the plate was measured off the 600 tiles the grid had already
+written, not chosen:
+
+| | |
+|---|---|
+| `FIELD_RGB` | `rgb(35, 0, 56)` -- the modal tile corner; two thirds sit within a couple of levels of it |
+| `GOLD_RGB` / `GOLD_PROBABILITY` | `rgb(201, 121, 37)`, drawn 40% of the time -- 238 of 600 tiles keep a sliver of the reel divider the `inset` crop did not trim |
+| `BLACK_PROBABILITY` | 0.02 -- frames caught mid-fade |
+
+One composed sample per class is written to `CLASSIFIER_MODEL_DIR/samples/` on
+every run. **That directory is the first thing to look at if accuracy
+disappoints**: whether the background went back correctly is answerable by
+looking, and reasoning about it instead is how this goes wrong.
+
+### Two transforms, and they are a pair
+
+Training crops (`RandomResizedCrop`, scale 0.65-1.0, ratio 0.85-1.6) cover the
+measured 1.03-1.45 aspect of real tiles and the cell boundary that clips a tall
+symbol. Evaluation resizes past the input size and centre-crops back
+(`_EVAL_CROP = 0.90`), which is torchvision's own ImageNet recipe and is here for a
+measured reason rather than for symmetry.
+
+Without it, evaluation showed the network the *whole* picture while training had
+only ever shown it zoomed crops -- so at inference every symbol appeared smaller
+than anything in training. The sparsest symbol (`DD`, opaque over only ~0.22 of its
+own box) scored **0.42 on pictures it had been trained on, and 1.00 on the same
+pictures with a 10% centre zoom**; `CC` went 0.92 to 1.00. Holdout accuracy over
+the whole set went 0.781 to 1.000.
+
+`TRANSFORM_VERSION` travels on the checkpoint for exactly this reason. Change
+either transform, bump it, and an older model reports `stale` instead of quietly
+predicting differently than it was measured.
+
+Two more that are not the stock recipe:
+
+- **No horizontal flip.** It is the reflex first augmentation and it is wrong
+  here: five of the nine symbols are the characters A, K, Q, J and 10, and a
+  mirrored J is a picture the game never draws.
+- **Resolution is an augmentation.** Every training picture is knocked down to a
+  random 52-140px and back up. The artwork is 380-600px and real tiles are
+  61-128px, so without this the network trains on detail that is simply absent at
+  inference.
+
+### The confidence floor is where "none of these" gets decided
+
+FortuneOx declares eighteen symbol codes; the artwork covers nine. `WC`, `MS`,
+`MO`, `MC`, `SC`, `SF`, `FG`, `FO` and `SO` have none, and the cash orbs are on
+screen constantly. A softmax over nine classes cannot answer "none of these" -- it
+can only spread its mass -- so `CLASSIFIER_MIN_CONFIDENCE` is the answer, and a
+rejected tile keeps its `predictions` because a rejection with no numbers behind it
+cannot be checked.
+
+`0.65` is measured. Over 210 real tiles from 14 splits:
+
+| band | tiles | what is in it |
+|---|---|---|
+| < 0.50 | 29% | orbs, wilds, mysteries -- no trained class |
+| 0.50-0.563 | 1% | the highest-scoring untrained symbol, a cash orb at 0.563 |
+| **0.563-0.681** | **0%** | the gap |
+| 0.681-0.78 | 5% | real symbols, weakest first: `JJ` (Ten), then `CC`, `GG` |
+| >= 0.78 | 65% | real symbols |
+
+The widest empty band in the distribution is 0.563 to 0.681, so the cut goes in
+there rather than being balanced on one spin. It sits nearer the symbol edge than
+the midpoint deliberately: the two mistakes are not equally bad, because naming a
+symbol the model was never trained on is a silent wrong answer while rejecting a
+real symbol is a visible non-answer that its own reported probabilities explain.
+
+**Re-measure this after any change to the transforms.** An earlier build set it to
+0.70 from numbers taken *before* the evaluation transform was fixed; on the
+corrected model that rejected genuine Ten tiles scoring 0.681. Raise it and the
+card symbols go first (they have one training picture each); lower it and the nine
+codes with no artwork start being named. The real fix is artwork for those nine.
+
+### Accuracy is two numbers, and averaging them would answer nothing
+
+A class here is an animation **loop** of 48 near-identical frames, not 48
+independent samples: measured against `AA_00000`, frame 1 differs by 0.45/255 and
+frame 47 by 0.02 -- the loop closes. So no split of this dataset is honestly
+unseen, and the response says so rather than implying otherwise.
+
+- `frame_holdout_accuracy` -- over frames held out of the **middle** of each loop.
+  Not the end: because the loop closes, the last frames of `AA` and `DD` sit
+  0.02/255 from a retained frame, which is the same picture. A middle block is
+  measurably better and is what `symbol_dataset.frame_split()` returns.
+- `frame_holdout_leakage` -- each held-back frame's distance to the nearest
+  retained one, over the mean distance between any two frames of that class. 0
+  means duplicates and the accuracy above means nothing; 1 is the most this dataset
+  can offer. Currently 0.57.
+- `augmented_accuracy` -- all nine classes, but it re-augments the training
+  pictures. Leaky by construction; it measures robustness to the augmentation.
+
+The five single-picture classes contribute to the holdout figure **not at all**,
+and `single_image_classes` names them. Overstating this would be the one genuinely
+misleading thing this feature could do.
+
+### A run, and stopping one
+
+One training run process-wide, on the `analyze_spin` pattern: module-global record,
+lazy lock, and all five stages (`prepare`, `head`, `finetune`, `evaluate`, `save`)
+created `pending` **before** the run starts, so a failure at stage two leaves
+stages three onward visibly unreached rather than absent. Cancellation is a flag
+the training thread checks between batches -- never `task.cancel()` -- so a
+cancelled run unwinds through its own code, writes no checkpoint, and leaves the
+previous model exactly as it was.
+
+There is **no WebSocket**. The spin progress stream is the only one, and epoch
+ticks are twenty seconds apart; the page polls `/status` every two seconds while a
+run is live and not at all when it is idle.
+
+`CLASSIFIER_TORCH_THREADS` defaults to half the machine's cores and is the setting
+that keeps the rest of the cabinet usable: torch takes every core by default, and
+this process also holds the OBS socket, presses the i-deck and clicks the game
+window.
+
+### What it deliberately does not depend on
+
+Unlike the payline check, which raises `PAYLINE_SOURCE_STALE` when a split's shape
+disagrees with `reel_bounds` -- it must, because only the config says where a line
+runs -- the classifier names each tile independently and **does not validate the
+split against the config at all**. Rows and columns are only how the answers get
+arranged. So an older split still classifies, and the game config is read for
+exactly one thing: the `symbols` block, for display names. A game declaring none
+falls back to bare codes.
+
+Which means a classification works on any split, on any machine, without the game
+installed -- the same property the hand-copied `paylines` block exists to preserve.
+
+### Where the output goes
+
+`CLASSIFIER_MODEL_DIR/` holds `model.pt` (weights plus classes, input size,
+normalisation, `transform_version` and a dataset fingerprint), `metrics.json` and
+`samples/`. The checkpoint is written beside and moved over, so a run interrupted
+mid-write cannot leave a truncated file where a working one was, and it is cached
+on the file's mtime and size the way `services/paytable.py` caches `math.xml`.
+
+An annotated picture goes into the split's own directory as
+`grid/<split>/classifier/symbols.png` -- a green ring around a named cell, amber
+around one below the floor -- one file per split, replacing its own record, the
+convention the payline check follows with `paylines/<set>.png`.
+
+Deliberately no text on it. The codes and confidences are on the response and
+rendered as a table beside the picture, so drawing them here as well would
+duplicate data at the one size where it is least readable: over busy artwork, at a
+tile's own scale. What the picture is uniquely good for is *where* a verdict
+landed, which is what makes a transposed matrix obvious at a glance.
+
+For the same reason `include_images` (the fifteen per-tile data URIs) and
+`include_overlay` are separate knobs, and the dashboard asks for the second
+only -- the tile pictures were most of the payload and nothing renders them.
+
+`GET /status` also caches its dataset summary on the dataset fingerprint. Not a
+micro-optimisation: building it opens all 197 images to read size and opacity,
+which measures at about twelve seconds, and the page polls this every two seconds
+while training.
 
 ## Reading the meter (values)
 
