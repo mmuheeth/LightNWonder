@@ -23,7 +23,7 @@ from fastapi import APIRouter, Query, WebSocket
 from fastapi.responses import FileResponse
 
 from app.core.logging import get_logger
-from app.schemas.analyze_spin import SpinAnalysisState
+from app.schemas.analyze_spin import SpinAnalysisState, SpinStartRequest
 from app.schemas.response import ApiResponse
 from app.services import analyze_spin as analyze_spin_service
 
@@ -84,7 +84,7 @@ async def get_status(
     summary="Spin once, and validate it",
     responses={**RUN_CONFLICT, **BAD_CONFIG},
 )
-async def start() -> ApiResponse[SpinAnalysisState]:
+async def start(body: SpinStartRequest | None = None) -> ApiResponse[SpinAnalysisState]:
     """Press spin on the active game, follow it to its result, and run the cash
     meter and payline validations over the screenshots it took.
 
@@ -92,8 +92,11 @@ async def start() -> ApiResponse[SpinAnalysisState]:
     poll ``/status``) for the rest. Only the preconditions this process can
     check without touching the machine -- the game config parsing, its log
     existing -- refuse the request; everything else fails on its own step, with
-    the error the equivalent direct request would have given."""
-    state = await analyze_spin_service.start()
+    the error the equivalent direct request would have given.
+
+    An empty body (or none at all) uses ``ANALYZE_SPIN_RECORD``; ``record`` in
+    the body overrides it for this run only."""
+    state = await analyze_spin_service.start(record=body.record if body else None)
     run = state.run
     return ApiResponse[SpinAnalysisState].ok(
         data=state,

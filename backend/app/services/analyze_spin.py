@@ -215,6 +215,7 @@ class _ActiveRun:
     log_path: Path
     rules: tuple[game_log.EventRule, ...]
     started_at: datetime
+    record: bool
 
     steps: dict[str, _StepRecord]
     state: SpinRunState = SpinRunState.RUNNING
@@ -662,8 +663,8 @@ async def _prepare(run: _ActiveRun) -> None:
 
 async def _start_recording(run: _ActiveRun) -> None:
     """Begin the video of the spin."""
-    if not settings.ANALYZE_SPIN_RECORD:
-        _skip(run, STEP_RECORD_START, "ANALYZE_SPIN_RECORD is off")
+    if not run.record:
+        _skip(run, STEP_RECORD_START, "Recording was off for this run")
         return
     async with _step(run, STEP_RECORD_START) as step:
         await obs_service.start_recording(run.recording_dir)
@@ -1766,7 +1767,7 @@ def _summary(run: _ActiveRun) -> str:
 # --- public API -----------------------------------------------------------
 
 
-async def start() -> SpinAnalysisState:
+async def start(record: bool | None = None) -> SpinAnalysisState:
     """Drive one spin, and validate it.
 
     Returns as soon as the run is under way: the whole point is the sequence,
@@ -1775,6 +1776,9 @@ async def start() -> SpinAnalysisState:
     config parsing, and its log existing -- are checked here, so they come back
     as a refused request; everything else is a step, where a failure says which
     part of the machine was not ready.
+
+    ``record`` overrides ``ANALYZE_SPIN_RECORD`` for this run alone; omit it to
+    use the configured default.
     """
     global _run
     async with _get_lock():
@@ -1805,6 +1809,7 @@ async def start() -> SpinAnalysisState:
                 extra=config.event_rules, disabled=config.disabled_events
             ),
             started_at=started,
+            record=settings.ANALYZE_SPIN_RECORD if record is None else record,
             steps={key: _StepRecord(key=key, label=label) for key, label in _SEQUENCE},
         )
         _run = run

@@ -343,6 +343,26 @@ class PaylineCheckFailedError(AppException):
     message = "The paylines could not be checked against the split"
 
 
+# --- Symbol validation ----------------------------------------------------
+# Both inputs are paths the operator typed, so 404 is by far the likeliest
+# failure and names which of the two was not there. 502 is the pictures
+# themselves: a candidate that is not readable as an image stops the sweep,
+# while one unreadable *source* is skipped and reported, since 200 others still
+# have something to say.
+
+
+class SymbolSourceNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "SYMBOL_SOURCE_NOT_FOUND"
+    message = "The picture or the folder of symbols is not there"
+
+
+class SymbolCompareFailedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "SYMBOL_COMPARE_FAILED"
+    message = "The candidate could not be compared against the symbols"
+
+
 # --- Analyze spin ---------------------------------------------------------
 # One run exists process-wide, so the only HTTP failures are about that: 409
 # when a run is or is not in the state the caller assumed, and 409 again when

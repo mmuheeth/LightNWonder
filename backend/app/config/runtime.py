@@ -20,6 +20,7 @@ from app.config.obs import ObsSettings
 from app.config.ocr import OcrSettings
 from app.config.paylines import PaylineSettings
 from app.config.paytable import PaytableSettings
+from app.config.symbol_validation import SymbolValidationSettings
 
 Environment = Literal["local", "development", "staging", "production"]
 
@@ -47,6 +48,7 @@ class Settings(
     FrameSettings,
     PaylineSettings,
     PaytableSettings,
+    SymbolValidationSettings,
     AnalyzeSpinSettings,
 ):
     """Complete runtime configuration for the API."""

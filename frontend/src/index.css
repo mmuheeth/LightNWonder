@@ -47,6 +47,15 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+
+  /* Data marks. One hue: every chart here plots a single series, so identity
+     comes from the axis and there is nothing for a second hue to distinguish.
+     Gridlines, axis text and the ring that keeps overlapping dots apart reuse
+     --border / --muted-foreground / --card, so the whole chart themes with the
+     rest of the app. The dark step below is chosen for the dark card, not a
+     flip of this one; both pass the lightness band, the chroma floor and 3:1
+     against the surface they render on. */
+  --chart-1: oklch(0.5753 0.1626 255.53);
 }
 
 .dark {
@@ -67,6 +76,7 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.6221 0.1612 255.05);
 }
 
 @layer base {

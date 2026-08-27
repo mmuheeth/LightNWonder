@@ -15,6 +15,7 @@ from app.api.endpoints import (
     paylines,
     paytable,
     roi,
+    symbol_validation,
 )
 
 api_router = APIRouter()
@@ -31,6 +32,9 @@ api_router.include_router(roi.router, prefix="/roi", tags=["roi"])
 api_router.include_router(grid.router, prefix="/grid", tags=["grid"])
 api_router.include_router(paylines.router, prefix="/paylines", tags=["paylines"])
 api_router.include_router(paytable.router, prefix="/paytable", tags=["paytable"])
+api_router.include_router(
+    symbol_validation.router, prefix="/symbol-validation", tags=["symbol-validation"]
+)
 api_router.include_router(
     analyze_spin.router, prefix="/analyze-spin", tags=["analyze-spin"]
 )

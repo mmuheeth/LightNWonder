@@ -46,6 +46,7 @@ __all__ = [
     "SpinRecording",
     "SpinRun",
     "SpinRunState",
+    "SpinStartRequest",
     "SpinStep",
     "SpinStepState",
     "SpinVerdict",
@@ -104,6 +105,19 @@ class SpinVerdict(StrEnum):
     """One of the two numbers could not be read, so there was no comparison to
     make. Never folded into ``failed``: an unreadable meter and a wrong balance
     are different problems with different fixes."""
+
+
+class SpinStartRequest(BaseModel):
+    """Body of ``POST /start``. Optional, so the dashboard's default press and a
+    bare curl both work unchanged."""
+
+    record: bool | None = Field(
+        default=None,
+        description=(
+            "Whether this run also records a video of itself. Omit to use "
+            "ANALYZE_SPIN_RECORD; a value here overrides it for this run only."
+        ),
+    )
 
 
 # --- the run's own pieces -------------------------------------------------

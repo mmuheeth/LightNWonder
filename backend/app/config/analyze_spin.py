@@ -34,8 +34,9 @@ class AnalyzeSpinSettings(BaseSettings):
     # the deck's fourteen keys, so it is a click into the game's own window.
     ANALYZE_SPIN_TAKE_WIN_TARGET: str = "take_win"
 
-    # Whether one run also records a video of itself.
-    ANALYZE_SPIN_RECORD: bool = True
+    # Whether one run also records a video of itself. Off by default; a
+    # request to /start can turn it on for that run alone.
+    ANALYZE_SPIN_RECORD: bool = False
 
     # How often the game log is re-read while waiting for the next event.
     ANALYZE_SPIN_POLL_SECONDS: float = Field(default=0.1, gt=0)

@@ -66,8 +66,11 @@ src/
 │   ├── paylines/           checks a split's tiles against the patterns that pay
 │   ├── paytable/           the maths the running game loaded: symbols, reel
 │   │                   strips, combos, and the payline set in play
-│   └── analyze-spin/       drives one spin and grades it: live progress over a
-│                       WebSocket, then the meter and payline validations
+│   ├── analyze-spin/       drives one spin and grades it: live progress over a
+│   │                   WebSocket, then the meter and payline validations
+│   └── symbol-validation/  scores one picture against a folder of symbol
+│                       artwork: bars per symbol, a smooth curve of the whole
+│                       field, and each comparison's pair of pictures
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet

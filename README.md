@@ -132,6 +132,7 @@ backend/obs-captured-files/    OBS screenshots and recordings (gitignored)
 ├── event-capture/      one folder per capture run: images + run.json
 └── grid/               one folder per split frame: reels.png + tiles/r1c1.png…
     └── paylines/       the annotated reels, one picture per line set checked
+backend/assets/               reference artwork, per game (symbol pictures)
 
 frontend/src/
 ├── features/       one directory per feature (api + hooks + components)
@@ -358,6 +359,55 @@ is several lines at once. A pay count cannot be checked by reading it, which is
 why a picture comes back with every line. See
 [backend/README.md](backend/README.md#checking-the-paylines) for the block
 format, the threshold, and the failure codes.
+
+## Symbol Validation
+
+The payline check asks whether two tiles of the *same* screenshot are alike. The
+**Symbol Validation** tab (`/symbol-validation`) asks the other question — what
+one tile actually *is* — by scoring it against a folder of artwork that has a
+name on it:
+
+```
+POST /api/symbol-validation/compare   one picture against every picture under a folder
+```
+
+Two path fields drive it: the picture to identify (a tile the Reel grid wrote,
+e.g. `backend/obs-captured-files/grid/<split>/tiles/r1c4.png`) and the folder of
+reference symbols, defaulting to `backend/assets/FortuneOx/Symbols` — one
+sub-folder per symbol code, searched recursively. Free text rather than a picker
+because neither is a short list to choose from; a relative path is resolved
+against the repository, so a path copied out of an editor's sidebar works as
+typed.
+
+**Each source is trimmed of its black bars and resized to the candidate before
+it is scored**, and both steps are the point rather than housekeeping. Exported
+artwork sits in the middle of a square canvas of padding, so most of an
+untrimmed file is background the candidate does not have — which drags every
+score toward every other one; and cosine similarity needs two vectors of the
+same length, so 600×600 artwork has to become a 100×82 tile to be scored at all.
+The candidate is never resized: it is the measurement.
+
+The page reports the winning symbol, then **two charts, because one cannot say
+it**. Columns give each symbol's best score from a zero baseline — a bar encodes
+by length, so a cropped axis would invent differences that are not there. A
+smooth curve then plots every single source, and below them every comparison is
+a dropdown that opens onto **the candidate and the source side by side** — the
+trimmed-and-resized source that was actually measured, not the file on disk,
+since a score is a statement about a pair and half a pair cannot be checked.
+Both charts matter because the score does not mean what it looks like: this is
+the same non-zero-based measure the payline check uses, so artwork that is
+definitely *not* the candidate still scores 0.5–0.7.
+
+**Everything below the verdict is in source order**, charts and list alike — the
+order the folder was read, `AA_00000` through `AA_00047` and then `BB_00000`.
+That is what makes the curve worth drawing: each symbol's stretch of it is that
+animation scored frame by frame, and its peak is the frame whose pose the
+screenshot caught. Sorted by score instead, every symbol's frames scatter across
+the axis and the curve becomes a monotonic slide that looks the same for every
+sweep. Score order rides along on each comparison's `rank` and the winner is on
+the verdict, so nothing is lost by not sorting. See
+[backend/README.md](backend/README.md#symbol-validation) for the preparation,
+the path rules and the failure codes.
 
 ## Game Config
 

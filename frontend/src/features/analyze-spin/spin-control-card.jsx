@@ -12,6 +12,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { spinFrameUrl } from "@/features/analyze-spin/api";
 import { cn } from "@/lib/utils";
 
@@ -87,7 +89,15 @@ function Frames({ frames }) {
  * looks exactly like a spin that quietly stalled, and only this tells them
  * apart.
  */
-export function SpinControlCard({ run, active, connected, start, cancel }) {
+export function SpinControlCard({
+  run,
+  active,
+  connected,
+  start,
+  cancel,
+  record,
+  onRecordChange,
+}) {
   const busy = start.isPending || cancel.isPending;
   const actionError = start.error ?? cancel.error;
   const hint = actionError ? ERROR_HINTS[actionError.code] : null;
@@ -124,18 +134,33 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
       </CardHeader>
 
       <CardContent className="space-y-4">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-4">
           <Button
             size="sm"
             onClick={() => {
               cancel.reset();
-              start.mutate();
+              start.mutate({ record });
             }}
             disabled={active || busy}
           >
             <Play className="fill-current" />
             Initiate Spin
           </Button>
+          <div className="flex items-center gap-2">
+            <Switch
+              id="analyze-spin-record"
+              checked={record}
+              onCheckedChange={onRecordChange}
+              disabled={active || busy}
+            />
+            <Label
+              htmlFor="analyze-spin-record"
+              className="text-muted-foreground text-sm font-normal"
+            >
+              <Film className="size-3.5" />
+              Record video
+            </Label>
+          </div>
           {active ? (
             <Button
               variant="destructive"

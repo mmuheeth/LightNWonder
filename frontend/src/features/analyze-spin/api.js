@@ -70,10 +70,16 @@ export function getSpinStatus({ includeImages = false, signal } = {}) {
  * it ends — 409 when one is already going, or when the active game declares no
  * log to follow a spin through.
  *
+ * @param {{record?: boolean}} [options] `record` overrides ANALYZE_SPIN_RECORD
+ *   for this run only; omit to use the backend's configured default.
  * @returns {Promise<{active: boolean, run: SpinRun|null}>}
  */
-export function startSpin() {
-  return apiRequest({ method: "POST", url: `${ANALYZE_SPIN_URL}/start` });
+export function startSpin({ record } = {}) {
+  return apiRequest({
+    method: "POST",
+    url: `${ANALYZE_SPIN_URL}/start`,
+    data: record === undefined ? undefined : { record },
+  });
 }
 
 /**

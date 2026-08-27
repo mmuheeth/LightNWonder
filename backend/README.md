@@ -72,6 +72,7 @@ backend/
     │   ├── ocr.py           Tesseract OCR settings, and finding the engine
     │   ├── paylines.py      match threshold, default line set, overlay size
     │   ├── paytable.py      how far back to read the log for the loaded paytable
+    │   ├── symbol_validation.py  reference symbol folder, sweep ceiling, trim
     │   ├── analyze_spin.py  which keys drive one spin, and how long each stage may take
     │   └── game_config/     active selection plus per-game process, logs,
     │                         ROIs, reel bounds, paylines, targets, the game's
@@ -124,6 +125,7 @@ backend/
     │   ├── grid.py          reel grid shape, and one split into tiles
     │   ├── paylines.py      line sets, one line's verdict and its evidence
     │   ├── paytable.py      the loaded paytable, its maths and its geometry
+    │   ├── symbol_validation.py  one picture scored against a folder of symbols
     │   └── analyze_spin.py  one driven spin: its steps, and the two validations
     ├── exceptions/
     │   ├── base.py          AppException hierarchy
@@ -143,6 +145,8 @@ backend/
         ├── meter.py          turns a cash-meter crop into its five values
         ├── paytable.py       joins the game's log to the maths it installed
         ├── roi.py            cuts one configured region out of a screenshot
+        ├── symbol_validation.py  scores one picture against a folder of symbol
+        │                      artwork, trimming and resizing each source first
         └── analyze_spin.py   drives one spin through all of the above, then
                               validates the meter and the paylines over it
 ```
@@ -1037,6 +1041,118 @@ instead: only some games declare paylines, and a checkout that has split nothing
 is a state the dashboard renders rather than a request that went wrong. A stale
 split is a 409 rather than a 500 because the config may well be right and the
 split merely old — split the frame again.
+
+## Symbol validation
+
+The payline check asks whether two tiles of the **same** screenshot are alike.
+It never asks what either of them *is* — nothing in it knows the name of a
+symbol, and that is deliberate (see "The picture decides what landed"). Symbol
+validation is the other question: one picture against a folder of artwork that
+has a name on it.
+
+```bash
+# a tile of a split, against the reference symbols that ship with the backend
+curl -s -X POST localhost:8001/api/symbol-validation/compare \
+  -H 'Content-Type: application/json' \
+  -d '{"candidate_path":"backend/obs-captured-files/grid/spin-2026-08-27_16-17-49-2-outcome/tiles/r1c4.png"}'
+
+# a folder of your own, scores only -- a few hundred sources is a few megabytes
+# of base64 and most of ten seconds of trimming, resizing and PNG encoding
+curl -s -X POST localhost:8001/api/symbol-validation/compare \
+  -H 'Content-Type: application/json' \
+  -d '{"candidate_path":"C:/frames/r1c4.png","source_dir":"backend/assets/FortuneOx/Symbols","include_images":false}'
+```
+
+### Two preparations, and why they are the point
+
+A raw source file and a captured tile are not comparable, for two reasons that
+have nothing to do with which symbol either one shows:
+
+- **The padding is trimmed.** Exported artwork sits in the middle of a square
+  canvas of transparent black. Most of an untrimmed 600×600 file is background
+  the candidate does not have, so every source scores highly against every other
+  source's background and the symbols stop separating.
+  `utils/letterbox.content_box` finds the artwork — the same detector the
+  content box uses on a captured frame, with this feature's own floor
+  (`SYMBOL_VALIDATION_TRIM_MIN_FRACTION`, far below
+  `FRAME_LETTERBOX_MIN_FRACTION`, because a symbol occupying a tenth of its own
+  canvas is normal where a game filling a tenth of a frame is not).
+- **The resolution becomes the candidate's.** Cosine similarity is between two
+  vectors of the same length, so 600×600 artwork has to become a 100×82 tile
+  before it can be scored at all. The candidate is **never** resized: it is the
+  measurement, and resampling it would make the answer depend on which source
+  happened to be read first.
+
+Alpha is composited onto **black**, never dropped. `convert("RGB")` alone keeps
+whatever colour the exporter left under a transparent pixel — white for some
+tools — and a white surround scores nothing like the dark reel a tile is cut
+from.
+
+### The measure is the payline check's own
+
+`utils/similarity.vector_cosine`, with the same border trim and corner
+rounding, so a score here and a score there are the same kind of number and
+`PAYLINE_MATCH_THRESHOLD` reads against both. Which means the same warning
+applies twice over: **it is not zero-based**. On FortuneOx's own captures a tile
+scores 0.54–0.72 against artwork that is definitely not it, so 0.72 is not "72%
+sure of anything". What a win is worth is how far the field fell away behind it:
+`stats.margin` puts one number on that — the winning folder's best over the
+runner-up's — and the dashboard shows the same thing as a curve over every
+source.
+
+### The order is source order, and `rank` carries the rest
+
+`comparisons` and `groups` come back **in the order the folder was read** —
+`AA_00000` through `AA_00047`, then `BB_00000` — not sorted by score. A folder of
+symbol artwork is a sequence: 48 frames of one animation, then 48 of the next.
+Sorted by score, those frames scatter through the list, and a chart drawn over it
+has an x-axis of nothing in particular. Kept in sequence, each symbol's stretch
+of the curve is its own animation scored frame by frame.
+
+Score order is not lost, it is just carried differently: every comparison's
+`rank` is where it placed (1 is the winner, ranks are contiguous over the whole
+sweep), `stats.best_source` and `stats.best_group` name the winner outright, and
+`_ranked()` inside the service is where the folders get sorted for `margin` and
+the summary. Ordering is stated by this end rather than reconstructed by the
+browser, because only this end knows what "the order the sources were read" was.
+
+Folders are ordered by `best`, not `mean`, and both are reported. A symbol
+exported as 48 animation frames only resembles a still screenshot in the frames
+whose pose the screenshot caught, so its mean is dragged down by frames that
+were never a candidate for the answer; a folder winning on one frame and a
+folder whose whole spread sits high are different claims, and only the pair
+distinguishes them. (The dashboard shows `best` and `worst` and leaves `mean` on
+the response — the spread is the same fact in a form that does not read as an
+average score for the symbol.)
+
+### The paths are paths, deliberately
+
+Everywhere else a filename off the wire goes through `utils/paths.py` and is
+resolved inside a directory the service owns. Not here, and not by oversight:
+the candidate is one tile of one split out of hundreds the grid has written,
+and the sources are artwork kept wherever it was exported to. Neither is
+reachable by a bare filename. A relative path is tried against the working
+directory, the repository root and the backend directory — so
+`backend/assets/FortuneOx/Symbols` and `assets/FortuneOx/Symbols` name the same
+folder — and every response repeats the absolute path it landed on, because a
+relative path resolving somewhere unexpected is the failure mode this trades
+for. This is a local operator tool on a machine whose game installs the backend
+already reads; keep it off a network.
+
+### Failures
+
+| status | code | means |
+| --- | --- | --- |
+| 400 | `BAD_REQUEST` | a path is empty, or the folder holds more than `SYMBOL_VALIDATION_MAX_SOURCES` pictures |
+| 404 | `SYMBOL_SOURCE_NOT_FOUND` | the candidate or the folder is not there, or the folder holds no pictures |
+| 502 | `SYMBOL_COMPARE_FAILED` | the candidate is not readable as an image, or nothing under the folder was |
+
+A folder over the ceiling **fails** rather than being read part-way: a truncated
+sweep names the best of whatever it happened to reach and looks exactly like a
+complete one. One unreadable *source*, by contrast, is skipped and listed in
+`skipped` — the other two hundred still have something to say, and a source
+missing from the counts would otherwise be indistinguishable from one that
+scored badly.
 
 ## Reading the meter (values)
 

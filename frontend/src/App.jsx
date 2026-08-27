@@ -6,6 +6,7 @@ import { CapturesPage } from "@/pages/captures-page";
 import { DashboardPage } from "@/pages/dashboard-page";
 import { GameConfigPage } from "@/pages/game-config-page";
 import { NotFoundPage } from "@/pages/not-found-page";
+import { SymbolValidationPage } from "@/pages/symbol-validation-page";
 
 /** Route table. Add pages under the shared layout. */
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="event-captures/:runId" element={<CapturesPage />} />
         <Route path="game-config" element={<GameConfigPage />} />
         <Route path="analyze-spin" element={<AnalyzeSpinPage />} />
+        <Route path="symbol-validation" element={<SymbolValidationPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MeterValidationCard } from "@/features/analyze-spin/meter-validation-card";
@@ -29,6 +31,8 @@ export function AnalyzeSpinPage() {
   const { run, detailed, active, connected, error, isPending } = useSpinView();
   const start = useStartSpin();
   const cancel = useCancelSpin();
+  // Off by default: a run's video is opt-in, not the default expectation.
+  const [record, setRecord] = useState(false);
 
   return (
     <div className="space-y-6">
@@ -60,6 +64,8 @@ export function AnalyzeSpinPage() {
             connected={connected}
             start={start}
             cancel={cancel}
+            record={record}
+            onRecordChange={setRecord}
           />
 
           {run ? <SpinTimeline run={run} /> : null}

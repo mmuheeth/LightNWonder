@@ -118,7 +118,7 @@ function useSpinMutation(mutationFn) {
   });
 }
 
-/** Spin once and validate it. */
+/** Spin once and validate it. Call with `{record}` to override the default. */
 export function useStartSpin() {
   return useSpinMutation(startSpin);
 }
