@@ -70,10 +70,16 @@ export function getSpinStatus({ includeImages = false, signal } = {}) {
  * it ends — 409 when one is already going, or when the active game declares no
  * log to follow a spin through.
  *
+ * @param {{record?: boolean}} [options] `record` also makes a video of the
+ *   spin with OBS; off by default.
  * @returns {Promise<{active: boolean, run: SpinRun|null}>}
  */
-export function startSpin() {
-  return apiRequest({ method: "POST", url: `${ANALYZE_SPIN_URL}/start` });
+export function startSpin({ record = false } = {}) {
+  return apiRequest({
+    method: "POST",
+    url: `${ANALYZE_SPIN_URL}/start`,
+    params: { record },
+  });
 }
 
 /**

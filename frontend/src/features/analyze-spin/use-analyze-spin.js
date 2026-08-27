@@ -118,7 +118,7 @@ function useSpinMutation(mutationFn) {
   });
 }
 
-/** Spin once and validate it. */
+/** Spin once and validate it. `mutate({ record })` to also make a video. */
 export function useStartSpin() {
   return useSpinMutation(startSpin);
 }

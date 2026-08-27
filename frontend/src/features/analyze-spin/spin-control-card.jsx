@@ -1,4 +1,5 @@
 import { Circle, Film, Play, Square, Wifi, WifiOff } from "lucide-react";
+import { useState } from "react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { StatRow } from "@/components/stat-row";
@@ -12,6 +13,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { spinFrameUrl } from "@/features/analyze-spin/api";
 import { cn } from "@/lib/utils";
 
@@ -88,6 +91,9 @@ function Frames({ frames }) {
  * apart.
  */
 export function SpinControlCard({ run, active, connected, start, cancel }) {
+  // Off by default: a spin is not recorded unless this run's own toggle says
+  // so, and that choice is only asked for at the moment of pressing spin.
+  const [record, setRecord] = useState(false);
   const busy = start.isPending || cancel.isPending;
   const actionError = start.error ?? cancel.error;
   const hint = actionError ? ERROR_HINTS[actionError.code] : null;
@@ -101,8 +107,8 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
           Analyze Spin
         </CardTitle>
         <CardDescription>
-          Spin once, record it, and validate the meter and the paylines against the
-          maths the game has loaded
+          Spin once, and validate the meter and the paylines against the maths the game
+          has loaded
         </CardDescription>
         <CardAction>
           <Badge
@@ -124,29 +130,47 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
       </CardHeader>
 
       <CardContent className="space-y-4">
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            onClick={() => {
-              cancel.reset();
-              start.mutate();
-            }}
-            disabled={active || busy}
-          >
-            <Play className="fill-current" />
-            Initiate Spin
-          </Button>
-          {active ? (
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap gap-2">
             <Button
-              variant="destructive"
               size="sm"
-              onClick={() => cancel.mutate()}
-              disabled={busy}
+              onClick={() => {
+                cancel.reset();
+                start.mutate({ record });
+              }}
+              disabled={active || busy}
             >
-              <Square />
-              Cancel
+              <Play className="fill-current" />
+              Initiate Spin
             </Button>
-          ) : null}
+            {active ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => cancel.mutate()}
+                disabled={busy}
+              >
+                <Square />
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Switch
+              id="analyze-spin-record"
+              checked={record}
+              onCheckedChange={setRecord}
+              disabled={active || busy}
+            />
+            <Label
+              htmlFor="analyze-spin-record"
+              className="text-muted-foreground text-sm font-normal"
+            >
+              <Film className="size-3.5" />
+              Record video
+            </Label>
+          </div>
         </div>
 
         {actionError ? (

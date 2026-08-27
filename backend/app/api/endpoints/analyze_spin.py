@@ -84,7 +84,15 @@ async def get_status(
     summary="Spin once, and validate it",
     responses={**RUN_CONFLICT, **BAD_CONFIG},
 )
-async def start() -> ApiResponse[SpinAnalysisState]:
+async def start(
+    record: bool = Query(
+        default=False,
+        description=(
+            "Also record a video of the spin with OBS. Off by default -- turn "
+            "it on per run rather than leaving it running for every spin."
+        ),
+    ),
+) -> ApiResponse[SpinAnalysisState]:
     """Press spin on the active game, follow it to its result, and run the cash
     meter and payline validations over the screenshots it took.
 
@@ -93,7 +101,7 @@ async def start() -> ApiResponse[SpinAnalysisState]:
     check without touching the machine -- the game config parsing, its log
     existing -- refuse the request; everything else fails on its own step, with
     the error the equivalent direct request would have given."""
-    state = await analyze_spin_service.start()
+    state = await analyze_spin_service.start(record=record)
     run = state.run
     return ApiResponse[SpinAnalysisState].ok(
         data=state,

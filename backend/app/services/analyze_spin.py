@@ -215,6 +215,11 @@ class _ActiveRun:
     log_path: Path
     rules: tuple[game_log.EventRule, ...]
     started_at: datetime
+    record: bool
+    """Whether this run also makes a video of itself. When false the two
+    recording steps are left out of `steps` entirely, rather than shown and
+    immediately skipped -- a caller who did not ask to record should not see
+    anything about recording at all."""
 
     steps: dict[str, _StepRecord]
     state: SpinRunState = SpinRunState.RUNNING
@@ -661,9 +666,10 @@ async def _prepare(run: _ActiveRun) -> None:
 
 
 async def _start_recording(run: _ActiveRun) -> None:
-    """Begin the video of the spin."""
-    if not settings.ANALYZE_SPIN_RECORD:
-        _skip(run, STEP_RECORD_START, "ANALYZE_SPIN_RECORD is off")
+    """Begin the video of the spin. A no-op when this run did not ask to
+    record -- the step does not exist on a run like that, so there is nothing
+    to skip and nothing to show."""
+    if not run.record:
         return
     async with _step(run, STEP_RECORD_START) as step:
         await obs_service.start_recording(run.recording_dir)
@@ -675,6 +681,8 @@ async def _stop_recording(run: _ActiveRun) -> None:
     """End the video. Idempotent, so the same call serves the happy path and the
     tidy-up after a failure -- a run that died mid-spin must not leave OBS
     recording."""
+    if not run.record:
+        return
     if run.steps[STEP_RECORD_STOP].state is not SpinStepState.PENDING:
         return
     if not run.recording_started:
@@ -692,6 +700,8 @@ async def _stop_recording_quietly(run: _ActiveRun) -> None:
     """Stop the recording without letting the attempt raise. For the paths where
     the run is already over -- a failure, a cancel, a shutdown -- and leaving
     OBS running is the worse of the two outcomes."""
+    if not run.record:
+        return
     if run.steps[STEP_RECORD_STOP].state is not SpinStepState.PENDING:
         return
     if not run.recording_started:
@@ -1766,7 +1776,7 @@ def _summary(run: _ActiveRun) -> str:
 # --- public API -----------------------------------------------------------
 
 
-async def start() -> SpinAnalysisState:
+async def start(*, record: bool | None = None) -> SpinAnalysisState:
     """Drive one spin, and validate it.
 
     Returns as soon as the run is under way: the whole point is the sequence,
@@ -1775,8 +1785,15 @@ async def start() -> SpinAnalysisState:
     config parsing, and its log existing -- are checked here, so they come back
     as a refused request; everything else is a step, where a failure says which
     part of the machine was not ready.
+
+    ``record`` is the caller's per-run choice of whether to also make a video;
+    ``None`` (a caller that left it out) falls back to ``ANALYZE_SPIN_RECORD``.
+    When it comes out false, the two recording steps are left off the run's
+    sequence entirely rather than added and immediately skipped, so a run that
+    was not asked to record shows nothing about recording anywhere.
     """
     global _run
+    record_enabled = settings.ANALYZE_SPIN_RECORD if record is None else record
     async with _get_lock():
         current = _run
         if current is not None and current.state is SpinRunState.RUNNING:
@@ -1794,6 +1811,7 @@ async def start() -> SpinAnalysisState:
         directory = resolve_subdirectory(settings.obs_capture_dir, relative)
         directory.mkdir(parents=True, exist_ok=True)
 
+        recording_steps = {STEP_RECORD_START, STEP_RECORD_STOP}
         run = _ActiveRun(
             run_id=run_id,
             game=name,
@@ -1805,7 +1823,12 @@ async def start() -> SpinAnalysisState:
                 extra=config.event_rules, disabled=config.disabled_events
             ),
             started_at=started,
-            steps={key: _StepRecord(key=key, label=label) for key, label in _SEQUENCE},
+            record=record_enabled,
+            steps={
+                key: _StepRecord(key=key, label=label)
+                for key, label in _SEQUENCE
+                if record_enabled or key not in recording_steps
+            },
         )
         _run = run
         run.task = asyncio.create_task(_execute(run), name=f"analyze-spin-{run_id}")
