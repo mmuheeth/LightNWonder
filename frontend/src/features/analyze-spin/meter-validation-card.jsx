@@ -9,39 +9,50 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { VerdictBadge } from "@/features/analyze-spin/verdict-badge";
-import { cn } from "@/lib/utils";
 
 function amount(value) {
   return typeof value === "number" ? value.toFixed(2) : "—";
 }
 
-/** One frame's three numbers, over the strip they were read off. */
+/**
+ * One frame's three numbers, over the strip they were read off.
+ *
+ * A full row each rather than three across, because the crop *is* the evidence:
+ * the meter is a wide, thin strip of small digits, and at a third of the card's
+ * width a misread 8 for a 3 is not something a reader can see. The numbers sit on
+ * one line above it so the whole reading is still one glance.
+ */
 function Reading({ reading, crop }) {
   return (
     <div className="border-border/60 bg-muted/20 space-y-2 rounded-lg border p-3">
-      <p className="text-muted-foreground text-[0.6rem] font-semibold tracking-[0.14em] uppercase">
-        {reading.label}
-      </p>
+      <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+        <p className="text-muted-foreground text-[0.6rem] font-semibold tracking-[0.14em] uppercase">
+          {reading.label}
+        </p>
+        <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
+          {[
+            ["Balance", reading.balance],
+            ["Win", reading.win],
+            ["Bet", reading.bet],
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-baseline gap-1.5">
+              <dt className="text-muted-foreground text-[0.6rem] tracking-wide uppercase">
+                {label}
+              </dt>
+              <dd className="font-mono text-sm font-medium tabular-nums">
+                {amount(value)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <span className="text-muted-foreground/70 ml-auto font-mono text-[0.6rem] break-all">
+          {reading.file_name}
+        </span>
+      </div>
 
-      <dl className="grid grid-cols-3 gap-2">
-        {[
-          ["Balance", reading.balance],
-          ["Win", reading.win],
-          ["Bet", reading.bet],
-        ].map(([label, value]) => (
-          <div key={label} className="space-y-0.5">
-            <dt className="text-muted-foreground text-[0.6rem] tracking-wide uppercase">
-              {label}
-            </dt>
-            <dd className="font-mono text-sm font-medium tabular-nums">
-              {amount(value)}
-            </dd>
-          </div>
-        ))}
-      </dl>
-
-      {/* The strip itself, because a failed check is nearly always one misread
-          digit and this is the only place that can be seen. */}
+      {/* The strip itself, at the full width of the card: a wrong reading is
+          nearly always one misread digit, and this is the only place that can be
+          seen. */}
       {crop ? (
         <img
           src={crop}
@@ -53,43 +64,23 @@ function Reading({ reading, crop }) {
       {reading.error ? (
         <p className="text-destructive text-xs break-words">{reading.error}</p>
       ) : null}
-      <p className="text-muted-foreground/70 font-mono text-[0.6rem] break-all">
-        {reading.file_name}
-      </p>
     </div>
   );
 }
 
-/** One relation between two frames, with the arithmetic that decided it. */
-function Check({ check }) {
-  return (
-    <li
-      className={cn(
-        "border-border/60 flex flex-col gap-1 rounded-lg border-l-4 py-2 pr-3 pl-3",
-        check.verdict === "passed" && "border-l-emerald-500",
-        check.verdict === "failed" && "border-l-destructive",
-        check.verdict === "indeterminate" && "border-l-muted-foreground/40",
-      )}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm">{check.label}</span>
-        <VerdictBadge verdict={check.verdict} />
-      </div>
-      <p className="text-muted-foreground font-mono text-xs break-words">
-        {check.detail}
-      </p>
-    </li>
-  );
-}
-
 /**
- * The cash meter across every screenshot the spin took, and what the
- * differences between them prove.
+ * The cash meter across every screenshot the spin took.
  *
- * The readings lead and the checks follow, because a check is a statement about
- * two readings and reading it without them is unactionable — the numbers are the
- * answer, and "failed" is a consequence. Crops come from the report rather than
- * the progress stream, so they appear a moment after the verdict does.
+ * Just the readings: one row per frame, each carrying its three numbers and the
+ * strip they came off at full width. The relations between them (the bet came off
+ * the balance, the win went onto it) are still computed and still on the payload
+ * as `checks`, and `verdict` in the header is their summary — they are simply not
+ * a table worth reading past on the way to the award. The one comparison a reader
+ * actually wants is the WIN cell against what the paytable owed, and that has its
+ * own card at the foot of the page.
+ *
+ * Crops come from the report rather than the progress stream, so they appear a
+ * moment after the numbers do.
  */
 export function MeterValidationCard({ meter, detailed }) {
   const crops = new Map(
@@ -104,46 +95,25 @@ export function MeterValidationCard({ meter, detailed }) {
           Cash meter
         </CardTitle>
         <CardDescription>
-          Read off every screenshot, then checked against each other
+          Read off every screenshot the spin took, in the order it took them
         </CardDescription>
         <CardAction>
           <VerdictBadge verdict={meter.verdict} />
         </CardAction>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-3">
         {meter.error ? (
           <p className="text-destructive text-sm break-words">{meter.error}</p>
         ) : null}
 
-        {meter.readings.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {meter.readings.map((reading) => (
-              <Reading
-                key={reading.frame}
-                reading={reading}
-                crop={crops.get(reading.frame) ?? null}
-              />
-            ))}
-          </div>
-        ) : null}
-
-        {meter.checks.length > 0 ? (
-          <div className="space-y-2 border-t pt-4">
-            <h3 className="text-muted-foreground text-[0.65rem] font-semibold tracking-[0.16em] uppercase">
-              Checks
-            </h3>
-            <ul className="space-y-1.5">
-              {meter.checks.map((check) => (
-                <Check key={check.key} check={check} />
-              ))}
-            </ul>
-            <p className="text-muted-foreground text-[0.65rem]">
-              Two amounts count as equal within {meter.tolerance}, which absorbs the OCR
-              of the last decimal and nothing larger.
-            </p>
-          </div>
-        ) : null}
+        {meter.readings.map((reading) => (
+          <Reading
+            key={reading.frame}
+            reading={reading}
+            crop={crops.get(reading.frame) ?? null}
+          />
+        ))}
       </CardContent>
     </Card>
   );

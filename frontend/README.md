@@ -65,12 +65,14 @@ src/
 │   ├── paylines/           checks a split's tiles against the patterns that pay
 │   ├── paytable/           the maths the running game loaded: symbols, reel
 │   │                   strips, combos, and the payline set in play
-│   ├── image-classifier/   trains EfficientNet-B0 on the symbol artwork, then
-│   │                   names the tiles of a split: the reels as two matrices
-│   │                   (codes and display names), the ringed overlay, and a
-│   │                   per-tile table -- or "unknown" below the floor
+│   ├── image-classifier/   trains ResNet34 or EfficientNet-B0 on the symbol
+│   │                   artwork, then names the tiles of a split: the reels as
+│   │                   two matrices (codes and display names), the ringed
+│   │                   overlay, and a per-tile table -- or "unknown" below the
+│   │                   confidence floor
 │   └── analyze-spin/       drives one spin and grades it: live progress over a
-│                       WebSocket, then the meter and payline validations
+│                       WebSocket, then the meter, the symbols the classifier
+│                       read off the reels, and the lines those symbols paid
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -216,11 +218,67 @@ beside this spin's verdict would be worse than showing none.
 Everything else in the slice follows the conventions above -- native `<details>`
 for the per-line evidence and the log events, line colours taken from the server,
 `spinFrameUrl()` as the one fetch outside `apiRequest` (a screenshot cannot unwrap
-the envelope). Two rendering decisions are worth naming: the whole twelve-step
+the envelope). Two rendering decisions are worth naming: the whole thirteen-step
 sequence renders from the first frame, `pending` rows included, so a run that dies
-on the press shows the eight things that never happened; and `pending`, `skipped`,
+on the press shows the nine things that never happened; and `pending`, `skipped`,
 `completed` and `failed` are four visually distinct states, because a *skipped*
 take-win on a losing spin and a *broken* one are different facts.
+
+`spin-control-card` asks for the two per-run choices in the order they matter,
+between the button and the run's own report: **Classifier** (which trained network
+names the tiles, ResNet34 or EfficientNet-B0) and then **Record video**. The first
+changes what the run *concludes* and the second only what it captures, which is
+why it sits first. Its option list is hardcoded rather than fetched from the
+image-classifier slice — the backend's own architecture type is the same closed
+pair and `/start` 400s an unknown name, and a feature has to delete in one
+directory. The first entry is both what the dropdown opens on and what the backend
+would pick for a request naming none, so the visible default and the configured
+one cannot drift.
+
+The cards read down in the order the answers are produced, and the order is
+load-bearing:
+
+- `meter-validation-card` -- one row per screenshot, each with its three numbers
+  and **the meter strip at the full width of the card**. A wrong reading is
+  nearly always one misread digit, and at a third of the width a 3 read as an 8
+  is not something a reader can see. The relations between the frames are still
+  computed and still on the payload as `checks` (and `verdict` summarises them),
+  but they are not a table worth scrolling past on the way to the award.
+- `reel-reading-card` -- **what landed**, from `run.reels`: the codes the image
+  classifier read off the result screenshot, as two matrices (codes and display
+  names), and every tile that came back *unnamed* with the candidate it leaned
+  towards and its probability. Deliberately **no picture**: the ringed reels are
+  still written beside the tiles, but the rings only said "the model was sure",
+  which the grid says in codes. It has its own local `Grid` rather than importing
+  the image classifier's, because a slice has to delete in one directory.
+- `payline-validation-card` -- the lines those codes paid, ending in the **total
+  credits**, taken off `expected` rather than summed here so the figure on the
+  card and the one the verdict was reached with cannot differ.
+- `award-comparison-card` -- the only card that is a *check* rather than a
+  reading: those credits, converted through the credits per line and the
+  denomination, against the WIN cell. Each step of the conversion is a row,
+  because a wrong verdict is nearly always one of them rather than the pay.
+
+The reading sits **above** the paylines because the paylines are read from it.
+The confidence floor is set above where the classifier's classes separate, so a
+tile it was only fairly sure of comes back unnamed -- and a payline through an
+unnamed tile stops there. A spin whose lines report no run and whose reading shows
+half its tiles blank is a floor question, and that only reads in that order.
+
+Two things the payline card no longer shows, and it is worth knowing they were
+removed on purpose rather than lost:
+
+- **the strip of cosine similarity scores per line.** Tiles are compared by code
+  now, so `steps[].similarity` is null and the card prints the two codes with `=`
+  or `≠` between them instead. There is deliberately no 1.00 in the scores' place:
+  a number would read as a measurement that was never taken.
+- **the candidate award rows, and the credit *ranges* they fed.** Similarity could
+  not name a symbol, so an award was every paytable row paying at that run length
+  until the game's logged reel stops narrowed it. The classifier names the symbol,
+  so a line resolves to one row and one number -- `expected.credits` and
+  `expected.cash` are single figures where `credits_min`/`credits_max` and
+  `cash_min`/`cash_max` used to be. Those spans were never a claim about the
+  maths; they were the width of what the picture had failed to identify.
 
 ## Talking to the API
 

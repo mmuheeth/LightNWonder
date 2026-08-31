@@ -12,6 +12,14 @@ import { StatRow } from "@/components/stat-row";
 /** Below this a value is worth checking against the crop rather than trusting. */
 const CONFIDENCE_FLOOR = 75;
 
+/**
+ * Exactly 0 is "unmeasured", not "certainly wrong", so it is deliberately not
+ * flagged: Tesseract declines to score a word it read under a character
+ * whitelist, and a correct balance frequently arrives that way. Dropping the
+ * `confidence > 0` guard below would put a warning beside most correct balances.
+ */
+const UNMEASURED = 0;
+
 /** `1001.4` reads as money; `49531` reads as a count. Neither wants the other's format. */
 function formatValue(value, { money }) {
   if (value === null || value === undefined) return null;
@@ -25,7 +33,8 @@ function formatValue(value, { money }) {
 
 function MeterRow({ label, value, money, confidence, empty = "—" }) {
   const shown = formatValue(value, { money });
-  const weak = shown !== null && confidence > 0 && confidence < CONFIDENCE_FLOOR;
+  const weak =
+    shown !== null && confidence > UNMEASURED && confidence < CONFIDENCE_FLOOR;
   return (
     <StatRow label={label}>
       {shown === null ? (

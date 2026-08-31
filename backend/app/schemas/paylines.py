@@ -1,10 +1,12 @@
 """Request and response models for the payline check. Results carry the
-similarity evidence beside the pay verdict, since a pay count alone can't be
-checked against a config or a screenshot."""
+evidence beside the pay verdict, since a pay count alone can't be checked
+against a config or a screenshot -- and *which* evidence depends on how the
+tiles were compared, which is what :class:`PaylineMethod` names."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,12 +15,34 @@ __all__ = [
     "PaylineCheckResult",
     "PaylineLayout",
     "PaylineLine",
+    "PaylineMethod",
     "PaylineOverlay",
     "PaylineSetOption",
     "PaylineSource",
     "PaylineStats",
     "PaylineStep",
 ]
+
+
+class PaylineMethod(StrEnum):
+    """How two tiles were decided to be the same symbol.
+
+    The two answer different questions, and the fields carrying their evidence
+    are correspondingly different -- a similarity step has a score and no codes,
+    a symbol step has codes and no score.
+    """
+
+    SIMILARITY = "similarity"
+    """Cosine similarity between the two pictures, cut at a threshold. Says the
+    tiles are alike and never which symbol they are, so an award read this way
+    is only ever narrowed to every paytable row paying at that run length."""
+
+    SYMBOL = "symbol"
+    """The symbol codes a classifier read off each tile, compared for equality.
+    Names the symbol as well as the run, so an award is one row and one number.
+    Two *unnamed* tiles are never a match: "I could not tell" twice is not "the
+    same symbol", so a line through a tile below the confidence floor stops
+    there rather than being credited with a run nothing measured."""
 
 
 class PaylineSetOption(BaseModel):
@@ -52,13 +76,31 @@ class PaylineStep(BaseModel):
 
     left: str = Field(description="Position name of the left tile, e.g. 'r2c1'.")
     right: str = Field(description="Position name of the right tile, e.g. 'r2c2'.")
-    similarity: float = Field(
+    similarity: float | None = Field(
+        default=None,
         description=(
             "Cosine similarity of the two tiles, in [-1, 1]. Read it against "
-            "the run's matched_min/rejected_max, not as a plain fraction."
+            "the run's matched_min/rejected_max, not as a plain fraction. Null "
+            "when the pair was compared by symbol code, where there is no score "
+            "to read -- two codes are equal or they are not."
+        ),
+    )
+    left_symbol: str | None = Field(
+        default=None,
+        description=(
+            "Symbol code read off the left tile. Null on a similarity check, "
+            "which cannot name a tile, and on a tile no classifier was sure of."
+        ),
+    )
+    right_symbol: str | None = Field(
+        default=None, description="The same for the right tile."
+    )
+    matched: bool = Field(
+        description=(
+            "Whether the two are the same symbol: the score reached the "
+            "threshold, or the two codes are equal and both were read."
         )
     )
-    matched: bool = Field(description="Whether the score reached the threshold.")
     counted: bool = Field(description="Whether the leading run reached this step.")
 
 
@@ -80,6 +122,15 @@ class PaylineLine(BaseModel):
     paying: bool = Field(description="Whether the line paid at all -- pays >= 2.")
     matched_positions: list[str] = Field(
         description="The leading run of positions that pays, empty when none does."
+    )
+    symbols: list[str | None] = Field(
+        default_factory=list,
+        description=(
+            "Symbol code at each position, left to right, when the tiles were "
+            "compared by code. Empty for a similarity check, which says the tiles "
+            "are alike and never which symbol they are; null in a cell no "
+            "classifier was sure enough of to name."
+        ),
     )
     color: str = Field(description="Hex colour this line is drawn in on the overlay.")
     steps: list[PaylineStep] = Field(
@@ -105,13 +156,26 @@ class PaylineStats(BaseModel):
 
     lines: int = Field(ge=0, description="Lines in the set that was checked.")
     paying: int = Field(ge=0, description="How many of them paid.")
-    comparisons: int = Field(ge=0, description="Adjacent pairs compared.")
-    matches: int = Field(ge=0, description="Pairs that reached the threshold.")
+    comparisons: int = Field(
+        ge=0,
+        description=(
+            "Distinct adjacent pairs compared -- a pair two lines run through is "
+            "one comparison, so the middle of the grid is not weighted twice."
+        ),
+    )
+    matches: int = Field(ge=0, description="Pairs decided to be the same symbol.")
     best_line: str | None = Field(
         default=None, description="Name of the longest-paying line, or null."
     )
     best_pays: int = Field(ge=0, description="Positions the best line paid on.")
-    score_min: float | None = Field(default=None, description="Lowest score seen.")
+    score_min: float | None = Field(
+        default=None,
+        description=(
+            "Lowest score seen. Null when the tiles were compared by symbol "
+            "code, along with the three figures below it -- there is no "
+            "distribution to separate."
+        ),
+    )
     score_max: float | None = Field(default=None, description="Highest score seen.")
     matched_min: float | None = Field(
         default=None,
@@ -213,7 +277,17 @@ class PaylineCheckResult(BaseModel):
 
     game: str = Field(description="Game whose paylines were checked.")
     set: str = Field(description="Bet configuration that was checked.")
-    threshold: float = Field(description="Similarity cut that was applied.")
+    method: PaylineMethod = Field(
+        default=PaylineMethod.SIMILARITY,
+        description="How two tiles were decided to be the same symbol.",
+    )
+    threshold: float | None = Field(
+        default=None,
+        description=(
+            "Similarity cut that was applied. Null when the tiles were compared "
+            "by symbol code, which has no threshold to tune."
+        ),
+    )
     source: PaylineSource = Field(description="The split it was checked against.")
     summary: str = Field(
         description=("The result as one sentence, e.g. 'Line 1 pays 2, Line 3 pays 4'.")

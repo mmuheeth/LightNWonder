@@ -374,14 +374,17 @@ the wrong symbol.
 
 A network transfer-learned on the artwork under `backend/dataset/` (one folder per
 two-letter symbol code), then read back against the tiles the reel grid already
-wrote. Its own tab, `/image-classifier`.
+wrote. Its own tab, `/image-classifier` — and, since it started grading spins,
+the reading [Analyze Spin](#analyze-spin) rests on rather than a page of its own.
 
-**Two engines, both kept at once.** EfficientNet-B0 (5.3M parameters) and ResNet34
-(21.8M) share every transform, so only the backbone differs — and each has its own
-checkpoint, so training one leaves the other alone. Train and classify each take
-an optional `architecture`, and the page has a picker on both cards. The point is
-comparison: two independently-fitted networks agreeing about a tile is worth more
-than one of them being confident.
+**Two engines, both kept at once.** ResNet34 (21.8M parameters, the default) and
+EfficientNet-B0 (5.3M) share every transform, so only the backbone differs — and
+each has its own checkpoint, so training one leaves the other alone. Train and
+classify each take an optional `architecture`, and the page has a picker on both
+cards. The point is comparison: two independently-fitted networks agreeing about
+a tile is worth more than one of them being confident. ResNet34 leads because it
+is the one that reads a real split better here — it names all fifteen tiles of the
+reference split correctly.
 
 ```bash
 # what can be trained on, and what is wrong with it
@@ -500,7 +503,8 @@ request would have given. A step that was deliberately not run — take-win, on 
 spin that won nothing — reads as *skipped*, which is a different fact from never
 having got there.
 
-Then two validations, deliberately independent so neither can fail the other:
+Then three readings over what it collected, deliberately independent so none can
+fail another:
 
 - **The cash meter**, read off every screenshot the run took, with the
   arithmetic between them checked: the bet came off the balance, the win
@@ -508,26 +512,51 @@ Then two validations, deliberately independent so neither can fail the other:
   cleared. Each check shows what it expected, what it read and the sum it did,
   because a failing one is nearly always one misread digit and the numbers are
   the answer.
+- **The symbols on the reels**, from the [Image Classifier](#image-classifier).
+  The result screenshot's reels are split and every tile is named with its symbol
+  code, or left blank when nothing cleared the confidence floor. Shown as two
+  matrices — codes and display names — beside the reels with the named cells
+  ringed, and with every blank tile's leading candidate and its probability, so a
+  rejection is arguable rather than a hole.
 - **The paylines**, checked against the lines the *running game* declares —
   its own `winGeometry.xml`, reached through the paytable its log named, not the
   hand-copied block in this repo's game config.
 
-  Two independent sources, and which does what is the point. **The picture
-  decides what paid**: each line is read by cosine similarity between the tiles
-  it runs through, so nothing about the win comes out of the log — a checker that
-  read the answer there would agree with the game by construction and could never
-  catch a reel drawing the wrong symbol. **The game's logged reel stops name the
-  symbols**: they say which symbol sits at every position, which is the one thing
-  similarity cannot tell you about a run it found, and what turns "something
-  paying at three" into one combo and one credit value out of the game's own
-  maths. Where the two disagree is reported rather than resolved — a wild
-  standing in, or reels drawing what the maths did not say landed. Without a
-  stops line the award honestly stays a range.
+  Two judgements, and which does what is the point. **The picture decides what
+  landed**: a line's run is the leading stretch of positions the classifier named
+  with the same code, so nothing about the win comes out of the log — a checker
+  that read the answer there would agree with the game by construction and could
+  never catch a reel drawing the wrong symbol. **The paytable decides whether it
+  pays**: a run of two of a symbol whose row starts at three is a real run and no
+  win, and it says so rather than being shown as a pay. Because the symbol is
+  *named*, an award is one combo and one number out of the game's own maths.
 
-The one number worth tuning is `ANALYZE_SPIN_WIN_WAIT_SECONDS`. There is no log
+  Two earlier readings were replaced by that one. **Cosine similarity between
+  tiles** measured a run without ever naming it, so an award stayed a range of
+  every row paying at that length; it is still what the standalone
+  [Payline check](#payline-check) panel uses. **The game's logged reel stops** named the
+  symbols by agreeing with the game, which is exactly what a checker must not do.
+  Both are still in the tree and neither takes part here.
+
+Which of the two trained networks reads the reels is a **per-run choice**, offered
+as a dropdown between the spin button and the record toggle: ResNet34 by default,
+EfficientNet-B0 the alternative. Both stay trained at once and they do not read
+the same split equally well, so putting one spin through each and comparing is
+worth more than trusting either alone.
+
+Last on the page, and the only card that is a *check* rather than a reading: the
+credits those paylines came to, converted through the line count and the
+denomination, against the WIN cell OCR read off the glass. Every step of the
+conversion is listed, because a wrong verdict is nearly always one of them rather
+than the pay itself.
+
+Two numbers worth tuning. `ANALYZE_SPIN_WIN_WAIT_SECONDS` first: there is no log
 line saying a spin lost, so a loss is proven by the win meter's count-up *not*
 arriving — set it below the longest count-up the game animates and a win comes
-back as a loss. See
+back as a loss. Then the pass threshold, `ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE`
+(**0.85**, against the classifier page's own 0.90): a payline through an unnamed
+tile **stops there**, since "I could not tell" twice is not a run — so a spin that
+plainly paid and reports nothing is a threshold question first. See
 [backend/README.md](backend/README.md#analyze-spin) for the endpoints, the step
 list and the failure modes.
 

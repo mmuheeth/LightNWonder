@@ -86,12 +86,32 @@ class AnalyzeSpinSettings(BaseSettings):
     # cannot grow one run's record without bound.
     ANALYZE_SPIN_MAX_EVENTS: int = Field(default=200, ge=1)
 
-    # Which visible row the game's logged reel stop refers to. `auto` builds all
-    # three and keeps whichever agrees best with the similarity already measured
-    # off the picture, which is the only evidence there is: the maths files state
-    # the stop index and never state the convention, and the wrong one shifts
-    # every symbol by a row into a plausible grid of the wrong spin. Pin it once
-    # a game's alignment is known and settled.
+    # Which trained network names the tiles of the spin's reels when the request
+    # does not say -- the same relationship `ANALYZE_SPIN_RECORD` has to
+    # `/start?record=`. Blank uses CLASSIFIER_ARCHITECTURE, which is
+    # EfficientNet-B0. Both networks stay trained at once and they do not read the
+    # same split equally well, so which one grades a spin is a per-run choice
+    # first and a setting second.
+    ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE: str = ""
+
+    # The confidence floor a tile has to clear to be named while grading a spin.
+    # 0.85 rather than the classifier page's own 0.90: that floor sits far above
+    # where the classes separate, so a correct reading is rejected whenever the
+    # model is only fairly sure. Safe on a page that shows the ranked candidates
+    # beside every tile, costly here -- a payline through an unnamed tile stops
+    # there, so the run comes back short and the spin looks like it paid less than
+    # it did. Blank opts back into CLASSIFIER_MIN_CONFIDENCE. Read
+    # `unnamed_positions` on the validation before concluding a spin paid nothing.
+    ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE: float | None = Field(
+        default=0.85, ge=0.0, le=1.0
+    )
+
+    # Dormant. Which visible row the game's logged reel stop refers to: `auto`
+    # built all three and kept whichever agreed best with the cosine similarity
+    # measured off the picture. Nothing reads it now -- a spin's symbols come from
+    # the image classifier, which needs no anchor because it names the tile it was
+    # shown. Kept beside `app/utils/reel_stops.py`, which is likewise still here
+    # and likewise unused, for whoever wants the log as a second opinion.
     ANALYZE_SPIN_REEL_STOP_ANCHOR: Literal["auto", "top", "middle", "bottom"] = "auto"
 
     @field_validator("ANALYZE_SPIN_SCREENSHOT_WIDTH", mode="before")
@@ -107,3 +127,24 @@ class AnalyzeSpinSettings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE", mode="before")
+    @classmethod
+    def _blank_floor_is_configured(cls, value: object) -> object:
+        """Read ``ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE=`` as "the classifier's own".
+
+        Blank is the way back to ``CLASSIFIER_MIN_CONFIDENCE``, which is *not* the
+        same as leaving the line out: absent means the 0.85 default above. The
+        distinction earns its keep because the two floors exist for different
+        readers -- 0.90 is right for a page that shows what it rejected, and this
+        one grades a spin.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def analyze_spin_classifier_architecture(self) -> str | None:
+        """Which network grades a spin, or ``None`` to let the classifier decide."""
+        chosen = self.ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE.strip()
+        return chosen or None

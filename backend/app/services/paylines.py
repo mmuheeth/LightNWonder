@@ -3,31 +3,47 @@
 One step past :mod:`app.services.grid`: grid asks *does it divide into the
 symbols expected*, this asks *do those symbols line up*. Reads a written split
 (via :func:`app.services.grid.resolve_split`/:func:`read_split`), never a
-screenshot directly, so a check is repeatable at a new threshold without the
-simulator still showing the same spin. Two tiles are "the same" by cosine
-similarity (invariant to the brightness pulsing/glowing symbols add — see
-:mod:`app.utils.similarity`); the per-game cut between match/no-match clusters
-is why every result reports ``matched_min``/``rejected_max`` alongside
-``PAYLINE_MATCH_THRESHOLD``. A line reads left to right and stops at the first
+screenshot directly, so a check is repeatable without the simulator still
+showing the same spin. A line reads left to right and stops at the first
 non-matching adjacent pair, so ``pays`` is the length of that *leading* run (0,
-or 2+) — every pair is still scored (``counted`` marks which ones the run
+or 2+) — every pair is still compared (``counted`` marks which ones the run
 reached) since the pairs after a break are evidence the break was real. Each
 line gets its own picture with a break marker, paying or not; the combined
 overlay draws only paying lines and never the break ring, since several lines
 share it. Holds no state, so no ``reset()``.
 
-:func:`check` reads the set out of the active game's ``paylines`` block;
-:func:`check_lines` takes one it was handed, which is how
-:mod:`app.services.analyze_spin` checks the lines the *running* game declares
-in its own ``winGeometry.xml``. Both go through :func:`_evaluate_set`, so a
-line set from either source is scored, drawn and written identically.
+**Two tiles are "the same symbol" in one of two ways, and which one was used
+travels on the answer** (``method``, :class:`app.schemas.paylines.PaylineMethod`):
+
+* :data:`PaylineMethod.SIMILARITY` — cosine similarity between the two pictures,
+  cut at ``PAYLINE_MATCH_THRESHOLD`` (invariant to the brightness pulsing and
+  glowing symbols add — see :mod:`app.utils.similarity`). The per-game cut
+  between the match and no-match clusters is why a result read this way reports
+  ``matched_min``/``rejected_max`` beside the threshold. It says the tiles are
+  alike and never which symbol they are.
+* :data:`PaylineMethod.SYMBOL` — the codes a classifier read off each tile
+  (:mod:`app.services.image_classifier`), compared for equality. No threshold,
+  no scores, and the symbol is *named*, which is what lets a caller holding the
+  paytable price a run exactly instead of narrowing it to every row that pays at
+  that length. Two unnamed tiles never match: "I could not tell" twice is not
+  "the same symbol".
+
+Everything below the comparison — the grid geometry, the tiles, the drawing, the
+files written — is identical either way, which is the whole reason both go
+through :func:`_evaluate_set`.
+
+:func:`check` reads the set out of the active game's ``paylines`` block and
+compares by similarity; :func:`check_lines` takes a set it was handed;
+:func:`check_symbols` takes a set *and* the codes to read it by, which is how
+:mod:`app.services.analyze_spin` checks the lines the *running* game declares in
+its own ``winGeometry.xml`` against the symbols the classifier named.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -51,6 +67,7 @@ from app.schemas.paylines import (
     PaylineCheckResult,
     PaylineLayout,
     PaylineLine,
+    PaylineMethod,
     PaylineOverlay,
     PaylineSetOption,
     PaylineSource,
@@ -144,41 +161,154 @@ def _vectors(split: grid_service.SplitOnDisk) -> dict[str, np.ndarray]:
     return {name: similarity.vector(tile) for name, tile in split.tiles.items()}
 
 
-class _Scores:
-    """Cosine similarity between tiles of one split, cached on the unordered pair
-    since cosine is symmetric and lines within a set share many pairs."""
+@dataclasses.dataclass(frozen=True)
+class _Comparison:
+    """One adjacent pair, as whichever comparer decided it.
 
-    def __init__(self, vectors: dict[str, np.ndarray]) -> None:
-        self._vectors = vectors
-        self._cache: dict[tuple[str, str], float] = {}
+    Both kinds of evidence are optional because the two comparers measure
+    different things: a similarity pair has a score and cannot name either tile,
+    a symbol pair names both and has no score. Carrying one shape with holes in
+    it, rather than two shapes, is what keeps :func:`_evaluate` unaware of which
+    comparison it is reading.
+    """
 
-    def between(self, left: str, right: str) -> float:
-        """How alike the two named tiles are."""
+    matched: bool
+    similarity: float | None = None
+    left_symbol: str | None = None
+    right_symbol: str | None = None
+
+    def flipped(self) -> _Comparison:
+        """The same comparison with its two sides swapped."""
+        return dataclasses.replace(
+            self, left_symbol=self.right_symbol, right_symbol=self.left_symbol
+        )
+
+
+class _Comparer:
+    """Decides whether two tiles of one split are the same symbol.
+
+    Caches on the *unordered* pair: both ways of deciding are symmetric, and
+    lines within a set share many pairs -- so a pair two lines run through is one
+    comparison, which is also what keeps ``comparisons`` a count of distinct
+    pairs rather than of steps.
+    """
+
+    method: PaylineMethod
+    threshold: float | None = None
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[str, str], _Comparison] = {}
+
+    def compare(self, left: str, right: str) -> _Comparison:
+        """How the two named tiles compare, in the order they were asked about."""
         key = (left, right) if left <= right else (right, left)
         if key not in self._cache:
-            try:
-                first, second = self._vectors[key[0]], self._vectors[key[1]]
-            except KeyError as exc:
-                raise PaylineCheckFailedError(
-                    f"the split holds no tile {exc.args[0]!r} for a payline that "
-                    "runs through it"
-                ) from exc
-            if first.shape != second.shape:
-                raise PaylineCheckFailedError(
-                    f"tiles {key[0]} and {key[1]} are different sizes, so they "
-                    "did not come from one split"
-                )
-            self._cache[key] = similarity.vector_cosine(first, second)
-        return self._cache[key]
+            self._cache[key] = self._decide(key[0], key[1])
+        found = self._cache[key]
+        # The cache is keyed on the unordered pair, so a step whose tiles arrived
+        # the other way round has to be reported the way it was asked -- else a
+        # line's steps would carry the codes of its two tiles transposed.
+        return found if key[0] == left else found.flipped()
+
+    def _decide(self, left: str, right: str) -> _Comparison:
+        raise NotImplementedError
+
+    def symbol(self, name: str) -> str | None:  # noqa: ARG002 - base answers for all
+        """The code read off one tile, or ``None`` when this comparer names none."""
+        return None
 
     @property
-    def measured(self) -> list[float]:
-        """Every distinct pair's score, for the run's own distribution."""
+    def distinct(self) -> list[_Comparison]:
+        """Every distinct pair's verdict, for the run's own figures."""
         return list(self._cache.values())
 
 
+class _SimilarityComparer(_Comparer):
+    """Two tiles are the same symbol when their cosine similarity clears the cut.
+
+    Says nothing about *which* symbol: the vectors are pixels, and two crops of
+    one symbol score alike whatever that symbol is. Closing that gap is the
+    caller's problem -- or :class:`_SymbolComparer`'s.
+    """
+
+    method = PaylineMethod.SIMILARITY
+
+    def __init__(self, split: grid_service.SplitOnDisk, threshold: float) -> None:
+        super().__init__()
+        self._vectors = _vectors(split)
+        # Kept twice on purpose: `threshold` is the reported cut, typed nullable
+        # on the base because a symbol comparison has none, and `_cut` is the
+        # float this one actually compares against.
+        self._cut = threshold
+        self.threshold = threshold
+
+    def _decide(self, left: str, right: str) -> _Comparison:
+        try:
+            first, second = self._vectors[left], self._vectors[right]
+        except KeyError as exc:
+            raise PaylineCheckFailedError(
+                f"the split holds no tile {exc.args[0]!r} for a payline that "
+                "runs through it"
+            ) from exc
+        if first.shape != second.shape:
+            raise PaylineCheckFailedError(
+                f"tiles {left} and {right} are different sizes, so they did not "
+                "come from one split"
+            )
+        score = similarity.vector_cosine(first, second)
+        return _Comparison(matched=score >= self._cut, similarity=round(score, 6))
+
+
+class _SymbolComparer(_Comparer):
+    """Two tiles are the same symbol when a classifier read the same code off both.
+
+    No threshold and no scores -- two codes are equal or they are not. **Two
+    unnamed tiles are not a match**: a classifier below its confidence floor said
+    "I could not tell", and twice over that is not evidence of a run. A line
+    through such a tile stops there, which is the honest answer and the reason
+    the tile's own confidence has to travel back to the caller.
+    """
+
+    method = PaylineMethod.SYMBOL
+
+    def __init__(self, symbols: Mapping[str, str | None]) -> None:
+        super().__init__()
+        # Lower-cased because a split's tiles are keyed by their file stem while a
+        # line's positions come from `reel_grid.position_name`. The two agree
+        # today, and this is the one place that would notice if they stopped.
+        self._symbols = {name.lower(): code for name, code in symbols.items()}
+
+    def symbol(self, name: str) -> str | None:
+        return self._symbols.get(name.lower())
+
+    def _decide(self, left: str, right: str) -> _Comparison:
+        first, second = self.symbol(left), self.symbol(right)
+        return _Comparison(
+            matched=first is not None and first == second,
+            left_symbol=first,
+            right_symbol=second,
+        )
+
+
+_ComparerFor = Callable[[grid_service.SplitOnDisk], _Comparer]
+"""Builds the comparer for one split. A factory rather than a comparer because
+the split is read inside :func:`_evaluate_set`, which is also where its shape is
+checked -- one built before that would be built against an unvetted split."""
+
+
+def _by_similarity(threshold: float | None) -> _ComparerFor:
+    """Compare tiles by cosine similarity, at ``threshold`` or the configured cut."""
+    cut = threshold if threshold is not None else settings.PAYLINE_MATCH_THRESHOLD
+    return lambda split: _SimilarityComparer(split, cut)
+
+
+def _by_symbol(symbols: Mapping[str, str | None]) -> _ComparerFor:
+    """Compare tiles by the symbol codes a classifier read off them."""
+    return lambda _split: _SymbolComparer(symbols)
+
+
 def _evaluate(
-    line: payline_config.Payline, scores: _Scores, threshold: float
+    line: payline_config.Payline, comparer: _Comparer
 ) -> tuple[list[PaylineStep], int, str | None]:
     """One line's steps, how many positions it pays on, and where it broke.
     ``counted`` marks the steps the left-to-right read actually reached; the run
@@ -188,19 +318,20 @@ def _evaluate(
     run = 0
     break_position: str | None = None
     for left, right in line.steps:
-        score = scores.between(left.name, right.name)
-        matched = score >= threshold
+        found = comparer.compare(left.name, right.name)
         steps.append(
             PaylineStep(
                 left=left.name,
                 right=right.name,
-                similarity=round(score, 6),
-                matched=matched,
+                similarity=found.similarity,
+                left_symbol=found.left_symbol,
+                right_symbol=found.right_symbol,
+                matched=found.matched,
                 counted=running,
             )
         )
         if running:
-            if matched:
+            if found.matched:
                 run += 1
             else:
                 running = False
@@ -307,19 +438,29 @@ def _summarise(lines: list[PaylineLine]) -> str:
     return ", ".join(paying) if paying else "No line pays"
 
 
-def _stats(lines: list[PaylineLine], scores: _Scores, threshold: float) -> PaylineStats:
-    """The run as a whole, including how well its scores separated. ``matched_min``
-    and ``rejected_max`` are counted over distinct pairs, not steps, so a pair
-    two lines share isn't weighted twice."""
-    measured = scores.measured
-    matched = [score for score in measured if score >= threshold]
-    rejected = [score for score in measured if score < threshold]
+def _stats(lines: list[PaylineLine], comparer: _Comparer) -> PaylineStats:
+    """The run as a whole, including how well its scores separated -- when there
+    were scores. Counted over distinct pairs, not steps, so a pair two lines
+    share isn't weighted twice. A symbol comparison leaves the four score figures
+    null rather than filling them with 0 and 1: there is no distribution to
+    separate, and a printed threshold nothing was measured against is worse than
+    a blank."""
+    distinct = comparer.distinct
+    measured = [one.similarity for one in distinct if one.similarity is not None]
+    matched = [
+        one.similarity for one in distinct if one.matched and one.similarity is not None
+    ]
+    rejected = [
+        one.similarity
+        for one in distinct
+        if not one.matched and one.similarity is not None
+    ]
     best = max(lines, key=lambda line: line.pays, default=None)
     return PaylineStats(
         lines=len(lines),
         paying=sum(1 for line in lines if line.paying),
-        comparisons=len(measured),
-        matches=len(matched),
+        comparisons=len(distinct),
+        matches=sum(1 for one in distinct if one.matched),
         best_line=best.name if best is not None and best.paying else None,
         best_pays=best.pays if best is not None else 0,
         score_min=round(min(measured), 6) if measured else None,
@@ -406,20 +547,20 @@ def _evaluate_set(
     line_set: payline_config.PaylineSet,
     *,
     split_name: str | None,
-    threshold: float | None,
+    comparer_for: _ComparerFor,
     images: ImageOptions,
 ) -> PaylineCheckResult:
     """Compare one set of lines against one written split.
 
     Takes the set rather than reading it, so the same comparison serves a set
     declared in this repo's game config *and* one assembled from the running
-    game's own ``winGeometry.xml`` (see :mod:`app.services.analyze_spin`).
-    Everything below the set -- the grid geometry, the tiles, the threshold, the
-    drawing -- is identical either way, and having two copies of it is how the
-    two would drift apart.
+    game's own ``winGeometry.xml`` (see :mod:`app.services.analyze_spin`). Takes
+    the comparer for the same reason: whether two tiles are one symbol is decided
+    by cosine similarity or by a classifier's codes, and everything below that --
+    the grid geometry, the tiles, the drawing, the files written -- is identical
+    either way. Two copies of this is how the two would drift apart.
     """
     grid = _grid(config)
-    cut = threshold if threshold is not None else settings.PAYLINE_MATCH_THRESHOLD
 
     split = grid_service.read_split(grid_service.resolve_split(split_name))
     if (split.rows, split.columns) != (grid.row_count, grid.column_count):
@@ -434,7 +575,7 @@ def _evaluate_set(
     except payline_config.PaylineError as exc:
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
 
-    scores = _Scores(_vectors(split))
+    comparer = comparer_for(split)
     tiles = _placed_tiles(grid, split)
     scale = payline_overlay.scale_for(
         split.crop.width, settings.PAYLINE_OVERLAY_MIN_WIDTH
@@ -443,7 +584,7 @@ def _evaluate_set(
     lines: list[PaylineLine] = []
     paying_drawings: list[payline_overlay.DrawnLine] = []
     for index, line in enumerate(line_set.lines):
-        steps, pays, break_position = _evaluate(line, scores, cut)
+        steps, pays, break_position = _evaluate(line, comparer)
         drawing = _line_drawing(
             index,
             [position.name for position in line.positions],
@@ -469,6 +610,9 @@ def _evaluate_set(
                 pays=pays,
                 paying=paying,
                 matched_positions=[position.name for position in line.positions[:pays]],
+                symbols=[comparer.symbol(position.name) for position in line.positions]
+                if comparer.method is PaylineMethod.SYMBOL
+                else [],
                 color=payline_overlay.colour(index),
                 steps=steps,
                 break_position=break_position,
@@ -481,14 +625,17 @@ def _evaluate_set(
     file_name = f"{line_set.name}.png"
     _write(overlay, directory, file_name)
 
-    stats = _stats(lines, scores, cut)
+    stats = _stats(lines, comparer)
     logger.info(
-        "Checked the %s payline set of %s against %s at threshold %.4f: %s "
+        "Checked the %s payline set of %s against %s by %s (%s): %s "
         "(%d of %d pairs matched)",
         line_set.name,
         game,
         split.name,
-        cut,
+        comparer.method.value,
+        "no threshold"
+        if comparer.threshold is None
+        else f"threshold {comparer.threshold:.4f}",
         _summarise(lines),
         stats.matches,
         stats.comparisons,
@@ -496,7 +643,8 @@ def _evaluate_set(
     return PaylineCheckResult(
         game=game,
         set=line_set.name,
-        threshold=cut,
+        method=comparer.method,
+        threshold=comparer.threshold,
         source=_describe(split),
         summary=_summarise(lines),
         lines=lines,
@@ -516,7 +664,7 @@ def _check(request: PaylineCheckRequest) -> PaylineCheckResult:
         config,
         _read_set(config, chosen),
         split_name=request.split,
-        threshold=request.threshold,
+        comparer_for=_by_similarity(request.threshold),
         images=(
             ImageOptions(overlay=True, lines="all")
             if request.include_images
@@ -534,17 +682,17 @@ def _check_lines(
     line_set: payline_config.PaylineSet,
     *,
     split: str | None,
-    threshold: float | None,
+    comparer_for: _ComparerFor,
     images: ImageOptions,
 ) -> PaylineCheckResult:
-    """Blocking half of :func:`check_lines`."""
+    """Blocking half of :func:`check_lines` and :func:`check_symbols`."""
     name, config = _active_config()
     return _evaluate_set(
         name,
         config,
         line_set,
         split_name=split,
-        threshold=threshold,
+        comparer_for=comparer_for,
         images=images,
     )
 
@@ -559,16 +707,47 @@ async def check_lines(
     """Evaluate a caller-supplied set of lines against one split reel grid.
 
     The public door for lines that did not come from the active game's
-    ``paylines`` block -- :mod:`app.services.analyze_spin` builds one out of the
-    running game's ``winGeometry.xml``. The active game still supplies the grid
-    geometry (``reel_bounds``), because that is where the tiles are, not which
-    patterns pay.
+    ``paylines`` block. The active game still supplies the grid geometry
+    (``reel_bounds``), because that is where the tiles are, not which patterns
+    pay. Compares by cosine similarity: see :func:`check_symbols` for the same
+    door read by a classifier's codes instead.
     """
     return await asyncio.to_thread(
         _check_lines,
         line_set,
         split=split,
-        threshold=threshold,
+        comparer_for=_by_similarity(threshold),
+        images=images or ImageOptions(),
+    )
+
+
+async def check_symbols(
+    line_set: payline_config.PaylineSet,
+    symbols: Mapping[str, str | None],
+    *,
+    split: str | None = None,
+    images: ImageOptions | None = None,
+) -> PaylineCheckResult:
+    """Evaluate a set of lines against symbol codes already read off the tiles.
+
+    The classifier's door, and how :mod:`app.services.analyze_spin` reads a spin:
+    ``symbols`` maps a tile position (``r1c1``) to the code a classifier named it
+    with, or to ``None`` for one it was not sure enough of. Two tiles match when
+    their codes are equal, so a run is *named* as well as counted -- which is what
+    lets the caller price it against one paytable row instead of every row that
+    pays at that length.
+
+    Nothing here reads a threshold, and the result's ``threshold`` comes back
+    null: two codes are equal or they are not. Everything else about the answer
+    -- the lines, the drawings, the files under the split's own directory -- is
+    what :func:`check_lines` produces, because both go through
+    :func:`_evaluate_set`.
+    """
+    return await asyncio.to_thread(
+        _check_lines,
+        line_set,
+        split=split,
+        comparer_for=_by_symbol(symbols),
         images=images or ImageOptions(),
     )
 

@@ -91,8 +91,9 @@ backend/
     │   ├── game_math.py     reads a paytable folder's math.xml (symbols, reel
     │                         strips, combos) and its gameConfig.cfg identity
     │   ├── reel_stops.py    turns a spin's logged reel stops plus the strips into
-    │                         the symbols that were on screen -- naming them, never
-    │                         deciding what paid
+    │                         the symbols that were on screen. Unread since Analyze
+    │                         Spin started naming tiles from the picture instead --
+    │                         a symbol named from the log agrees with the game
     │   ├── win_geometry.py  reads winGeometry.xml: where each payline runs, and
     │                         converts a line to a game config's [row, column]
     │   ├── image_roi.py     crops a config's named region out of a frame, by
@@ -1061,6 +1062,14 @@ This is the third reading: a network over the tiles themselves, and the only one
 that can disagree. Two are available -- EfficientNet-B0 and ResNet34 -- and both
 can be trained and kept at once.
 
+It is also no longer only a page of its own. [Analyze Spin](#analyze-spin) reads
+a spin's reels through this, in place of both of the other two: the codes it
+returns are what each payline's run is counted from *and* what the award is priced
+by. Whatever moves here -- the artwork, the transforms, the confidence floor --
+moves a spin's verdict, so read
+[the confidence floor is now the one tunable](#the-confidence-floor-is-now-the-one-tunable-and-it-costs-something)
+before changing any of them.
+
 ```bash
 # what there is to train on, and what is wrong with it
 curl localhost:8001/api/image-classifier/dataset
@@ -1170,8 +1179,9 @@ Two more that are not the stock recipe:
 
 ### Two engines, and why both are kept
 
-`CLASSIFIER_ARCHITECTURE` picks between **EfficientNet-B0** (5.3M parameters) and
-**ResNet34** (21.8M). Both take the same 224px ImageNet-normalised input through
+`CLASSIFIER_ARCHITECTURE` picks between **ResNet34** (21.8M parameters, the
+default) and **EfficientNet-B0** (5.3M). Both take the same 224px
+ImageNet-normalised input through
 the same transforms, so the sample synthesis, augmentation, schedule, evaluation
 and checkpoint format are all shared -- only the backbone differs, which is why
 adding a third is one entry in `_ARCHITECTURES` rather than a second code path.
@@ -1189,7 +1199,11 @@ On CPU the larger network is not simply the slower one -- ResNet is plain
 convolutions while EfficientNet's depthwise separable ones are poorly served by
 CPU kernels -- but measured here ResNet34 does cost roughly twice as long
 (~8 minutes against ~4.3 for the same schedule). Both reach 1.00 on held-back
-frames, so pick on behaviour against real splits rather than on either number.
+frames, so pick on behaviour against real splits rather than on either number --
+and that is what settled the default: ResNet34 names all fifteen tiles of the
+reference split correctly, so it is what `CLASSIFIER_ARCHITECTURE` ships as and
+what grades a spin unless the request says otherwise. Re-measure before trusting
+that; it is a statement about one split and one set of artwork.
 
 ### The confidence floor
 
@@ -1379,11 +1393,50 @@ the cells, HuffNPuffLink *inside* them. Read the full height of the first and it
 values collapse into `4000.07` and `30.88`.
 
 ```json
-"meter": { "band": [0.103448, 0.689655] }
+"meter": { "band": [0.213333, 0.600000] }
 ```
 
 `[top, bottom]` as fractions of the **strip's** height, so the same pair holds at
-any capture resolution. Without one, `fit_band` works it out by reading: the
+any capture resolution — but only the *fraction* does, and everything measured in
+pixels around it has to keep up. FortuneOx's band used to be
+`[0.103448, 0.689655]`, which overshot into the label rows by about 3 of a 29-row
+strip and did no harm at all until the OBS canvas was set to the game's own
+1080x1920. The same 3 rows became 8 legible ones on a 75-row strip, `BET` read
+`10` as `410`, and the cell separations moved out from under
+`GAP_SHARE`. **Re-measure a band when the canvas changes**, and see
+`tests/test_meter.py::REAL_STRIPS`, which now pins both canvases for that reason.
+
+### What survives a canvas or window change, and what does not
+
+The game's meter layout is **proportionally identical at every capture size** --
+measured, not assumed: the value rows sit at 0.276-0.533 of the strip's height on
+a 421-wide capture and 0.280-0.533 on a 1080-wide one. So the region, the band and
+the windows are all genuinely scale-free, and a canvas change alone never
+invalidates them.
+
+What a canvas change does invalidate is the constants still expressed in pixels.
+Those are now shares wherever a share works (`GLYPH_MARGIN_SHARE` scales the glyph
+clearance with the band; four fixed rows were ample at 29 rows and thin at 43, and
+at a 1.5x canvas the cell border welded a leading `1` onto `$1,250.00` and dragged
+a correct reading below `FLOOR`). `MIN_GAP` is the one that resisted: the gap
+inside a value and the gap between two cells measure 9 and 17 on a 1080x75 strip
+and converge as the strip shrinks, so no share separates them everywhere.
+
+Measured range, swept in `test_the_meter_reads_across_canvas_sizes`: **0.35x to 2x**
+of the 1080x1920 canvas reads every field correctly. Below ~0.35x the CASH and WIN
+cells weld and both come back null. Nothing is expected to break above 2x.
+
+**Resizing the game *window* is the case this cannot promise**, and the distinction
+matters. Rescaling a capture only changes resolution; resizing the window lets the
+game re-lay-out its own UI, and a region measured against the old layout would then
+be aimed at the wrong rows. Two things to check after a window resize: that
+`content_box` still reports an aspect close to the game's own (a 1280x720 capture
+in this repo's own history has one at 0.6375 against the game's 0.584 -- letterbox
+trimming left bars in, which shifts every fraction), and that `roi.cash_meter` still
+brackets the meter row. `POST /api/roi/extract` returns the crop, which answers both
+by eye in one call.
+
+Without one, `fit_band` works it out by reading: the
 row-ink profile offers two or three candidates and the one that reads with the
 highest mean confidence wins, cached per game and size. That is what lets a new
 game work with no setup, but it can only judge from the frame in front of it --
@@ -1403,6 +1456,34 @@ over `5`, `99371` over `99374`).
 Escalating keeps a strip near six engine calls instead of twenty-seven, and the
 reads run concurrently, which matters because each is a subprocess at roughly
 200ms. Expect **3-6s** for a strip.
+
+**Except that the engine does not always give a confidence.** Under
+`tessedit_char_whitelist` — which this module always sets, because without it a
+cell border welds onto the value and `$2` arrives as `s2` — Tesseract 5's LSTM
+reports confidence **exactly 0** for a word it read perfectly. It hits the
+correct readings hardest: `$2,959.44` comes back verbatim from six of the seven
+rungs and every one is scored 0. So 0 means *unmeasured*, never *wrong*:
+`MeterField.rank` puts an unscored reading below any scored one but above nothing
+at all, `FLOOR` only judges a reading that has a score, and `unmapped` still
+requires one — knowing which cell a value came out of is what makes an unscored
+transcription worth trusting, and a stray has no such backing. Ranking on
+confidence alone starts at 0, and `0 > 0` is false, which discarded the only
+transcription there was and returned the field empty.
+
+### Every value gets a margin, because one band serves three cells
+
+The three cells are not the same height — FortuneOx's WIN digits stand 3 rows
+taller than CASH's and BET's — so a band measured to clear the shorter cells'
+borders leaves the tall one's glyphs touching both edges of their crop. Tesseract
+reads a stroke flush against the edge as one with an extra stroke: `105` came back
+as `4105` at confidence 83, and `$1,250.00` as `$4.7250.00`, both from crops that
+are perfectly legible by eye.
+
+So each value's crop is grown back over the strip while the rows it gains are not
+the cell's own border (a row lit right across is a rule; a row of glyphs lights
+only its strokes), and a synthesised border makes up whatever margin is left. Both
+steps are conditional on measurement — a band *fitted* from the frame already pads
+its cores, and padding a crop that has room costs a digit rather than saving one.
 
 ### Accuracy
 
@@ -1838,6 +1919,7 @@ cash meter and payline validations over the frames it took.
 
 ```
 POST /api/analyze-spin/start          spin once, and validate it
+                                      ?record=, ?architecture=
 GET  /api/analyze-spin/status         the run in progress, or the last one
 POST /api/analyze-spin/cancel         ask the run in progress to stop
 GET  /api/analyze-spin/frames/{file}  one screenshot the run took
@@ -1870,7 +1952,8 @@ they go in:
 | 9   | `frame-collected` | a screenshot once the win is on the balance — win only   |
 | 10  | `record-stop`     | `POST /api/obs/recording/stop`                           |
 | 11  | `meter`           | `roi.cash_meter` on every frame, then the arithmetic between them |
-| 12  | `paylines`        | the reels split, checked against the *running game's* own lines |
+| 12  | `classify`        | the reels split, then every tile named by the image classifier |
+| 13  | `paylines`        | those codes lined up against the *running game's* own lines |
 
 So a losing spin takes two screenshots and a winning one takes three, and
 `take-win`/`frame-collected` come back `skipped` rather than absent — a different
@@ -1914,10 +1997,12 @@ fact from never having got there.
   on the way — rather than being torn down mid-call. The cost is that a cancel
   lands only once whatever call is in flight returns.
 
-- **The two validations cannot fail each other.** A machine with no Tesseract
-  still gets its payline check; one without the game installed still gets its
-  meter arithmetic. A validation that *runs* and reports `failed` is a completed
-  step — only one that could not run at all fails.
+- **The readings at the end cannot fail each other.** A machine with no
+  Tesseract still gets its reel reading and its payline check; one with no torch
+  still gets its meter arithmetic; one without the game installed still gets
+  both. A validation that *runs* and reports `failed` is a completed step — only
+  one that could not run at all fails. The single dependency is that `paylines`
+  reads what `classify` produced, and says so when there is nothing to read.
 
 ### The stream is the one thing outside the envelope
 
@@ -1962,51 +2047,61 @@ soft failure: an unreadable meter and a wrong balance need different fixes. Two
 amounts count as equal within `ANALYZE_SPIN_METER_TOLERANCE`, which absorbs the
 OCR of the last decimal and nothing larger.
 
-### The payline validation: three judgements, kept apart
+### The payline validation: two judgements, one reading
 
-Three sources, and which one answers what is the whole point.
+**The picture decides what landed, and the image classifier is what reads it.**
+Step 12 splits the result frame's reels and hands the tiles to
+[the image classifier](#naming-the-symbols-image-classifier), which returns a symbol
+code per tile —
+or nothing for a tile below `CLASSIFIER_MIN_CONFIDENCE`. Step 13 reads each line
+as the leading run of *equal codes*, via `services/paylines.check_symbols()`, and
+the paytable prices that run. So a run is **named** as well as counted, and an
+award is one combo and one number.
 
-**The picture decides what landed.** The result frame's reels are split and each
-line is read by cosine similarity between the tiles it runs through, exactly as
-[Checking the paylines](#checking-the-paylines) describes — so `pays` is the
-leading run of tiles that *look* alike. Nothing about the win is taken from the
-log: a checker that read the answer there would agree with the game by
-construction and could never catch a reel drawing the wrong symbol. Every pair's
-score travels on `steps`, because a line that "pays 2" is a claim about two
-numbers and the verdict is not checkable without them.
+Two earlier readings were replaced by that one, and why matters more than what:
 
-**The logged reel stops name the symbols.** The game writes where each reel
-landed (`ReelSet.SetStops(ReelsStopData): [25,134,11,58,163]`), and `math.xml`
-says what sits at every stop of every strip, so between them the grid is known.
-That answers the one thing similarity cannot say about a run it found — *which*
-symbol it is made of — which is what turns "something paying at three" into one
-combo and one credit value. `app/utils/reel_stops.py` does the placing, and knows
-nothing about paytables or screenshots.
+- **cosine similarity between the split's tiles** measured the run without ever
+  naming it. It says these two pictures are alike, so an award could only be
+  narrowed to *every* paytable row paying at that run length. It is still there —
+  it is what `POST /api/paylines/check` and the dashboard's payline panel use, and
+  it is the right tool for "is this crop aimed at a symbol at all". Nothing in
+  Analyze Spin calls it.
+- **the reel stops in the game's own log** (`ReelSet.SetStops(ReelsStopData)` plus
+  `math.xml`'s strips) named the symbols by *agreeing with the game*. A reading
+  taken out of the log cannot catch a reel drawing the wrong symbol, because it
+  never looked at the reel. `app/utils/reel_stops.py` is still in the tree and no
+  longer read here, as is `ANALYZE_SPIN_REEL_STOP_ANCHOR` — the whole
+  top/middle/bottom question disappears when the tile itself is what gets named.
 
 **The paytable decides whether it pays, and nothing else does.** A run of two of
 a symbol whose row starts at three is a *real run and no win* — so it comes back
 `awarded: false` with a `note` saying what it would have needed ("Jack pays from
 3 on, so this run of 2 awards nothing"), contributes nothing to the expected
-award, and is shown under *Cancelled* rather than as a paying line.
+award, and is flagged rather than shown as a paying line.
 `app/services/paylines.py` deliberately stops at "two or more", because what pays
 what is not its business; this is the module that has the paytable, so this is
 where that call belongs.
 
-So per line the response carries all three readings, never collapsed:
+So per line the response carries both readings, never collapsed:
 
 | field | from | meaning |
 | --- | --- | --- |
-| `pays` | the picture | leading run of tiles similarity found alike |
-| `steps` | the picture | every adjacent pair's cosine score, `matched` and `counted` |
+| `pays` | the picture | leading run of positions the classifier named with one code |
+| `symbols` | the picture | the code at every position of the line, null where none was read |
+| `steps` | the picture | every adjacent pair with both codes, `matched` and `counted` |
 | `paying` | the picture | whether that run is two or more — **evidence, not a win** |
-| `run_from_stops` | the log + maths | leading run of identical codes on the same line |
-| `agrees` | both | whether those two run lengths match |
-| `symbol` / `symbol_name` | the log + maths | the code that run is made of |
+| `symbol` / `symbol_name` | the picture | the code the run is made of |
 | `min_pay_length` | the paytable | shortest run that symbol pays at |
 | `awarded` | the paytable | **whether this line earns anything** |
 | `combo_id` / `combo_symbols` | `math.xml` | the combo the run matched |
 | `credits` | `math.xml` | what that combo pays, per line at one credit |
-| `candidates` | the paytable | every row that pays at this run length — what the picture alone narrows to |
+
+`steps[].similarity` is `null` and the result's `threshold` is `null`, because
+these tiles were compared by name: two codes are equal or they are not. The four
+score figures on `stats` are null for the same reason — there is no distribution
+to separate, so there is nothing for `matched_min`/`rejected_max` to bracket.
+`method` on the result says which comparison ran (`similarity` or `symbol`), so a
+reader never has to guess which set of fields is meaningful.
 
 `runs_found` and `awarded_lines` report the two counts apart, and `summary` is
 written from the awards rather than reused from the payline check — a summary
@@ -2024,14 +2119,67 @@ stays the line's place in the whole set). It replaces the file the check wrote:
 one picture per (split, set) is the convention, and a superseded overlay left
 beside the current one is how a reader ends up looking at the wrong evidence. The
 redraw is skipped entirely when nothing was cancelled. What survives on a
-cancelled line is its `steps` — the scores are still worth reading, and a run the
-picture found that the maths *would* have paid one symbol longer is a threshold
-worth revisiting.
+cancelled line is its `steps` — the codes are still the evidence that the run was
+real.
 
-`agrees: false` is the interesting output rather than an error: either a wild is
-standing in (similarity sees a different picture and the maths sees a different
-code, so neither is wrong) or the reels drew something the maths did not say
-landed. It is surfaced per line and counted once on the card.
+### The confidence floor is now the one tunable, and it costs something
+
+`ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE` defaults to **0.85**, against the Image
+Classifier page's own `CLASSIFIER_MIN_CONFIDENCE` of `0.90`. Both sit above where
+the classes separate, so a correct reading is rejected whenever the model is only
+*fairly* sure. That is safe on a page which shows the ranked candidates beside
+every rejected tile. It is not free here.
+
+**Two unnamed tiles are never a match.** A classifier below its floor said "I
+could not tell", and twice over that is not evidence of a run — so a payline
+through an unnamed tile **stops there**, and the line comes back short or paying
+nothing at all. A spin that plainly paid and reports no run is a floor question
+first, which is why the validation carries `unnamed_positions` and the reel
+reading carries every tile's leading candidate and its probability whether or not
+it cleared the floor.
+
+Setting it *blank* rather than leaving it out opts back into
+`CLASSIFIER_MIN_CONFIDENCE`, which is the escape hatch for grading a spin exactly
+as the page would.
+
+**Which network grades a spin is a per-run choice**, the same shape of choice
+`record` is: `POST /start?architecture=resnet34`, falling back to
+`ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE` and then to `CLASSIFIER_ARCHITECTURE`
+(ResNet34). Both networks stay trained at once and they do not read a
+split equally well, so running one spin through each and comparing is worth more
+than either alone -- which is why the dashboard offers it as a dropdown beside the
+spin button rather than burying it in `.env`. The name is resolved in `start()`
+before the game config is even read, so an unknown one is a **400 on the request**
+rather than a failed step twelve steps in, and `run.reels.architecture` records
+which checkpoint answered.
+
+There is deliberately **no fallback to cosine similarity** when the reading fails:
+a run measured by likeness and then priced as though it had been named is worse
+than a run reported short.
+
+### What landed, as its own block
+
+`run.reels` is the reading, beside `run.meter` and `run.paylines` rather than
+inside either:
+
+| field | meaning |
+| --- | --- |
+| `symbol_grid` / `label_grid` | the codes and their display names, row-major, null where unnamed |
+| `tiles[]` | per tile: `symbol`, `known`, `leading` and `confidence` |
+| `architecture` / `label` / `trained_at` | which checkpoint answered |
+| `min_confidence` | the floor those decisions were made at |
+| `overlay_file` | what the ringed reels were written as, beside the tiles |
+
+`symbol_grid` is deliberately the same field name and shape as
+`ClassifyResult.symbol_grid`, which is where it comes from. It carries no `error`,
+unlike the two validations: it exists only when the reading succeeded, and a
+failure is on the `classify` step and again on the payline validation's `error`.
+
+It also carries **no picture**. The ringed reels are still written to
+`<split>/classifier/symbols.png` -- a ring over a cell is the cheapest way to
+check a split was named the way it looks -- but the rings only ever said "the
+model was sure", which the grid already says in codes, so a data URI of them on
+every report was weight for something nothing draws.
 
 **Which lines exist still comes from the game's own geometry**, not the
 `paylines` block of `app/config/game_config/games/<Game>.json`. That block is a
@@ -2045,28 +2193,21 @@ installed; here the game *is* installed, so:
 
 Read once, in step 1, so a denomination change mid-run cannot have the validation
 grading the spin against the wrong maths. The set is handed to
-`services/paylines.check_lines()` — the same comparison `/api/paylines/check`
-runs, taking a set rather than reading one — and written as
-`paylines/geometry-<set>.png` beside the tiles, so a geometry-sourced check never
-overwrites a config-sourced one. It goes back through
-`app/utils/paylines.read_set()` rather than building the dataclasses directly,
-because that is where a line is checked to run left to right, and a backtracking
-line would otherwise compare a tile with itself and score a perfect match.
+`services/paylines.check_symbols()` — the same `_evaluate_set` joinery
+`/api/paylines/check` runs, taking a set and the codes to read it by rather than
+reading either — and written as `paylines/geometry-<set>.png` beside the tiles, so
+a geometry-sourced check never overwrites a config-sourced one. It goes back
+through `app/utils/paylines.read_set()` rather than building the dataclasses
+directly, because that is where a line is checked to run left to right, and a
+backtracking line would otherwise compare a tile with itself and score a perfect
+match.
 
-**A stop index does not say which row it is.** One number per reel, three rows on
-screen: whether it means the top, middle or bottom visible symbol is a
-convention these files never state, and the wrong one shifts every symbol by a
-row into a plausible grid of the wrong spin. So `ANALYZE_SPIN_REEL_STOP_ANCHOR`
-defaults to `auto`, which builds all three and keeps whichever agrees best with
-the pairs similarity already measured off the picture — the only evidence there
-is. The response reports `stop_anchor`, `stop_agreed`/`stop_compared` and
-`stop_anchor_decided`, so an ambiguous spin says so instead of looking certain.
-Pin the anchor once a game's alignment is settled.
-
-**Without the stops, an award is a range and says so.** `value_min`/`value_max`
-bound it, `exact` is false, and the candidate rows are listed rather than one
-being picked. That is the honest answer when the log did not carry a stops line
-for this spin — not a failure.
+**The total is one number, not a range.** Every awarded line names its symbol, so
+it resolves to one paytable value; `expected.credits` and `expected.cash` are
+single figures where they used to be `credits_min`/`credits_max` spans. Those
+spans were never a claim about the maths — they were the width of what the picture
+had failed to identify. An unreadable input still makes the verdict
+`indeterminate` rather than a guess.
 
 The money conversion is spelled out field by field on `expected`, because it runs
 through the denomination and the line count and a wrong verdict is nearly always
@@ -2079,8 +2220,7 @@ cash             = credits × credits_per_line × denomination
 ```
 
 It rests on one assumption, stated on the schema and nowhere else: a line combo's
-value is credits per line at one credit staked on that line. Anything missing
-makes the verdict `indeterminate` rather than a guess.
+value is credits per line at one credit staked on that line.
 
 ### Failures, and what they are not
 
@@ -2104,7 +2244,8 @@ Every setting is in [.env.example](.env.example) under *Analyze Spin*, with the
 reasoning. `ANALYZE_SPIN_SPIN_BUTTON` (default `Rebet`) and
 `ANALYZE_SPIN_TAKE_WIN_TARGET` (default `take_win`) are the two that are really
 per-cabinet and per-game; `ANALYZE_SPIN_WIN_WAIT_SECONDS` is the one to tune
-first. Each run's record is written to
+first, and `ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE` the one to reach for when
+lines read short. Each run's record is written to
 `obs-captured-files/analyze-spin/<run>/run.json`, and its video under the
 recording root beside it.
 

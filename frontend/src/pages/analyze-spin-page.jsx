@@ -1,7 +1,9 @@
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AwardComparisonCard } from "@/features/analyze-spin/award-comparison-card";
 import { MeterValidationCard } from "@/features/analyze-spin/meter-validation-card";
 import { PaylineValidationCard } from "@/features/analyze-spin/payline-validation-card";
+import { ReelReadingCard } from "@/features/analyze-spin/reel-reading-card";
 import { SpinControlCard } from "@/features/analyze-spin/spin-control-card";
 import { SpinTimeline } from "@/features/analyze-spin/spin-timeline";
 import {
@@ -15,15 +17,29 @@ import { GameSelector } from "@/features/games/game-selector";
  * One spin, driven and then graded.
  *
  * Its own route rather than a dashboard card for the same reason Game Config
- * is: the sequence is a twelve-row list, the meter is three readings and five
- * relations, and the paylines are up to forty rows with a picture each. None of
- * that survives half a row.
+ * is: the sequence is a thirteen-row list, the meter is three readings and five
+ * relations, the reel reading is two grids of fifteen cells, and the paylines are
+ * up to forty rows with a picture each. None of that survives half a row.
  *
- * Read down: the button and what the spin did, then how it got there, then the
- * two validations over what it produced. The validations appear as their steps
- * finish, which is why they are rendered from the run rather than gated on it
- * being over — a completed cash-meter check is worth reading while the paylines
- * are still being compared.
+ * Read down: the button and what the spin did, then how it got there, then what
+ * it produced — the symbols the classifier read off the reels, the lines those
+ * symbols paid, and the cash meter. Each appears as its own step finishes, which
+ * is why they are rendered from the run rather than gated on it being over: a
+ * completed payline check is worth reading while the cash meter is still being
+ * read.
+ *
+ * The reel reading sits above the paylines because the paylines are read *from*
+ * it. A spin whose lines report no run and whose reading shows half its tiles
+ * unnamed is a confidence-floor question, and that only reads in that order.
+ *
+ * The cash meter sits below the paylines because it now reads last, once there
+ * is a picture-priced award to check it against — see the ordering note on
+ * `services/analyze_spin.py`. The award comparison is last of all on purpose:
+ * everything above it is a *reading* — the symbols, the lines, the meter — and
+ * this is the one place two independently measured numbers are put against
+ * each other: the credits the paytable owed for what landed, and the WIN cell
+ * OCR read off the glass. Putting it first would make it a headline; last, it
+ * is a conclusion with its working above it.
  */
 export function AnalyzeSpinPage() {
   const { run, detailed, active, connected, error, isPending } = useSpinView();
@@ -63,13 +79,20 @@ export function AnalyzeSpinPage() {
           />
 
           {run ? <SpinTimeline run={run} /> : null}
-          {run?.meter ? (
-            <MeterValidationCard meter={run.meter} detailed={detailed?.meter} />
-          ) : null}
+          {run?.reels ? <ReelReadingCard reels={run.reels} /> : null}
           {run?.paylines ? (
             <PaylineValidationCard
               paylines={run.paylines}
               detailed={detailed?.paylines}
+            />
+          ) : null}
+          {run?.meter ? (
+            <MeterValidationCard meter={run.meter} detailed={detailed?.meter} />
+          ) : null}
+          {run?.paylines?.expected ? (
+            <AwardComparisonCard
+              expected={run.paylines.expected}
+              tolerance={run.meter?.tolerance}
             />
           ) : null}
         </>

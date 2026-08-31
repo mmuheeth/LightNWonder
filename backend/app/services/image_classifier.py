@@ -435,8 +435,15 @@ def _checkpoint_stat(path: Path) -> tuple[str, int, int] | None:
     return (str(path), int(stat.st_mtime), int(stat.st_size))
 
 
-def _resolve_architecture(requested: str | None) -> str:
-    """The architecture a request meant, defaulting to the configured one."""
+def resolve_architecture(requested: str | None) -> str:
+    """The architecture a request meant, defaulting to the configured one.
+
+    Public because :mod:`app.services.analyze_spin` names one per run and wants an
+    unknown name refused when the run is *asked for*, not twelve steps later. On a
+    machine with no torch the known set is empty and the name passes through --
+    there is nothing to check it against, and the missing stack is the error that
+    matters.
+    """
     module = _import_model()
     known = tuple(module.ARCHITECTURES) if module is not None else ()
     name = requested or settings.CLASSIFIER_ARCHITECTURE
@@ -659,7 +666,7 @@ def _plan(request: TrainRequest) -> dict[str, Any]:
         "background": pick(request.background, settings.CLASSIFIER_BACKGROUND),
         "pretrained": pick(request.pretrained, settings.CLASSIFIER_PRETRAINED),
         "seed": pick(request.seed, settings.CLASSIFIER_SEED),
-        "architecture": _resolve_architecture(request.architecture),
+        "architecture": resolve_architecture(request.architecture),
     }
 
 
@@ -927,7 +934,7 @@ def _position(name: str) -> tuple[int, int]:
 
 def _classify(request: ClassifyRequest, module: Any) -> ClassifyResult:
     game, names = _active_game()
-    architecture = _resolve_architecture(request.architecture)
+    architecture = resolve_architecture(request.architecture)
     loaded = _load_checkpoint(architecture)
     if loaded is None:
         detail = _checkpoint_errors.get(architecture) or (

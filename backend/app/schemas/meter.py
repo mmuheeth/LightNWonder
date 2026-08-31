@@ -35,7 +35,12 @@ class MeterField(BaseModel):
     )
     confidence: float = Field(
         default=0.0,
-        description="0-100; verified-correct strips scored 79 or better.",
+        description=(
+            "0-100; verified-correct strips scored 79 or better. Exactly 0 means "
+            "unmeasured, not wrong: Tesseract declines to score a word it read "
+            "under a character whitelist, and a correct balance often comes back "
+            "that way. Treat it as 'no score', and read `value` on its own merits."
+        ),
     )
     box: list[int] = Field(
         default_factory=list,

@@ -53,6 +53,6 @@ psycopg[binary,pool]~=3.3.4
 
 # OCR (app/utils/ocr.py) needs the Tesseract *program*, which is not a Python
 # package and so cannot be pinned here:
-#   winget install --id UB-Mannheim.TesseractOCR
+# winget install --id UB-Mannheim.TesseractOCR
 # The backend finds it without PATH; see the OCR section of README.md. Reading is
 # optional -- an install without it starts and runs, and only OCR requests fail.

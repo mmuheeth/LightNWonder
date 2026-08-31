@@ -1,7 +1,7 @@
 /**
  * Hooks for Analyze Spin. Unlike every other slice here, the live half is not
  * react-query: a run publishes a snapshot on every step transition, and polling
- * an endpoint fast enough to catch twelve of them in twenty seconds is worse in
+ * an endpoint fast enough to catch thirteen of them in twenty seconds is worse in
  * every way than the socket the backend already offers.
  *
  * So the two halves are split by what they are for:

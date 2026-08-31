@@ -39,10 +39,11 @@ the slice is deliberately not a one-to-one rendering of the payload.
 `features/analyze-spin` (`/analyze-spin`, the "Analyze Spin" tab) is every other
 integration in one press: it records, screenshots, spins the i-deck, follows the
 game log to the result, clicks take-win if anything was won, screenshots each
-moment, stops recording, and then validates the cash meter and the paylines over
-the frames it took. It is the only slice whose live half is not react-query — a
-run publishes a snapshot per step over a WebSocket — and the only one that
-composes other features' services rather than wrapping one of its own.
+moment, stops recording, and then validates the cash meter, names the symbols on
+the reels with the image classifier, and checks the paylines those symbols paid.
+It is the only slice whose live half is not react-query — a run publishes a
+snapshot per step over a WebSocket — and the only one that composes other
+features' services rather than wrapping one of its own.
 
 `features/image-classifier` (`/image-classifier`, the "Image Classifier" tab)
 trains a model and then names the tiles of a written split. Its own route because
@@ -166,7 +167,9 @@ question — reads a log *backwards* for the last line matching a pattern),
 `win_geometry.py` (`winGeometry.xml`, plus the conversion between its
 0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
 `reel_stops.py` (a spin's logged stops plus the strips become the symbols that
-were on screen -- naming them, never deciding what paid),
+were on screen -- **dormant**: `analyze_spin` names tiles from the picture now,
+because a symbol read out of the log agrees with the game by construction. Still
+in the tree, called by nothing),
 `win32.py` (the only ctypes),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
 `image_roi.py` (crops a named region out of a frame),
@@ -174,7 +177,9 @@ were on screen -- naming them, never deciding what paid),
 `reel_grid.py` (reads the `reel_bounds` block into positioned tiles),
 `click_target.py` (reads the `button_targets` block),
 `paylines.py` (reads the `paylines` block into ordered grid positions),
-`similarity.py` (cosine similarity between two pictures),
+`similarity.py` (cosine similarity between two pictures -- still what
+`services/paylines.check`/`check_lines` and the standalone payline panel use, and
+no longer what `analyze_spin` reads a spin by),
 `symbol_dataset.py` (a folder of symbol artwork read back as training pictures,
 with the reel background the cut-outs ship without put back — torch-free on
 purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
@@ -359,14 +364,18 @@ and only names matching a tile's own pattern are touched. ROI's own
 as a data URI only.
 
 **`services/image_classifier.py` is the only reading that can disagree with the
-game.** `similarity.py` asks whether two tiles match *each other* and never learns
-what either is; `reel_stops.py` names symbols by reading the game's own log, so it
-agrees by construction. This names a tile from the picture — a network in
+game, and it is now what `analyze_spin` grades a spin by.** `similarity.py` asks
+whether two tiles match *each other* and never learns what either is;
+`reel_stops.py` names symbols by reading the game's own log, so it agrees by
+construction. This names a tile from the picture — a network in
 `utils/symbol_model.py` (the only module that imports torch) over the tiles
-`grid.py` already wrote. Five things it exists to get right:
+`grid.py` already wrote. So anything that moves here — the artwork, the
+transforms, the confidence floor — moves a spin's verdict too. Five things it
+exists to get right:
 
-- **Two engines, both kept at once.** `CLASSIFIER_ARCHITECTURE` picks
-  EfficientNet-B0 or ResNet34; both share every transform, so only the backbone
+- **Two engines, both kept at once.** `CLASSIFIER_ARCHITECTURE` picks ResNet34
+  (the default -- it names all fifteen tiles of the reference split correctly) or
+  EfficientNet-B0; both share every transform, so only the backbone
   differs and a third is one entry in `_ARCHITECTURES` rather than a second code
   path. Each has its **own** `model-<arch>.pt` and `metrics-<arch>.json`, so
   training one leaves the other answering, and `/train` and `/classify` both take
@@ -438,24 +447,26 @@ independently and rows/columns are only how answers are arranged. So an older sp
 still classifies, and the config is read for exactly one thing — the `symbols`
 block, for display names, falling back to bare codes for a game declaring none.
 `ClassifyResult.symbol_grid` is deliberately the same name and shape as
-`PaylineValidation.symbol_grid` in `schemas/analyze_spin.py`, which is the log-derived
-counterpart: making the two directly comparable is the point of the feature.
+`SpinReelReading.symbol_grid` in `schemas/analyze_spin.py` — which is now *this*
+grid, copied field by field by `analyze_spin._reading()` rather than a second
+answer to compare it against. The log-derived counterpart it used to sit beside is
+gone from that payload.
 
 **`services/analyze_spin.py` is orchestration and nothing else.** It owns no
 image handling, no XML, no win32 — it is the *order* the other services go in
-(OBS record/screenshot, i-deck press, game log wait, game-input click, then ROI's
-meter and grid+paylines), and every step carries the underlying service's own
-error code. `_step` also has one convention worth knowing: a body that sets
-`step.error` **without raising** is recorded as failed and the run carries on,
-for the step that did its work and knows the result is unusable. Six things it
-exists to get right:
+(OBS record/screenshot, i-deck press, game log wait, game-input click, then
+grid+classifier, then paylines, then ROI's meter last), and every step carries the underlying
+service's own error code. `_step` also has one convention worth knowing: a body
+that sets `step.error` **without raising** is recorded as failed and the run
+carries on, for the step that did its work and knows the result is unusable. Six
+things it exists to get right:
 
 - **A losing spin is proven by silence.** The game logs `[WinBangDone]` when the
   win meter counts up and logs nothing at all when there is no win, so "no win"
   is that line's absence within `ANALYZE_SPIN_WIN_WAIT_SECONDS`. Set below the
   longest count-up, a win comes back as a loss — the only setting here that
   produces a confidently wrong answer rather than a timeout.
-- **The steps exist before they run.** A run is created with all twelve
+- **The steps exist before they run.** A run is created with all thirteen
   `pending`, so a failure on step four leaves the rest visibly unreached, and
   take-win on a losing spin is `skipped` — a different fact from unreached.
 - **Cancellation is cooperative, never `task.cancel()`.** Every wait polls and
@@ -474,58 +485,104 @@ exists to get right:
   probed with `roi.is_blank` and retried. A frame that stays blank sets
   `blank` on itself and fails its step *without raising* — see the
   error-without-raising convention on `_step`.
-- **The two validations cannot fail each other**, and each catches its own
-  exceptions so the run reaches both. A validation that runs and reports `failed`
-  is a *completed* step; only one that could not run at all fails.
+- **The three readings at the end cannot fail each other**, and each catches its
+  own exceptions so the run reaches all of them. A validation that runs and
+  reports `failed` is a *completed* step; only one that could not run at all
+  fails. The one dependency is that `paylines` reads what `classify` produced,
+  and says so when there is nothing to read — there is deliberately no
+  fallback to similarity.
 
-**Payline validation is three judgements from three sources, kept strictly
-apart.** This is the invariant to preserve if anything here is refactored:
+**Payline validation is two judgements over one reading, kept strictly apart.**
+This is the invariant to preserve if anything here is refactored:
 
-- **The picture decides what landed.** `pays` is the leading run of tiles cosine
-  similarity found alike, and every pair's score travels on `steps` — a run of
-  two is a claim about two numbers and is not checkable without them. Nothing
+- **The picture decides what landed, and the image classifier is what reads it.**
+  `_read_reels` (step `classify`) splits the result frame and hands the tiles to
+  `image_classifier.classify()`; `pays` is then the leading run of positions named
+  with the *same code*, and both codes of every pair travel on `steps`. Nothing
   about the win comes out of the log: a checker that read the answer there would
   agree with the game by construction and could never catch a reel drawing the
   wrong symbol.
-- **The paytable decides whether it pays.** `paying` (two or more tiles alike) is
+- **Two things it replaced, and neither is deleted.** Cosine similarity measured a
+  run without naming it, so an award was every paytable row paying at that length;
+  `similarity.py` and `paylines.check`/`check_lines` still do that for the
+  standalone panel. The game's logged reel stops named the symbols by *agreeing
+  with the game*; `utils/reel_stops.py`, `game_log.REEL_STOPS` and
+  `ANALYZE_SPIN_REEL_STOP_ANCHOR` are all still present and all unread here.
+  Don't reintroduce either as a fallback — a run measured by likeness and then
+  priced as if it had been named is worse than a run reported short.
+- **Two unnamed tiles are never a match.** A tile below
+  `CLASSIFIER_MIN_CONFIDENCE` came back with no code, and "I could not tell" twice
+  is not evidence of a run — so a line through one **stops there**. That floor
+  sits far above where the classes separate, so this is a real cost rather than a
+  corner case: `unnamed_positions` on the validation and `leading`/`confidence`
+  per tile on `run.reels` exist so a short run is diagnosable, and
+  `ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE` is the knob — **0.85** here against
+  the classifier page's own 0.90, because that page shows what it rejected and
+  this one grades a spin. Blank (not absent) opts back into
+  `CLASSIFIER_MIN_CONFIDENCE`.
+- **Which network grades a spin is a per-run choice**, exactly as `record` is:
+  `start(architecture=...)` — then `ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE`, then
+  `CLASSIFIER_ARCHITECTURE`. Resolved in `start()` via the now-public
+  `image_classifier.resolve_architecture()` **before the game config is read**, so
+  an unknown name is a 400 on the request rather than a failed step twelve steps
+  in, and `_ActiveRun.architecture` records which one was asked for. The two are
+  offered as a dropdown beside the spin button because running the same spin
+  through each and comparing is worth more than either alone; the option list is
+  hardcoded in `features/analyze-spin/spin-control-card.jsx` rather than fetched,
+  so that slice still deletes in one directory.
+- **The paytable decides whether it pays.** `paying` (two or more alike) is
   *evidence*; `awarded` is the win. A run of two of a symbol paying from three is
-  cancelled — `awarded: false`, a `note` naming `min_pay_length`, no credits, and
-  excluded from `expected`. `services/paylines.py` deliberately stops at "two or
-  more" because what pays what is not its business; `analyze_spin` has the
+  cancelled — `awarded: false`, a `note` naming `min_pay_length`, no credits,
+  and excluded from `expected`. `services/paylines.py` deliberately stops at "two
+  or more" because what pays what is not its business; `analyze_spin` has the
   paytable, so the call belongs there — including `summary`, which is written
   from the awards rather than reused from the check.
+- **An award is one number, not a range.** Every awarded line names its symbol, so
+  it resolves to one combo and one value: `SpinLineAward.credits` and
+  `SpinExpectedAward.credits`/`cash` replaced `value_min`/`value_max`/`exact` and
+  `credits_min`/`credits_max`/`cash_min`/`cash_max`, and `SpinLineAwardCandidate`
+  is gone. Those spans were never a claim about the maths — they were the
+  width of what the picture had failed to identify. Don't reintroduce them; an
+  unreadable input makes the verdict `indeterminate`, which is a different
+  statement.
 - **A cancelled run is not a result.** Its per-line picture is dropped from the
   payload and the combined overlay is redrawn over the awarded lines only, via
-  `paylines.redraw()` — which rebuilds from the finished result through the same
-  `_line_drawing`, so a redrawn line cannot differ from a first-pass one, and
+  `paylines.redraw()` — which rebuilds from the finished result through the
+  same `_line_drawing`, so a redrawn line cannot differ from a first-pass one, and
   replaces the file the check wrote. Skipped when nothing was cancelled. Its
-  `steps` survive: the scores are the evidence, and a run the maths would have
-  paid one symbol longer means the threshold is worth revisiting.
+  `steps` survive: the codes are the evidence the run was real.
 - **"Pays" means credits, everywhere.** A line *matches* five symbols and *pays*
-  twenty-five. Never use the word for the run length — that is `pays` the field,
-  and rendering it as "pays 5" is what made a run of five read as five credits.
-- **The logged reel stops only name the symbols.**
-  `ReelSet.SetStops(ReelsStopData)` (`game_log.REEL_STOPS`, deliberately *not* a
-  `DEFAULT_RULES` entry — it is nothing to screenshot) plus `math.xml`'s strips
-  give the code at every grid position, via `utils/reel_stops.py`. That is the
-  one thing similarity cannot say about a run, and what turns "something paying
-  at three" into one combo (`_combo_for`) and one credit value. Without stops the
-  award stays a range (`value_min`/`value_max`, `exact: false`) rather than being
-  guessed.
-- Both readings are reported per line, and `agrees: false` is an *output*, not an
-  error: a wild standing in, or reels drawing what the maths did not say landed.
-- **A stop index does not say which row it is.** `ANALYZE_SPIN_REEL_STOP_ANCHOR`
-  defaults to `auto`, which builds top/middle/bottom and keeps whichever agrees
-  best with the pairs similarity already measured. `stop_anchor_decided` says
-  when that was a tie, so an ambiguous spin does not look certain.
+  twenty-five. Never use the word for the run length — that is `pays` the
+  field, and rendering it as "pays 5" is what made a run of five read as five
+  credits.
+- **`run.reels` is its own top-level block**, beside `meter` and `paylines` rather
+  than inside either, because it is one reading of one picture and is worth having
+  on a run whose paytable never loaded. It carries no `error`: it exists only when
+  the reading succeeded, and a failure shows on the `classify` step and again on
+  the payline validation's `error`. It carries no picture either — the ringed
+  reels are still *written* to `<split>/classifier/symbols.png`, but the rings only
+  said "the model was sure", which `symbol_grid` says in codes, so there is no
+  `overlay_image` and no lean/full split on the reading.
+
+**`services/paylines.py` compares tiles two ways, and `method` says which.**
+`PaylineMethod.SIMILARITY` is cosine similarity at a threshold;
+`PaylineMethod.SYMBOL` is equality of classifier codes. Both are `_Comparer`
+subclasses handed to `_evaluate_set` as a factory, so everything below the
+comparison — the grid geometry, the tiles, the drawing, the files under the
+split's own directory — stays one code path. A symbol check reports
+`threshold: null`, `steps[].similarity: null` and null score figures on `stats`
+rather than faking a 1.0, and carries `steps[].left_symbol`/`right_symbol` and
+`lines[].symbols` instead. The pair cache is keyed on the *unordered* pair, so
+`_Comparison.flipped()` is what stops a step reporting its two codes transposed.
 
 **Which lines exist still comes from the game's own geometry.**
-`services/paylines.check_lines()` is the public door for a line set the caller
-assembled — `analyze_spin` builds one from the paytable's applicable
-`winGeometry.xml` set, so the lines are the ones the *running* game plays rather
-than the hand-copy in `games/<Game>.json` (which exists for machines without the
-game installed). Both entry points funnel through `_evaluate_set`, so a set from
-either source is scored, drawn and written identically; the geometry set is named
+`services/paylines.check_lines()` and `check_symbols()` are the public doors for a
+line set the caller assembled — `analyze_spin` builds one from the paytable's
+applicable `winGeometry.xml` set and goes through the second, so the lines are the
+ones the *running* game plays rather than the hand-copy in `games/<Game>.json`
+(which exists for machines without the game installed). All three entry points
+funnel through `_evaluate_set`, so a set from either source is scored, drawn and
+written identically; the geometry set is named
 `geometry-<id>` so its overlay never overwrites a config-sourced one. It is built
 by handing a dict to `utils/paylines.read_set()` rather than constructing the
 dataclasses, because that is where a line is checked to run left to right.

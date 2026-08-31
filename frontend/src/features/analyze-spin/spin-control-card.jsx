@@ -1,4 +1,14 @@
-import { Circle, Dices, Film, Play, Square, Wifi, WifiOff } from "lucide-react";
+import {
+  ChevronDown,
+  Circle,
+  Cpu,
+  Dices,
+  Film,
+  Play,
+  Square,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { useState } from "react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
@@ -24,6 +34,25 @@ const ERROR_HINTS = {
     "Start the game so it begins writing its log, then try again.",
   SPIN_ANALYSIS_ALREADY_RUNNING: "Wait for the run to finish, or cancel it.",
 };
+
+/**
+ * The networks a spin can be graded by, and the order they are offered in.
+ *
+ * Hardcoded rather than fetched. The backend's own architecture type is this same
+ * closed pair, `/start` refuses an unknown name with a 400, and reaching into the
+ * image-classifier slice for two strings would mean this slice no longer deletes
+ * in one directory. A third network is a line here and a line there.
+ *
+ * ResNet34 leads because it is the one that reads a real split better — on the
+ * reference fifteen tiles it names every one correctly — and because the first
+ * entry is both what the dropdown opens on and what the backend would choose for
+ * a request naming none (`CLASSIFIER_ARCHITECTURE`), so the visible default and
+ * the configured one cannot drift apart.
+ */
+const ARCHITECTURES = [
+  { name: "resnet34", label: "ResNet34" },
+  { name: "efficientnet_b0", label: "EfficientNet-B0" },
+];
 
 const RUN_STATE_LOOKS = {
   running: { variant: "destructive", label: "running" },
@@ -94,6 +123,12 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
   // Off by default: a spin is not recorded unless this run's own toggle says
   // so, and that choice is only asked for at the moment of pressing spin.
   const [record, setRecord] = useState(false);
+  // Which network names the tiles of the reels, and so what every payline run is
+  // counted from. A per-run choice rather than a setting because both networks
+  // stay trained at once and they do not read the same split equally well — two
+  // of them agreeing about a spin is worth more than one being confident, and a
+  // disagreement says something about the reels.
+  const [architecture, setArchitecture] = useState(ARCHITECTURES[0].name);
   const busy = start.isPending || cancel.isPending;
   const actionError = start.error ?? cancel.error;
   const hint = actionError ? ERROR_HINTS[actionError.code] : null;
@@ -136,7 +171,7 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
               size="sm"
               onClick={() => {
                 cancel.reset();
-                start.mutate({ record });
+                start.mutate({ record, architecture });
               }}
               disabled={active || busy}
             >
@@ -154,6 +189,40 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
                 Cancel
               </Button>
             ) : null}
+          </div>
+
+          {/* Between the button and the record toggle: the last thing decided
+              before pressing spin, and the one that changes what the run
+              *concludes* rather than what it captures. */}
+          <div className="flex items-center gap-2">
+            <Label
+              htmlFor="analyze-spin-architecture"
+              className="text-muted-foreground text-sm font-normal"
+            >
+              <Cpu className="size-3.5" />
+              Classifier
+            </Label>
+            <div className="relative">
+              <select
+                id="analyze-spin-architecture"
+                aria-label="Classifier model"
+                value={architecture}
+                onChange={(event) => setArchitecture(event.target.value)}
+                disabled={active || busy}
+                className="border-input bg-background text-foreground hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 h-8 cursor-pointer appearance-none rounded-md border pr-8 pl-2.5 text-sm shadow-xs transition-[color,box-shadow,background-color] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
+              >
+                {ARCHITECTURES.map((option) => (
+                  <option
+                    key={option.name}
+                    value={option.name}
+                    className="bg-background text-foreground"
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="text-muted-foreground pointer-events-none absolute inset-y-0 right-2 my-auto size-3.5" />
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -232,7 +301,7 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
 
             {/* The failures a step already named, gathered once: a run that
                 went wrong in two places should say so without the reader
-                having to scan twelve steps for the red ones. */}
+                having to scan thirteen steps for the red ones. */}
             {run.errors?.length > 0 ? (
               <ul className="space-y-1 border-t pt-4">
                 {run.errors.map((message) => (

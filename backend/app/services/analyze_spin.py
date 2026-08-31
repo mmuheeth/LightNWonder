@@ -42,13 +42,33 @@ The two validations at the end are deliberately independent of each other and
 neither can fail the other: a machine with no OCR engine still gets its payline
 check, and a machine without the game installed still gets its meter arithmetic.
 
-The payline half of that reads two sources and keeps them strictly apart. **The
-picture decides what paid** -- cosine similarity between the split's tiles, via
-:func:`app.services.paylines.check_lines` -- and **the game's logged reel stops
-only name the symbols** of the runs it found, via :mod:`app.utils.reel_stops`,
-which is the one thing similarity cannot say and what makes an award exact
-instead of a range. Taking the run length from the log instead would make the
-check agree with the game by construction.
+**The payline half reads one source: the picture, named by the image
+classifier.** :func:`_read_reels` splits the result screenshot and hands the
+tiles to :mod:`app.services.image_classifier`, which returns a symbol code per
+tile; :func:`app.services.paylines.check_symbols` then reads each line as the
+leading run of equal codes, and the paytable prices that run. So a run is
+*named* as well as counted, and an award is one combo and one number.
+
+Two earlier readings were replaced by that one, and knowing why matters more
+than knowing what:
+
+* **cosine similarity between the split's tiles** said which tiles were alike
+  and could never say which symbol they were, so an award was narrowed to every
+  paytable row paying at that run length rather than priced. It is still in
+  :mod:`app.services.paylines` (and still what the standalone payline panel
+  uses); nothing here calls it.
+* **the reel stops in the game's own log** named the symbols by *agreeing with
+  the game*. A reading taken out of the log cannot catch a reel drawing the wrong
+  symbol, because it never looked at the reel. :mod:`app.utils.reel_stops` is
+  likewise still in the tree and no longer read here.
+
+The cost of the swap, stated once: the classifier's confidence floor is set above
+where its classes separate, so a tile it is only fairly sure of comes back
+unnamed -- and a line through an unnamed tile stops there. A spin that plainly
+paid and reports no run is a floor question first, which is why
+``unnamed_positions`` travels on the validation. There is deliberately no
+fallback to similarity: a run measured one way and priced as if measured the
+other is worse than a run reported short.
 """
 
 from __future__ import annotations
@@ -77,7 +97,6 @@ from app.schemas.analyze_spin import (
     SpinExpectedAward,
     SpinFrame,
     SpinLineAward,
-    SpinLineAwardCandidate,
     SpinLogEvent,
     SpinMeterCheck,
     SpinMeterReading,
@@ -85,13 +104,16 @@ from app.schemas.analyze_spin import (
     SpinOutcome,
     SpinPaylineValidation,
     SpinRecording,
+    SpinReelReading,
     SpinRun,
     SpinRunState,
     SpinStep,
     SpinStepState,
+    SpinSymbolReading,
     SpinVerdict,
 )
 from app.schemas.grid import GridSplitRequest
+from app.schemas.image_classifier import ClassifyRequest, ClassifyResult
 from app.schemas.obs import ScreenshotRequest
 from app.schemas.paylines import PaylineCheckResult
 from app.schemas.paytable import PaylineComboInfo, PaytableView
@@ -99,11 +121,12 @@ from app.schemas.roi import RoiExtractRequest
 from app.services import game_input as game_input_service
 from app.services import grid as grid_service
 from app.services import ideck as ideck_service
+from app.services import image_classifier as classifier_service
 from app.services import obs as obs_service
 from app.services import paylines as paylines_service
 from app.services import paytable as paytable_service
 from app.services import roi as roi_service
-from app.utils import game_log, reel_stops
+from app.utils import game_log
 from app.utils import paylines as payline_config
 from app.utils.game_math import ANY_SYMBOL
 from app.utils.log_tail import LogTail
@@ -153,6 +176,7 @@ STEP_TAKE_WIN = "take-win"
 STEP_FRAME_COLLECTED = "frame-collected"
 STEP_RECORD_STOP = "record-stop"
 STEP_METER = "meter"
+STEP_CLASSIFY = "classify"
 STEP_PAYLINES = "paylines"
 
 _SEQUENCE: tuple[tuple[str, str], ...] = (
@@ -166,8 +190,9 @@ _SEQUENCE: tuple[tuple[str, str], ...] = (
     (STEP_TAKE_WIN, "Take the win"),
     (STEP_FRAME_COLLECTED, "Screenshot after collecting"),
     (STEP_RECORD_STOP, "Stop recording"),
-    (STEP_METER, "Validate the cash meter"),
+    (STEP_CLASSIFY, "Name the symbols on the reels"),
     (STEP_PAYLINES, "Validate the paylines"),
+    (STEP_METER, "Validate the cash meter"),
 )
 
 FRAME_INITIAL = "initial"
@@ -215,6 +240,12 @@ class _ActiveRun:
     log_path: Path
     rules: tuple[game_log.EventRule, ...]
     started_at: datetime
+    architecture: str
+    """Which trained network names this run's tiles. Resolved when the run is
+    asked for rather than when the classify step runs, so an unknown name is a
+    refused request instead of a failure eight steps in -- and so the record says
+    which model graded the spin even if the step never got there."""
+
     record: bool
     """Whether this run also makes a video of itself. When false the two
     recording steps are left out of `steps` entirely, rather than shown and
@@ -238,6 +269,12 @@ class _ActiveRun:
     paytable_error: str | None = None
 
     meter: SpinMeterValidation | None = None
+    reels: SpinReelReading | None = None
+    reels_error: str | None = None
+    symbols: dict[str, str | None] = field(default_factory=dict)
+    """Symbol code per tile position, as the classifier named it -- ``None`` for a
+    tile below the confidence floor. What the payline check reads the lines by."""
+
     paylines: SpinPaylineValidation | None = None
 
     cancel_requested: bool = False
@@ -305,6 +342,12 @@ class _LogReader:
     read can carry the reels stopping *and* the win counting up, and returning
     at the first while advancing the cursor past the second is exactly how a
     winning spin would come back as a loss.
+
+    Reads the log only for *when* things happened -- the spin published, the
+    reels settled, the win counted up. Nothing about what landed comes out of
+    here: the reel stops the game logs used to be picked up on the way past and
+    are deliberately not any more, because a symbol named from the log agrees
+    with the game by construction. See the module docstring.
     """
 
     def __init__(
@@ -320,14 +363,6 @@ class _LogReader:
         self._pending: deque[str] = deque()
         self.poll_seconds = poll_seconds
 
-        # Where the reels landed, taken off a line no rule claims. Kept here
-        # rather than waited for, because it is written *before* the stop
-        # animation and would otherwise be read past and thrown away while
-        # waiting for the reels-stopped transition that follows it.
-        self.stops: tuple[int, ...] | None = None
-        self.stops_line: str | None = None
-        self.stops_error: str | None = None
-
     def drain(self) -> None:
         """Take in whatever the game has appended since the last look."""
         chunk, self._cursor = self._tail.read_since(self._cursor)
@@ -341,28 +376,10 @@ class _LogReader:
             line = game_log.parse_line(self._pending.popleft())
             if line is None:
                 continue
-            self._note_stops(line)
             found = game_log.match(line, self._rules)
             if found is not None:
                 return found
         return None
-
-    def _note_stops(self, line: game_log.LogLine) -> None:
-        """Remember the reel stops, if this is the line that carries them.
-
-        The newest wins: a free-spin sequence logs its own stops, and the last
-        set before the reels were photographed is the one the picture shows.
-        """
-        found = game_log.REEL_STOPS.search(line.message)
-        if found is None:
-            return
-        try:
-            self.stops = reel_stops.parse_stops(found.group("stops"))
-        except reel_stops.ReelStopError as exc:
-            self.stops_error = str(exc)
-            return
-        self.stops_line = line.raw
-        self.stops_error = None
 
 
 # --- progress -------------------------------------------------------------
@@ -401,6 +418,7 @@ def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
     """
     finished = run.finished_at or datetime.now()
     meter = run.meter
+    reels = run.reels
     paylines = run.paylines
     return SpinRun(
         run_id=run.run_id,
@@ -430,6 +448,9 @@ def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
         events=list(run.events),
         recording=run.recording,
         meter=(meter if images or meter is None else _lean_meter(meter)),
+        # Carried whole either way: the reading holds no pictures, so there
+        # is nothing on it that the progress stream would rather not send.
+        reels=reels,
         paylines=(paylines if images or paylines is None else _lean_paylines(paylines)),
         errors=list(run.errors),
     )
@@ -1064,8 +1085,13 @@ def _verdict_of(verdicts: list[SpinVerdict]) -> SpinVerdict:
 
 async def _validate_meter(run: _ActiveRun) -> None:
     """Read the meter off every screenshot the run took, and check the
-    arithmetic between them. Never fails the run: the payline validation after
-    it is independent, and a machine with no OCR engine should still get one."""
+    arithmetic between them. Never fails the run: the payline validation before
+    it is independent, and a machine with no OCR engine should still get one.
+
+    Reads last now, which is what lets it also say whether the meter agrees
+    with what the paylines step already priced off the picture -- see the
+    ``expected`` attachment below.
+    """
     tolerance = settings.ANALYZE_SPIN_METER_TOLERANCE
     try:
         async with _step(run, STEP_METER) as step:
@@ -1090,6 +1116,22 @@ async def _validate_meter(run: _ActiveRun) -> None:
                 error=failure,
             )
             run.meter = validation
+
+            # The paylines step priced every line before the meter was ever
+            # read, so it could not yet say whether the meter agrees. Filled
+            # in here rather than there -- skipped when paylines did not
+            # complete, since there is nothing to attach it to.
+            if (
+                run.paytable is not None
+                and run.paylines is not None
+                and run.paylines.error is None
+            ):
+                run.paylines = run.paylines.model_copy(
+                    update={
+                        "expected": _expected(run, run.paytable, run.paylines.lines)
+                    }
+                )
+
             if failure is not None:
                 raise SpinAnalysisUnavailableError(failure)
             step.detail = (
@@ -1100,6 +1142,111 @@ async def _validate_meter(run: _ActiveRun) -> None:
         raise
     except Exception:  # noqa: BLE001 - already recorded on the step
         return
+
+
+# --- reading the reels ----------------------------------------------------
+
+
+def _reading(result: ClassifyResult) -> SpinReelReading:
+    """The classifier's answer, as this feature's record of what landed.
+
+    Copied field by field rather than embedded whole: the classification carries
+    a per-tile picture and a ranked candidate list per tile, and a spin's record
+    is written to disk and pushed over a socket on every step. What is kept is
+    what a reader needs to argue with the verdict -- the code, the leading
+    candidate whether or not it cleared the floor, and its probability.
+    """
+    return SpinReelReading(
+        split=result.split,
+        architecture=result.model.architecture,
+        label=result.model.label,
+        trained_at=result.model.trained_at,
+        min_confidence=result.min_confidence,
+        rows=result.rows,
+        columns=result.columns,
+        symbol_grid=[list(row) for row in result.symbol_grid],
+        label_grid=[list(row) for row in result.label_grid],
+        tiles=[
+            SpinSymbolReading(
+                name=tile.name,
+                row=tile.row,
+                column=tile.column,
+                symbol=tile.symbol,
+                label=tile.label,
+                # The winner even when it was rejected: a tile that came back
+                # unnamed still leaned somewhere, and that is the whole evidence
+                # for the rejection.
+                leading=(
+                    tile.predictions[0].symbol if tile.predictions else tile.symbol
+                ),
+                confidence=tile.confidence,
+                known=tile.known,
+            )
+            for tile in result.tiles
+        ],
+        named=result.named,
+        unknown=result.unknown,
+        summary=result.summary,
+        output_dir=result.output_dir,
+        overlay_file=result.overlay_file,
+    )
+
+
+async def _read_reels(run: _ActiveRun) -> None:
+    """Split the result screenshot and name every tile of it.
+
+    Its own step, before the payline one, for two reasons. It fails for its own
+    reasons -- no torch, no trained checkpoint, an unreadable frame -- and
+    "the model is not there" is a different fact from "the lines do not pay".
+    And its answer is worth having on its own: a grid of codes beside the reels
+    is readable evidence even on a run whose paytable never loaded.
+
+    Never fails the run, like the two validations after it. A failure here does
+    leave the payline step with nothing to read, which it says; there is
+    deliberately no fallback to cosine similarity, because a run measured by
+    likeness and priced as if it had been named is worse than a run not measured
+    at all.
+    """
+    try:
+        async with _step(run, STEP_CLASSIFY) as step:
+            frame = run.frame(FRAME_OUTCOME)
+            if frame is None:
+                raise SpinAnalysisUnavailableError(
+                    "No result screenshot was taken, so there are no reels to read"
+                )
+            # The split is written here rather than in the payline step because
+            # the tiles are what gets classified: the grid names the directory,
+            # the classifier names the tiles in it, and the payline check reads
+            # both back by that name.
+            split = await grid_service.split(
+                GridSplitRequest(file_name=frame.file_name, include_images=False)
+            )
+            result = await classifier_service.classify(
+                ClassifyRequest(
+                    split=Path(split.output_dir).name,
+                    architecture=run.architecture,
+                    min_confidence=settings.ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE,
+                    # No pictures on the payload: the fifteen per-tile crops
+                    # and the ringed reels are both already on disk, and the
+                    # dashboard draws neither -- the codes and their
+                    # confidences are what it reads. The overlay is still
+                    # *written*, since a ring over a cell is the cheapest way
+                    # to check the split was named the way it looks.
+                    include_images=False,
+                    include_overlay=True,
+                )
+            )
+            run.reels = _reading(result)
+            run.symbols = {tile.name: tile.symbol for tile in result.tiles}
+            step.detail = f"{result.model.label}: {result.summary}"
+    except _Cancelled:
+        raise
+    except AppException as exc:
+        # Recorded on the step already; kept here so the payline step can say
+        # *why* it has no symbols rather than only that it has none.
+        run.reels_error = exc.message
+    except Exception as exc:  # noqa: BLE001 - already recorded on the step
+        run.reels_error = f"{type(exc).__name__}: {exc}"
 
 
 # --- payline validation ---------------------------------------------------
@@ -1126,113 +1273,6 @@ def _geometry_line_set(view: PaytableView) -> payline_config.PaylineSet:
         }
     }
     return payline_config.read_set(block, name, where=f"{view.win_geometry.path}")
-
-
-def _candidates(
-    view: PaytableView, pays: int
-) -> tuple[list[SpinLineAwardCandidate], str | None]:
-    """Every paytable row that pays for a run this long, and why there is none.
-
-    What the *picture alone* narrows an award to. A list rather than one row
-    because similarity says the tiles of a run are alike and never which symbol
-    they are -- the logged reel stops are what closes that gap, in
-    :func:`_award`, and this is kept beside the answer so the narrowing is
-    visible rather than assumed.
-    """
-    lengths = view.math.pay_lengths
-    if pays not in lengths:
-        return [], f"the paytable pays nothing for a run of {pays}"
-    index = lengths.index(pays)
-    found: list[SpinLineAwardCandidate] = []
-    for row in view.math.pay_table:
-        value = row.values[index] if index < len(row.values) else None
-        if value is None:
-            continue
-        found.append(
-            SpinLineAwardCandidate(
-                codes=list(row.codes), names=list(row.names), value=value
-            )
-        )
-    if not found:
-        return [], f"no symbol in the paytable pays at a run of {pays}"
-    return found, None
-
-
-def _base_strips(view: PaytableView) -> tuple[list[list[str]], str | None]:
-    """The base game's reel strips, in reel order, for indexing a stop into.
-
-    Refuses a truncated strip rather than indexing into a short one: a stop is an
-    index, and ``PAYTABLE_MAX_STRIP_STOPS`` cutting a strip short would move
-    every symbol after the cut without anything looking wrong.
-    """
-    default = next(
-        (group for group in view.math.reel_strip_sets if group.is_default), None
-    )
-    if default is None or not default.strip_ids:
-        return [], (
-            "math.xml names no default reel strip set, so a logged stop index "
-            "has no strip to look up"
-        )
-    by_id = {strip.identifier: strip for strip in view.math.reel_strips}
-    strips: list[list[str]] = []
-    for identifier in default.strip_ids:
-        strip = by_id.get(identifier)
-        if strip is None:
-            return [], (
-                f"reel strip {identifier!r} of set {default.identifier!r} is not "
-                "in the maths"
-            )
-        if strip.truncated:
-            return [], (
-                f"reel strip {identifier!r} was cut short at "
-                "PAYTABLE_MAX_STRIP_STOPS, so its stop indices cannot be trusted"
-            )
-        strips.append(list(strip.symbols))
-    return strips, None
-
-
-def _measured_pairs(check: PaylineCheckResult) -> list[tuple[str, str, bool]]:
-    """Every distinct tile pair similarity compared, and what it decided.
-
-    Distinct because lines share pairs, and a pair two lines run through is one
-    measurement -- counting it twice would weight the middle row of the grid when
-    choosing which row a stop index refers to.
-    """
-    seen: dict[tuple[str, str], bool] = {}
-    for line in check.lines:
-        for step in line.steps:
-            key = (
-                (step.left, step.right)
-                if step.left <= step.right
-                else (step.right, step.left)
-            )
-            seen.setdefault(key, step.matched)
-    return [(left, right, matched) for (left, right), matched in seen.items()]
-
-
-def _resolve_stops(
-    view: PaytableView, check: PaylineCheckResult, stops: tuple[int, ...]
-) -> tuple[reel_stops.Resolution | None, str | None]:
-    """Name the symbols this spin put on screen, or say why they cannot be named.
-
-    Never raises into the run: naming the symbols makes an award exact, and
-    failing to name them leaves it a range -- a worse answer, not a broken one.
-    """
-    strips, problem = _base_strips(view)
-    if problem is not None:
-        return None, problem
-    configured = settings.ANALYZE_SPIN_REEL_STOP_ANCHOR
-    try:
-        resolution = reel_stops.resolve(
-            stops,
-            strips,
-            rows=check.source.rows,
-            pairs=_measured_pairs(check),
-            anchor=None if configured == "auto" else configured,
-        )
-    except reel_stops.ReelStopError as exc:
-        return None, str(exc)
-    return resolution, None
 
 
 def _combo_for(view: PaytableView, symbol: str, pays: int) -> PaylineComboInfo | None:
@@ -1270,8 +1310,8 @@ def _row_pay(view: PaytableView, symbol: str, pays: int) -> float | None:
 def _min_pay_length(view: PaytableView, symbol: str) -> int | None:
     """Shortest run this symbol pays at, or ``None`` if it never pays on a line.
 
-    What a cancelled run is measured against: the picture can find two of a
-    symbol whose paytable row starts at three, and saying "pays from 3" is the
+    What a cancelled run is measured against: the reels can land two of a symbol
+    whose paytable row starts at three, and saying "pays from 3" is the
     difference between a verdict and a bare refusal.
     """
     lengths = [
@@ -1289,51 +1329,51 @@ def _award(
     view: PaytableView,
     check: PaylineCheckResult,
     elements: dict[str, list[list[int]]],
-    grid: reel_stops.SymbolGrid | None,
 ) -> list[SpinLineAward]:
-    """Price every line similarity evaluated.
+    """Price every line the reels were read against.
 
-    Three separate judgements, kept separate on purpose:
+    Two judgements, kept separate on purpose:
 
-    * **what landed** -- ``pays``, the leading run of tiles cosine similarity
-      found alike, with the scores it read on ``steps``. This is the only thing
-      measured off the picture, and taking it from the log instead would make
-      the check agree with the game by construction.
-    * **what it was** -- ``symbol``, from the reel stops the game logged. The one
-      thing similarity cannot say about a run it found.
-    * **whether it pays** -- ``awarded``, which is the paytable's answer and
-      nobody else's. A run of two of a symbol that pays from three is a real run
-      and no win, and reporting it as a win because the tiles matched is exactly
-      the mistake this separation prevents. ``app.services.paylines`` deliberately
-      stops at "two or more"; this is the module that has the paytable.
+    * **what landed** -- ``pays``, the leading run of positions the classifier
+      named with one code, with those codes on ``steps``. Read off the picture
+      and nowhere else. Taking it from the game's log would make the check agree
+      with the game by construction, which is the one thing a checker must not
+      do.
+    * **whether it pays** -- ``awarded``, the paytable's answer and nobody
+      else's. A run of two of a symbol that pays from three is a real run and no
+      win, and reporting it as a win because the tiles matched is the mistake
+      this separation prevents. :mod:`app.services.paylines` deliberately stops
+      at "two or more"; this is the module that has the paytable.
+
+    What has gone is the judgement in the middle. The run used to be measured by
+    cosine similarity, which cannot name a symbol, so an award was every paytable
+    row paying at that length until the game's logged reel stops narrowed it --
+    and only then, from a source that agreed with the game. Now the run and its
+    symbol come out of one reading of one picture, so an award is one combo and
+    one number.
     """
     labels = {symbol.code: symbol.name for symbol in view.math.symbols}
     awards: list[SpinLineAward] = []
     for line in check.lines:
-        candidates: list[SpinLineAwardCandidate] = []
+        symbols = list(line.symbols)
+        # A run only exists where two tiles were named the *same* code, so a
+        # paying line always has one -- there is no "run of unknowns" to price.
+        symbol = symbols[0] if line.paying and symbols else None
+
         note: str | None = None
-        if line.paying:
-            candidates, note = _candidates(view, line.pays)
-
-        symbols = grid.along(line.positions) if grid is not None else []
-        run_from_stops = grid.leading_run(line.positions) if grid is not None else 0
-        agrees = None if grid is None else run_from_stops == line.pays
-
-        symbol: str | None = None
         combo: PaylineComboInfo | None = None
         credits: float | None = None
         shortest: int | None = None
-        if line.paying and symbols and symbols[0] is not None:
-            symbol = symbols[0]
+        if symbol is not None:
             shortest = _min_pay_length(view, symbol)
             combo = _combo_for(view, symbol, line.pays)
             credits = (
                 combo.value if combo is not None else _row_pay(view, symbol, line.pays)
             )
             if credits is None:
-                # Cancelled: the tiles really do match, and the maths pays
-                # nothing for a run this short. Said in the paytable's own terms
-                # so the reason is checkable rather than a bare refusal.
+                # Cancelled: the reels really did land this run, and the maths
+                # pays nothing for one this short. Said in the paytable's own
+                # terms so the reason is checkable rather than a bare refusal.
                 name = labels.get(symbol) or symbol
                 note = (
                     f"{name} pays from {shortest} on, so this run of {line.pays} "
@@ -1343,29 +1383,6 @@ def _award(
                     "awards nothing"
                 )
 
-        # Awarded is the paytable's answer: a known symbol has to have a pay at
-        # this length, and an unknown one has to have at least one row that
-        # could. Either way a run the maths does not pay is not a win.
-        awarded = bool(line.paying) and (
-            credits is not None if symbol is not None else bool(candidates)
-        )
-
-        values = [candidate.value for candidate in candidates]
-        if credits is not None:
-            value_min: float | None = credits
-            value_max: float | None = credits
-            exact = True
-        elif awarded:
-            value_min = min(values) if values else None
-            value_max = max(values) if values else None
-            exact = bool(values) and len(set(values)) == 1
-        else:
-            # Nothing is owed, so nothing is offered -- leaving the candidates
-            # priced would read as an award this line could have earned.
-            value_min = None
-            value_max = None
-            exact = False
-
         awards.append(
             SpinLineAward(
                 line=line.name,
@@ -1374,28 +1391,22 @@ def _award(
                 elements=elements.get(line.name, []),
                 pays=line.pays,
                 paying=line.paying,
-                awarded=awarded,
+                awarded=credits is not None,
                 steps=list(line.steps),
                 color=line.color,
                 break_position=line.break_position,
-                candidates=candidates,
-                symbols=list(symbols),
+                symbols=symbols,
                 symbol=symbol,
                 symbol_name=labels.get(symbol) if symbol is not None else None,
-                run_from_stops=run_from_stops,
-                agrees=agrees,
                 combo_id=combo.combo_id if combo is not None else None,
                 combo_symbols=list(combo.symbols) if combo is not None else [],
                 credits=credits,
-                value_min=value_min,
-                value_max=value_max,
-                exact=exact,
                 min_pay_length=shortest,
                 note=note,
                 # A cancelled run's own picture *is* the pattern the paytable
-                # does not pay, so it is not carried -- the scores on `steps`
-                # are the part of that line still worth reading.
-                image_data=line.image_data if awarded else None,
+                # does not pay, so it is not carried -- the codes on `steps` are
+                # the part of that line still worth reading.
+                image_data=line.image_data if credits is not None else None,
             )
         )
     return awards
@@ -1424,8 +1435,6 @@ def _summarise_awards(awards: list[SpinLineAward]) -> str:
     return ", ".join(
         f"{award.label} pays {award.credits:g}"
         if award.credits is not None
-        else f"{award.label} pays {award.value_min:g}-{award.value_max:g}"
-        if award.value_min is not None and award.value_max is not None
         else f"{award.label} pays an unpriced award"
         for award in paid
     )
@@ -1453,10 +1462,14 @@ def _expected(
     of those. It rests on one assumption, stated here and nowhere else: a line
     combo's value is credits per line at one credit staked on that line. Anything
     missing makes the verdict ``indeterminate`` rather than a guess.
+
+    One total rather than a range, because every awarded line names its symbol
+    and so resolves to one paytable value. This used to be a span, and the span
+    was never a statement about the maths -- it was the width of what the picture
+    had failed to identify.
     """
     paying = [award for award in awards if award.awarded]
-    credits_min = sum(award.value_min or 0.0 for award in paying)
-    credits_max = sum(award.value_max or 0.0 for award in paying)
+    credits = sum(award.credits or 0.0 for award in paying)
 
     line_count = view.win_geometry.line_count or (
         view.identity.number_of_lines if view.identity is not None else None
@@ -1474,19 +1487,14 @@ def _expected(
     per_line = (
         None if bet_credits is None or not line_count else bet_credits / line_count
     )
-    cash_min = (
+    cash = (
         None
         if per_line is None or denomination is None
-        else credits_min * per_line * denomination
-    )
-    cash_max = (
-        None
-        if per_line is None or denomination is None
-        else credits_max * per_line * denomination
+        else credits * per_line * denomination
     )
 
     tolerance = settings.ANALYZE_SPIN_METER_TOLERANCE
-    if cash_min is None or cash_max is None or observed is None:
+    if cash is None or observed is None:
         # A spin that paid nothing and a meter that shows nothing agree without
         # needing any of the conversion above.
         if not paying and observed is None and run.outcome is SpinOutcome.NO_WIN:
@@ -1500,43 +1508,36 @@ def _expected(
                 "win off the meter"
             )
     else:
-        low, high = min(cash_min, cash_max), max(cash_min, cash_max)
         verdict = (
             SpinVerdict.PASSED
-            if low - tolerance <= observed <= high + tolerance
+            if _close(cash, observed, tolerance)
             else SpinVerdict.FAILED
         )
-        span = f"{low:.2f}" if _close(low, high, tolerance) else f"{low:.2f}-{high:.2f}"
         detail = (
-            f"{len(paying)} line(s) pay {credits_min:g}"
-            + ("" if credits_min == credits_max else f"-{credits_max:g}")
-            + f" credits; at {per_line:g} credit(s) per line and denom "
-            f"{denomination:g} that is {span}, and the meter shows {observed:.2f}"
+            f"{len(paying)} line(s) pay {credits:g} credits; at {per_line:g} "
+            f"credit(s) per line and denom {denomination:g} that is {cash:.2f}, "
+            f"and the meter shows {observed:.2f}"
         )
 
     return SpinExpectedAward(
         paying_lines=len(paying),
-        credits_min=round(credits_min, 4),
-        credits_max=round(credits_max, 4),
-        exact=all(award.exact for award in paying),
+        credits=round(credits, 4),
         line_count=line_count,
         denomination=denomination,
         total_bet=total_bet,
         bet_credits=None if bet_credits is None else round(bet_credits, 4),
         credits_per_line=None if per_line is None else round(per_line, 6),
-        cash_min=None if cash_min is None else round(cash_min, 4),
-        cash_max=None if cash_max is None else round(cash_max, 4),
+        cash=None if cash is None else round(cash, 4),
         observed_win=observed,
         verdict=verdict,
         detail=detail,
     )
 
 
-async def _check_paylines(
-    run: _ActiveRun, frame: SpinFrame, reader: _LogReader | None
-) -> SpinPaylineValidation:
-    """Split the result frame's reels and check the *running* game's own lines."""
+async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValidation:
+    """Check the *running* game's own lines against the symbols that were read."""
     view = run.paytable
+    reels = run.reels
     if view is None:
         return SpinPaylineValidation(
             frame=frame.file_name,
@@ -1561,10 +1562,19 @@ async def _check_paylines(
             payline_set_id=geometry.payline_set_id,
             resolved_from=geometry.resolved_from,
             line_count=geometry.line_count,
+            min_confidence=reels.min_confidence if reels is not None else None,
             pay_lengths=list(view.math.pay_lengths),
             error=reason,
         )
 
+    if reels is None:
+        # No fallback on purpose: cosine similarity would answer a different
+        # question (which tiles are alike) and could not name the symbol this
+        # award is priced from. See the module docstring.
+        return unchecked(
+            run.reels_error
+            or "The reels were never read, so there are no symbols to line up"
+        )
     if geometry.error is not None:
         return unchecked(geometry.error)
     if not geometry.paylines:
@@ -1578,36 +1588,18 @@ async def _check_paylines(
     except payline_config.PaylineError as exc:
         return unchecked(str(exc))
 
-    split = await grid_service.split(
-        GridSplitRequest(file_name=frame.file_name, include_images=False)
-    )
-    check = await paylines_service.check_lines(
+    check = await paylines_service.check_symbols(
         line_set,
-        split=Path(split.output_dir).name,
+        run.symbols,
+        split=reels.split,
         images=paylines_service.ImageOptions(overlay=True, lines="paying"),
     )
 
-    # Only now, with the picture already read: the stops name the symbols of the
-    # runs similarity found, and never which runs there were.
-    stops = None if reader is None else reader.stops
-    stops_error = None if reader is None else reader.stops_error
-    resolution: reel_stops.Resolution | None = None
-    if stops is not None:
-        resolution, stops_error = await asyncio.to_thread(
-            _resolve_stops, view, check, stops
-        )
-    elif stops_error is None:
-        stops_error = (
-            "The game logged no reel stops for this spin, so the symbols on the "
-            "reels could not be named and each award stays a range"
-        )
-
-    grid = resolution.grid if resolution is not None else None
     elements = {
         str(line.line): [list(pair) for pair in line.elements]
         for line in geometry.paylines
     }
-    awards = _award(view, check, elements, grid)
+    awards = _award(view, check, elements)
 
     # The check drew every run it found, because it had no paytable to ask. Now
     # that there is one, the picture is redrawn over the lines that actually pay
@@ -1629,31 +1621,27 @@ async def _check_paylines(
         payline_set_id=geometry.payline_set_id,
         resolved_from=geometry.resolved_from,
         line_count=geometry.line_count,
+        min_confidence=reels.min_confidence,
         pay_lengths=list(view.math.pay_lengths),
         split=check.source.split,
-        threshold=check.threshold,
         summary=_summarise_awards(awards),
         runs_found=sum(1 for award in awards if award.paying),
         awarded_lines=sum(1 for award in awards if award.awarded),
+        unnamed_positions=[tile.name for tile in reels.tiles if not tile.known],
         lines=awards,
         stats=check.stats,
-        stops=list(stops or ()),
-        stops_log_line=None if reader is None else reader.stops_line,
-        stop_anchor=grid.anchor if grid is not None else None,
-        stop_anchor_decided=resolution.decided if resolution is not None else False,
-        stop_agreed=resolution.agreed if resolution is not None else None,
-        stop_compared=resolution.compared if resolution is not None else None,
-        symbol_grid=grid.matrix() if grid is not None else [],
-        stops_error=stops_error,
-        expected=_expected(run, view, awards),
+        # Not filled in here: the cash meter now reads last, so nothing yet
+        # knows what it showed. `_validate_meter` attaches it once that step
+        # has run.
+        expected=None,
         output_dir=output_dir,
         output_file=output_file,
         overlay_image=overlay,
     )
 
 
-async def _validate_paylines(run: _ActiveRun, reader: _LogReader | None) -> None:
-    """Check the lines the running game declares against the reels it landed.
+async def _validate_paylines(run: _ActiveRun) -> None:
+    """Check the lines the running game declares against the symbols that landed.
 
     Never fails the run for the same reason the meter step does not: the two
     validations answer different questions and a machine that can only do one of
@@ -1666,7 +1654,7 @@ async def _validate_paylines(run: _ActiveRun, reader: _LogReader | None) -> None
                 raise SpinAnalysisUnavailableError(
                     "No result screenshot was taken, so there are no reels to check"
                 )
-            validation = await _check_paylines(run, frame, reader)
+            validation = await _check_paylines(run, frame)
             run.paylines = validation
             if validation.error is not None:
                 raise SpinAnalysisUnavailableError(validation.error)
@@ -1729,8 +1717,9 @@ async def _execute(run: _ActiveRun) -> None:
             _skip(run, STEP_FRAME_COLLECTED, "Nothing was collected to photograph")
 
         await _stop_recording(run)
+        await _read_reels(run)
+        await _validate_paylines(run)
         await _validate_meter(run)
-        await _validate_paylines(run, reader)
     except _Cancelled:
         await _stop_recording_quietly(run)
         _finish_run(run, SpinRunState.CANCELLED, "Cancelled")
@@ -1766,17 +1755,19 @@ def _summary(run: _ActiveRun) -> str:
     parts = [
         "The spin won" if run.outcome is SpinOutcome.WIN else "The spin paid nothing"
     ]
-    if run.meter is not None:
-        parts.append(f"cash meter {run.meter.verdict.value}")
     if run.paylines is not None and run.paylines.expected is not None:
         parts.append(f"paylines {run.paylines.expected.verdict.value}")
+    if run.meter is not None:
+        parts.append(f"cash meter {run.meter.verdict.value}")
     return "; ".join(parts)
 
 
 # --- public API -----------------------------------------------------------
 
 
-async def start(*, record: bool | None = None) -> SpinAnalysisState:
+async def start(
+    *, record: bool | None = None, architecture: str | None = None
+) -> SpinAnalysisState:
     """Drive one spin, and validate it.
 
     Returns as soon as the run is under way: the whole point is the sequence,
@@ -1791,9 +1782,18 @@ async def start(*, record: bool | None = None) -> SpinAnalysisState:
     When it comes out false, the two recording steps are left off the run's
     sequence entirely rather than added and immediately skipped, so a run that
     was not asked to record shows nothing about recording anywhere.
+
+    ``architecture`` is the same shape of choice for *which trained network names
+    the tiles*, falling back to ``ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE`` and then
+    to the classifier's own default. It is resolved here rather than in the
+    classify step so an unknown name is a refused request -- a spin driven to its
+    result and then graded by nothing is the worst way to find out about a typo.
     """
     global _run
     record_enabled = settings.ANALYZE_SPIN_RECORD if record is None else record
+    chosen = classifier_service.resolve_architecture(
+        architecture or settings.analyze_spin_classifier_architecture
+    )
     async with _get_lock():
         current = _run
         if current is not None and current.state is SpinRunState.RUNNING:
@@ -1823,6 +1823,7 @@ async def start(*, record: bool | None = None) -> SpinAnalysisState:
                 extra=config.event_rules, disabled=config.disabled_events
             ),
             started_at=started,
+            architecture=chosen,
             record=record_enabled,
             steps={
                 key: _StepRecord(key=key, label=label)
@@ -1833,7 +1834,12 @@ async def start(*, record: bool | None = None) -> SpinAnalysisState:
         _run = run
         run.task = asyncio.create_task(_execute(run), name=f"analyze-spin-{run_id}")
 
-    logger.info("Spin %s started for %s", run.run_id, run.game)
+    logger.info(
+        "Spin %s started for %s, reading its reels with %s",
+        run.run_id,
+        run.game,
+        run.architecture,
+    )
     return _snapshot(run, images=False)
 
 

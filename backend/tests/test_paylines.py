@@ -34,6 +34,8 @@ from PIL import Image
 
 from app.config.game_config import save_active_game
 from app.core.config import settings
+from app.services import paylines as paylines_service
+from app.utils import paylines as payline_config
 from tests.asserts import assert_failure, assert_success
 
 API = "/api/paylines"
@@ -686,3 +688,200 @@ async def test_an_unknown_request_field_is_refused(
     response = await client.post(f"{API}/check", json={"tolerance": 0.9})
 
     assert response.status_code == 422
+
+
+# --- comparing by symbol code ---------------------------------------------
+#
+# The other way two tiles can be "the same symbol": a classifier read a code off
+# each, and the codes are equal. No threshold, no scores -- so these tests write
+# splits whose *colours are irrelevant* and pass the codes in by hand, which is
+# also the point of the split being read back rather than re-derived.
+#
+# One rule here has no counterpart in the similarity path and is easy to get
+# wrong: **two unnamed tiles are not a match.** A classifier below its confidence
+# floor said "I could not tell", and twice over that is not a run.
+
+
+def geometry_set(lines: dict[str, list[list[int]]], name: str = "geometry-5"):
+    """A line set assembled the way analyze_spin assembles one from winGeometry."""
+    return payline_config.read_set({name: lines}, name)
+
+
+def codes(*rows: str) -> dict[str, str | None]:
+    """A board of two-letter codes as one string per row, ``--`` for unnamed.
+
+    ``codes("AABBC", ...)`` is one character per reel keyed to a code, so a whole
+    board reads as three lines and a transposition is visible rather than
+    arithmetic -- the same trick :func:`write_split` plays with colours.
+    """
+    named = {"A": "AA", "B": "BB", "C": "CC", "-": None}
+    return {
+        f"r{row}c{column}": named[symbol]
+        for row, entries in enumerate(rows, start=1)
+        for column, symbol in enumerate(entries, start=1)
+    }
+
+
+async def test_a_whole_row_of_one_code_pays_five(
+    active_game: Path, captures: Path
+) -> None:
+    write_split(captures, "screenshot-1", ["ABCAB", "AAAAA", "CBABC"])
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes("ABCAB", "AAAAA", "CBABC")
+    )
+
+    data = result.model_dump()
+    assert data["method"] == "symbol"
+    assert line(data, "1")["pays"] == 5
+    assert line(data, "1")["symbols"] == ["AA"] * 5
+    assert line(data, "1")["matched_positions"] == [
+        "r2c1",
+        "r2c2",
+        "r2c3",
+        "r2c4",
+        "r2c5",
+    ]
+
+
+async def test_a_run_stops_at_the_first_reel_with_a_different_code(
+    active_game: Path, captures: Path
+) -> None:
+    write_split(captures, "screenshot-1", ["AAAAA", "AABAA", "AAAAA"])
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes("AAAAA", "AABAA", "AAAAA")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 2
+    assert middle["break_position"] == "r2c3"
+    # Every pair is still compared -- the two after the break are the evidence
+    # that the break was real.
+    assert [step["counted"] for step in middle["steps"]] == [True, True, False, False]
+    assert [step["matched"] for step in middle["steps"]] == [True, False, False, True]
+
+
+async def test_two_unnamed_tiles_are_not_a_match(
+    active_game: Path, captures: Path
+) -> None:
+    """The rule the similarity path has no equivalent of.
+
+    A classifier that fell below its floor twice in a row said nothing twice, and
+    reading that as a run of two would credit a spin with a pay nothing measured.
+    """
+    # The colours are irrelevant here -- what is under test is the codes, and
+    # the split exists only so there are tiles of the right shape to read back.
+    write_split(captures, "screenshot-1", ["AAAAA", "AAAAA", "AAAAA"])
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes("AAAAA", "--AAA", "AAAAA")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 0
+    assert middle["paying"] is False
+    assert middle["break_position"] == "r2c2"
+    assert middle["symbols"] == [None, None, "AA", "AA", "AA"]
+
+
+async def test_a_line_through_one_unnamed_tile_stops_there(
+    active_game: Path, captures: Path
+) -> None:
+    write_split(captures, "screenshot-1", ["AAAAA", "AAAAA", "AAAAA"])
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes("AAAAA", "AA-AA", "AAAAA")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 2
+    assert middle["break_position"] == "r2c3"
+
+
+async def test_a_symbol_check_reports_codes_and_no_scores(
+    active_game: Path, captures: Path
+) -> None:
+    """The evidence swaps over with the method, rather than being faked.
+
+    A score of 1.0 for "the codes are equal" would read as a measurement, and the
+    threshold it was compared against does not exist -- so both come back null
+    and the codes come back instead.
+    """
+    write_split(captures, "screenshot-1", ["AAAAA", "AABAA", "AAAAA"])
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes("AAAAA", "AABAA", "AAAAA")
+    )
+
+    data = result.model_dump()
+    assert data["threshold"] is None
+    stats = data["stats"]
+    assert stats["score_min"] is None
+    assert stats["score_max"] is None
+    assert stats["matched_min"] is None
+    assert stats["rejected_max"] is None
+    # Distinct pairs, not steps. They come to the same twenty here because these
+    # five lines share tiles but no adjacent *pair* -- which is what makes this a
+    # check on the count rather than on the cache.
+    assert stats["comparisons"] == 20
+    step = line(data, "1")["steps"][1]
+    assert step["similarity"] is None
+    assert (step["left_symbol"], step["right_symbol"]) == ("AA", "BB")
+    assert step["matched"] is False
+
+
+async def test_a_symbol_step_reports_its_codes_in_the_order_it_was_asked(
+    active_game: Path, captures: Path
+) -> None:
+    """Pairs are cached unordered, so a step read the other way must not transpose.
+
+    Line 4 runs r1c1 -> r2c2, whose names sort the other way round from line 5's
+    r3c1 -> r2c2. Both share the cached pair (r2c2, r3c1), and a comparer that
+    handed the cached entry back unflipped would put r2c2's code on the left of a
+    step whose left tile is r3c1.
+    """
+    board = ("ABCBA", "BBBBB", "CBABC")
+    write_split(captures, "screenshot-1", list(board))
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes(*board)
+    )
+
+    data = result.model_dump()
+    for name in ("4", "5"):
+        for step in line(data, name)["steps"]:
+            assert step["left_symbol"] == codes(*board)[step["left"]]
+            assert step["right_symbol"] == codes(*board)[step["right"]]
+
+
+async def test_a_symbol_check_writes_the_overlay_where_a_similarity_one_does(
+    active_game: Path, captures: Path
+) -> None:
+    """Everything below the comparison is the same joinery, deliberately."""
+    directory = write_split(captures, "screenshot-1", ["ABCAB", "AAAAA", "CBABC"])
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), codes("ABCAB", "AAAAA", "CBABC")
+    )
+
+    written = directory / "paylines" / "geometry-5.png"
+    assert written.is_file()
+    assert Path(result.output_dir) == directory / "paylines"
+    assert result.output_file == "geometry-5.png"
+
+
+async def test_a_similarity_check_names_no_symbols(
+    client: AsyncClient, active_game: Path, captures: Path
+) -> None:
+    """The other half of the swap: cosine similarity cannot name a tile, and says
+    so with an empty list rather than a row of nulls that would read as
+    "the classifier was unsure"."""
+    write_split(captures, "screenshot-1", ["ABCAB", "AAAAA", "CBABC"])
+
+    response = await client.post(f"{API}/check", json={"set": "5"})
+
+    data = assert_success(response.json())
+    assert data["method"] == "similarity"
+    assert data["threshold"] == CUT
+    assert line(data, "1")["symbols"] == []

@@ -42,6 +42,9 @@ RUN_CONFLICT: ResponseSpec = {
     }
 }
 BAD_CONFIG: ResponseSpec = {500: {"description": "The game config is unreadable"}}
+BAD_ARCHITECTURE: ResponseSpec = {
+    400: {"description": "No such classifier architecture"}
+}
 
 
 def _frame(state: SpinAnalysisState) -> dict[str, Any]:
@@ -82,7 +85,7 @@ async def get_status(
     "/start",
     response_model=ApiResponse[SpinAnalysisState],
     summary="Spin once, and validate it",
-    responses={**RUN_CONFLICT, **BAD_CONFIG},
+    responses={**RUN_CONFLICT, **BAD_CONFIG, **BAD_ARCHITECTURE},
 )
 async def start(
     record: bool = Query(
@@ -90,6 +93,17 @@ async def start(
         description=(
             "Also record a video of the spin with OBS. Off by default -- turn "
             "it on per run rather than leaving it running for every spin."
+        ),
+    ),
+    architecture: str | None = Query(
+        default=None,
+        description=(
+            "Which trained network names the tiles of the reels: "
+            "'efficientnet_b0' or 'resnet34'. Both stay trained at once and they "
+            "do not read the same split equally well, so it is a per-run choice. "
+            "Omit for ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE, then the "
+            "classifier's own default. An unknown name is a 400 here rather "
+            "than a failed step twelve steps in."
         ),
     ),
 ) -> ApiResponse[SpinAnalysisState]:
@@ -101,7 +115,7 @@ async def start(
     check without touching the machine -- the game config parsing, its log
     existing -- refuse the request; everything else fails on its own step, with
     the error the equivalent direct request would have given."""
-    state = await analyze_spin_service.start(record=record)
+    state = await analyze_spin_service.start(record=record, architecture=architecture)
     run = state.run
     return ApiResponse[SpinAnalysisState].ok(
         data=state,

@@ -115,7 +115,7 @@ class ImageClassifierSettings(BaseSettings):
     # model a classify request reads when it names none. Both architectures can be
     # trained and kept at once -- each has its own checkpoint file -- so this is a
     # default rather than a mode.
-    CLASSIFIER_ARCHITECTURE: Architecture = "efficientnet_b0"
+    CLASSIFIER_ARCHITECTURE: Architecture = "resnet34"
 
     CLASSIFIER_LR_HEAD: float = Field(default=1e-3, gt=0.0)
     CLASSIFIER_LR_FINETUNE: float = Field(default=1e-4, gt=0.0)

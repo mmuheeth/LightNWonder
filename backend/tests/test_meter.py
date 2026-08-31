@@ -297,6 +297,119 @@ def test_reading_escalates_only_while_it_is_unconvincing(
     assert fake_engine.reads == sum(len(rung) for rung in meter.LADDER)
 
 
+def test_a_reading_the_engine_declined_to_score_is_kept_not_discarded(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """Tesseract scores a whitelisted word 0 however well it read it.
+
+    The regression this pins: ranking on confidence alone starts at 0 and `0 > 0`
+    is false, so the only transcription there was got thrown away and the field
+    came back empty. On the real strips it was the *balance* that hit this --
+    `$2,959.44`, verbatim, from six of the seven rungs, every one scored 0.
+    """
+    image = strip(cells=[CASH_CELL])
+    fake_engine.default = tsv(("$2,959.44", meter.UNMEASURED))
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    assert str(scan.fields["cash"].value) == "2959.44"
+    assert not scan.fields["cash"].measured
+
+
+def test_a_scored_reading_outranks_an_unscored_one_for_the_same_cell(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """Unscored is a fallback, never a preference: the ladder's later rungs must
+    still be able to overrule a rung that read something the engine would not
+    vouch for."""
+    cash_width = round((CASH_CELL[1] - CASH_CELL[0]) * 600) + 2 * meter.CLUSTER_PAD
+    fake_engine.by_width = {
+        cash_width * 8: tsv(("$11.11", meter.UNMEASURED)),
+        cash_width * 6: tsv(("$22.22", 80.0)),
+    }
+    fake_engine.default = tsv()
+
+    scan = meter.extract(strip(cells=[CASH_CELL]), executable=engine_path, band=(4, 16))
+    assert str(scan.fields["cash"].value) == "22.22"
+
+
+def test_an_unscored_stray_is_not_reported_as_an_unmapped_value(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """The exemption is for a reading with a field behind it. Both shipped skins
+    carry digits on the strip that are not meter values -- the "CREDIT GAME
+    ACTIVE" line and the change-denom button -- and reporting every unscored one
+    would warn on every read."""
+    image = strip(cells=[(0.78, 0.85)])
+    fake_engine.default = tsv(("$7.00", meter.UNMEASURED))
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    assert scan.unmapped == ()
+
+
+def _striped(columns: tuple[int, int], rows: tuple[int, int]) -> Image.Image:
+    """A strip whose one cell is drawn as strokes rather than a solid block, so
+    its rows are lit in part -- which is what tells a line of text from a rule."""
+    image = Image.new("RGB", (600, 30), (10, 10, 12))
+    draw = ImageDraw.Draw(image)
+    for column in range(columns[0], columns[1], 3):
+        draw.rectangle([column, rows[0], column, rows[1] - 1], fill=(255, 255, 255))
+    return image
+
+
+def test_a_band_that_cuts_through_its_glyphs_is_grown_back_over_the_strip() -> None:
+    """One band serves three cells of different heights, so the tallest arrives
+    clipped -- and a clipped glyph cannot be repaired by padding, only by going
+    back to the strip for the rows left out."""
+    columns = (100, 160)
+    image = _striped(columns, (8, 24))
+
+    # A band inside the glyphs, so they run into both of its edges. It reaches
+    # out by the margin its own height earns, on each edge.
+    reach = meter._margin(20 - 12)
+    assert meter._grown(image, columns, (12, 20)) == (12 - reach, 20 + reach)
+
+    # One the glyphs sit clear of is left exactly alone.
+    assert meter._grown(image, columns, (4, 28)) == (4, 28)
+
+
+def test_growth_stops_at_a_border_rather_than_running_into_the_label() -> None:
+    """A row lit right across is the cell's own rule; the rows past it are the
+    border and then the label, which is what the band exists to exclude."""
+    columns = (100, 160)
+    image = _striped(columns, (10, 20))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([columns[0], 8, columns[1] - 1, 9], fill=(255, 255, 255))
+
+    top, _ = meter._grown(image, columns, (10, 20))
+    assert top == 10, "the rule above the glyphs must not be taken in"
+
+
+def test_a_glyph_flush_against_the_crop_edge_is_given_a_margin() -> None:
+    """Tesseract reads a stroke touching the edge as one with an extra stroke;
+    `105` came back `4105`. Padded only when the clearance is missing, since a
+    fitted band already has room and padding one that does costs a digit."""
+    flush = strip(width=40, height=12, cells=[(0.1, 0.9)], band=(0, 12))
+    assert meter._padded(flush).size == (40, 12), "no background to pad with"
+
+    tight = strip(width=40, height=14, cells=[(0.1, 0.9)], band=(0, 13))
+    assert meter._padded(tight).height == 14 + 2 * meter._margin(14)
+
+    roomy = strip(width=40, height=30, cells=[(0.1, 0.9)], band=(10, 20))
+    assert meter._padded(roomy).size == (40, 30), "already clear of both edges"
+
+
+def test_the_glyph_margin_scales_with_the_band_not_the_pixel() -> None:
+    """The regression this pins is the one that caused the whole bug, in
+    miniature: a clearance measured in pixels is ample on a small capture and
+    thin on a large one. Four fixed rows let a 1.5x canvas weld a leading `1`
+    onto `$1,250.00` and drag a correct reading below the floor."""
+    assert meter._margin(60) > meter._margin(29) > meter._margin(11)
+    # Same band as a share of two strips 2x apart in size: twice the clearance.
+    assert meter._margin(58) == pytest.approx(2 * meter._margin(29), abs=1)
+    # And never zero, however little there is to work with.
+    assert meter._margin(1) >= meter.MIN_GLYPH_MARGIN
+
+
 def test_the_longest_token_wins_so_a_cell_border_does_not_become_a_digit() -> None:
     """The engine welds a border onto a value as a leading 1 or comma."""
     assert str(meter._token("1$1,001.40")[0]) == "1001.40"
@@ -420,7 +533,68 @@ real_engine = pytest.mark.skipif(
 # ones that are not. Named by *frame*, not by crop: a saved crop is only as good
 # as the region semantics in force when it was written, and asserting against one
 # would pin the strip's geometry to whenever it was last extracted.
+#
+# Two OBS canvases, deliberately. Every case below was a 1280x720 landscape canvas
+# with the portrait game letterboxed into ~460 of it, until the canvas was set to
+# the game's own 1080x1920 -- which put the same meter row on 1080x75 pixels
+# instead of 460x29, and left every field of every frame unread with this suite
+# still green. Nothing in a *fraction* changes with capture size, which is the
+# whole appeal of them, so nothing here failed; what changed is that constants
+# measured in pixels around those fractions no longer matched the pixels, and
+# that a band overshooting into the labels by 3 rows went from illegible to
+# legible. One resolution is not a measurement -- keep both.
 REAL_STRIPS = [
+    # 1080x1920 canvas: the game's own resolution, what the cabinet runs now.
+    (
+        "spin-2026-08-31_13-52-26-1-initial.png",
+        "FortuneOx",
+        "cash",
+        "$",
+        2509.44,
+        None,
+        100.00,
+    ),
+    # $1,250.00 read as `$4.7250.00` while its glyphs sat flush against the band.
+    (
+        "spin-2026-08-31_13-59-15-2-outcome.png",
+        "FortuneOx",
+        "cash",
+        "$",
+        2959.44,
+        1250.00,
+        100.00,
+    ),
+    (
+        "spin-2026-08-31_11-45-31-3-collected.png",
+        "FortuneOx",
+        "cash",
+        "$",
+        871.44,
+        4.00,
+        20.00,
+    ),
+    # CASH here is the case the engine transcribes perfectly and scores 0; WIN is
+    # one the padding fixed. Both fail without the other's fix.
+    (
+        "spin-2026-08-31_14-33-33-2-outcome.png",
+        "FortuneOx",
+        "cash",
+        "$",
+        2799.44,
+        20.00,
+        20.00,
+    ),
+    # `105` read as `4105`, and a six-figure balance the whitelist scores 0.
+    (
+        "spin-2026-08-31_14-52-17-2-outcome.png",
+        "FortuneOx",
+        "credits",
+        None,
+        287873,
+        105,
+        88,
+    ),
+    # 1280x720 canvas, the game letterboxed inside it.
     ("screenshot-1787208401603.png", "FortuneOx", "cash", "$", 1001.40, None, 1.76),
     ("screenshot-1787213890262.png", "FortuneOx", "credits", None, 49883, None, 88),
     ("screenshot-1787213930188.png", "FortuneOx", "credits", None, 49531, 10, 88),
@@ -500,6 +674,60 @@ def test_real_strips_read_the_values_that_are_on_them(
     assert values.win == (pytest.approx(win) if win is not None else None)
     assert values.bet == (pytest.approx(bet) if bet is not None else None)
     assert values.unmapped == []
+
+
+# --- across canvas sizes ----------------------------------------------------
+
+# Where the reader actually works, as a multiple of the 1080x1920 canvas the
+# cabinet runs. Every value below is a fraction of the strip, so the *geometry*
+# is scale-free and the game's own layout is proportionally identical at every
+# size (measured: the value rows sit at 0.276-0.533 of the strip on a 421-wide
+# capture and 0.280-0.533 on a 1080-wide one). What limits the range is the
+# constants that are still pixels, and how much detail Tesseract is given.
+#
+# 0.35x is the floor because MIN_GAP stops being able to tell a gap inside a
+# value from the gap between two cells; below it the CASH and WIN cells weld and
+# both come back null. 2x is simply the largest measured -- nothing is expected
+# to break above it now the glyph margin is a share.
+CANVAS_SCALES = (0.35, 0.5, 0.8, 1.0, 1.5, 2.0)
+
+
+@pytest.mark.parametrize("scale", CANVAS_SCALES)
+@real_engine
+def test_the_meter_reads_across_canvas_sizes(
+    scale: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression that started all of this was a canvas change, so the fix
+    is only a fix if it survives another one.
+
+    Rescaling a saved frame is not the same as re-capturing at that canvas -- it
+    cannot show the game re-laying-out its own UI -- but it is exactly the right
+    test for the failure that actually happened: constants measured in pixels
+    around fractions that were already correct.
+    """
+    name, _, mode, _, balance, win, bet = REAL_STRIPS[4]
+    path = _frame(name)
+    if not path.is_file():
+        pytest.skip(f"{path} is not present")
+    monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", None)
+
+    config = load_game_config(GAME_CONFIGS / "FortuneOx.json")
+    with Image.open(path) as frame:
+        image = frame.convert("RGB")
+        image = image.resize(
+            (round(image.width * scale), round(image.height * scale)),
+            Image.LANCZOS,
+        )
+        roi = image_roi.named_roi(config.roi, "cash_meter")
+        box, _ = roi_service.resolve_box(roi, image)
+        values = meter_service.read(
+            image.crop(box), game="FortuneOx", profile=config.meter
+        )
+
+    assert values.error is None
+    assert (values.cash if mode == "cash" else values.credits) == pytest.approx(balance)
+    assert values.win == pytest.approx(win)
+    assert values.bet == pytest.approx(bet)
 
 
 # --- the declared band ------------------------------------------------------

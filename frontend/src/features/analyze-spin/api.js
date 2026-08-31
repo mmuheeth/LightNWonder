@@ -4,8 +4,9 @@
  *
  * Two shapes of the same payload: `getSpinStatus` without images is what a poll
  * or the stream carries, and with images is the report — the meter crops, the
- * annotated reels and the paying lines' own pictures. They are separate asks
- * because the pictures only exist once a run has finished.
+ * ringed reels the classifier named, the annotated reels and the awarded lines'
+ * own pictures. They are separate asks because the pictures only exist once a
+ * run has finished.
  */
 
 import { env, routes } from "@/config/env";
@@ -68,17 +69,19 @@ export function getSpinStatus({ includeImages = false, signal } = {}) {
 /**
  * Spin once and validate it. Returns as soon as the run is under way, not when
  * it ends — 409 when one is already going, or when the active game declares no
- * log to follow a spin through.
+ * log to follow a spin through, 400 for an architecture that does not exist.
  *
- * @param {{record?: boolean}} [options] `record` also makes a video of the
- *   spin with OBS; off by default.
+ * @param {{record?: boolean, architecture?: string}} [options] `record` also
+ *   makes a video of the spin with OBS; off by default. `architecture` picks
+ *   which trained network names the tiles of the reels — omit it to let the
+ *   backend use its own default.
  * @returns {Promise<{active: boolean, run: SpinRun|null}>}
  */
-export function startSpin({ record = false } = {}) {
+export function startSpin({ record = false, architecture } = {}) {
   return apiRequest({
     method: "POST",
     url: `${ANALYZE_SPIN_URL}/start`,
-    params: { record },
+    params: architecture ? { record, architecture } : { record },
   });
 }
 
@@ -123,37 +126,44 @@ export function cancelSpin() {
  *     actual: number|null, difference: number|null, detail: string}>,
  *   tolerance: number, verdict: "passed"|"failed"|"indeterminate",
  *   error: string|null}|null} meter
+ * @property {{split: string, architecture: string, label: string,
+ *   trained_at: string|null, min_confidence: number, rows: number,
+ *   columns: number, symbol_grid: Array<Array<string|null>>,
+ *   label_grid: Array<Array<string|null>>,
+ *   tiles: Array<{name: string, row: number, column: number,
+ *     symbol: string|null, label: string, leading: string|null,
+ *     confidence: number, known: boolean}>,
+ *   named: number, unknown: number, summary: string, output_dir: string|null,
+ *   overlay_file: string|null}|null} reels what the image classifier read off the
+ *   result screenshot. The one measurement the payline validation rests on, and
+ *   the replacement for two older ones: cosine similarity between tiles (which
+ *   could not name a symbol) and the reel stops in the game's own log (which
+ *   named them by agreeing with the game).
  * @property {{frame: string, split: string|null, paytable_id: string,
  *   paytable_origin: string, payline_set_id: string|null,
- *   resolved_from: string, line_count: number|null, threshold: number,
- *   summary: string, pay_lengths: number[],
+ *   resolved_from: string, line_count: number|null,
+ *   min_confidence: number|null, summary: string, pay_lengths: number[],
  *   lines: Array<{line: string, label: string, positions: string[],
  *     elements: number[][], pays: number, paying: boolean, awarded: boolean,
  *     color: string, break_position: string|null,
- *     steps: Array<{left: string, right: string, similarity: number,
+ *     steps: Array<{left: string, right: string, similarity: number|null,
+ *       left_symbol: string|null, right_symbol: string|null,
  *       matched: boolean, counted: boolean}>,
- *     candidates: Array<{codes: string[], names: Array<string|null>,
- *       value: number}>,
  *     symbols: Array<string|null>, symbol: string|null,
- *     symbol_name: string|null, run_from_stops: number,
- *     agrees: boolean|null, combo_id: number|null, combo_symbols: string[],
- *     credits: number|null, min_pay_length: number|null,
- *     value_min: number|null, value_max: number|null, exact: boolean,
- *     note: string|null, image_data: string|null}>,
- *   runs_found: number, awarded_lines: number,
+ *     symbol_name: string|null, combo_id: number|null,
+ *     combo_symbols: string[], credits: number|null,
+ *     min_pay_length: number|null, note: string|null,
+ *     image_data: string|null}>,
+ *   runs_found: number, awarded_lines: number, unnamed_positions: string[],
  *   stats: {lines: number, paying: number, comparisons: number,
  *     matches: number, best_line: string|null, best_pays: number,
  *     score_min: number|null, score_max: number|null,
  *     matched_min: number|null, rejected_max: number|null}|null,
- *   stops: number[], stops_log_line: string|null, stop_anchor: string|null,
- *   stop_anchor_decided: boolean, stop_agreed: number|null,
- *   stop_compared: number|null, symbol_grid: string[][],
- *   stops_error: string|null,
- *   expected: {paying_lines: number, credits_min: number, credits_max: number,
- *     exact: boolean, line_count: number|null, denomination: number|null,
+ *   expected: {paying_lines: number, credits: number,
+ *     line_count: number|null, denomination: number|null,
  *     total_bet: number|null, bet_credits: number|null,
- *     credits_per_line: number|null, cash_min: number|null,
- *     cash_max: number|null, observed_win: number|null,
+ *     credits_per_line: number|null, cash: number|null,
+ *     observed_win: number|null,
  *     verdict: "passed"|"failed"|"indeterminate", detail: string}|null,
  *   output_dir: string|null, output_file: string|null,
  *   overlay_image: string|null, error: string|null}|null} paylines

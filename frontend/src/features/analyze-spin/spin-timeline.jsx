@@ -127,7 +127,10 @@ export function SpinTimeline({ run }) {
           <details className="group border-t pt-4">
             <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-1.5 text-xs select-none">
               <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
-              {events.length} game log event{events.length === 1 ? "" : "s"} read
+              Game log
+              <Badge variant="secondary" className="font-mono text-[0.65rem]">
+                {events.length}
+              </Badge>
             </summary>
             <ul className="mt-3 space-y-1.5">
               {events
