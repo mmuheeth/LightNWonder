@@ -5,6 +5,8 @@ __pycache__/
 
 # C extensions
 *.so
+dataset/
+obs-captured-files/
 
 # Distribution / packaging
 # These setuptools artifacts only ever appear at the repo root, so they are
@@ -266,6 +268,7 @@ Thumbs.db
 # OBS capture output (screenshots and recordings). The `dir/*` form is
 # required: git cannot re-include a file whose parent directory is excluded.
 backend/obs-captured-files/*
+backend/dataset/*
 !backend/obs-captured-files/.gitkeep
 
 # Local-only image data: the game's extracted symbol artwork, the hand-sorted
@@ -276,6 +279,8 @@ backend/obs-captured-files/*
 # unanchored, `dataset/` and `symbol-validation/` match at *any* depth, and
 # `symbol-validation/` was in fact hiding frontend/src/features/symbol-validation/
 # from version control entirely.
-/backend/assets/
+
+backend/symbol-validation/
 /backend/symbol-validation/
+backend/dataset/
 /backend/dataset/
