@@ -1386,6 +1386,41 @@ the nearest field.** A strip from a differently-ordered skin reads perfectly and
 means something else, and a bet quietly filed as a balance is worse than one that
 arrives asking to be looked at.
 
+### The denomination badge on the strip is not what is read
+
+Both skins draw the denomination on the meter row: an unlabelled gold pill at the
+far right showing `1c`/`2c`. It is **deliberately not read** — the denomination
+comes from the game's log
+([why, and what a credit is worth](#which-denomination-is-in-play-and-what-a-credit-is-worth)).
+`ink_groups` already finds it and `_reportable` already discards it as chrome, so
+nothing here needs to change; this section records what was measured, so it does
+not have to be measured again.
+
+Measured on a 689×43 FortuneOx strip, swept over crops, row bands, `psm` modes,
+upscales and both polarities:
+
+- the badge is a group at centre **0.957** (cols 646–673, 27 px wide, clear of
+  `MIN_GROUP_WIDTH`);
+- with the band at rows 13–34 the digit reads **correctly**, and `'1'` was the
+  most common answer across ~166 attempts — but it is band-sensitive, and other
+  bands and crops give `4c`, `4`, `7c`, `141`. It would need measuring per skin;
+- the **unit never reads**. `¢` came back as `c`, `d` or nothing. `WHITELIST`
+  carries no `¢`/`c`, and `_TOKEN` and `ocr.parse_number` both stop at the first
+  non-digit, so `1¢` reduces to `1` — indistinguishable from a credit count of 1.
+  **So the badge cannot supply the unit, and the unit is the half that matters**;
+- the glyphs are **dark on a bright pill**, inverted from the rest of the strip,
+  which is what `OcrOptions.invert` is for;
+- **one band cannot serve both cells.** FortuneOx's value band `[0.213333,
+  0.600000]` is rows 9–26 and the badge glyphs sit at rows 15–30, so the declared
+  band clips them. The badge is inside the *strip* but not inside the *band*
+  within it;
+- at 27 px it falls under `MIN_GROUP_WIDTH` below roughly 0.37× canvas, so it
+  could only ever be pinned at ≥ 1.0× while
+  `test_the_meter_reads_across_canvas_sizes` sweeps from 0.35×.
+
+Worth adding later only as *corroboration* — it would catch a mid-run denomination
+change and a mis-aimed window, and nothing else.
+
 ### The row band is per skin, so declare it
 
 Which rows hold the values differs by skin -- FortuneOx prints its labels *below*
@@ -1648,6 +1683,63 @@ paytable folder, so together they are the set of maths a session can move
 between without restarting the game. A page showing the wrong
 maths is a stale log or a hand-typed id, and only saying which lets a reader
 tell them apart.
+
+### Which denomination is in play, and what a credit is worth
+
+The same line carries the denomination, and **it is a count of cents**:
+
+```
+[WagerGameApp.UpdatePayTable] current denom[2.000] current paytableId[FortuneOx-1103AX-2c-90]
+                             current supported denoms[1.000,2.000,5.000,10.000,100.000,200.000]
+```
+
+Nothing on that line says so, and read as money `2.000` would be two dollars.
+Three things say two cents:
+
+- the paytable id ends `-2c-`, and `gameConfig.cfg` in that folder declares
+  `<MinDenomMultiplier>2</MinDenomMultiplier>`;
+- `BetChangeMsg ... denom: 2.000 units: 40 totalBetValue: 176.000` pairs with
+  meter strips from the same session reading a bet of `$1.76` in cash mode and
+  `88` in credits mode — 88 credits at 2c is 176c is $1.76 — and that folder's
+  `<MinTotalBet>88</MinTotalBet>` confirms 88 was the bet;
+- a session at `denom[1.000]` shows a balance of `99635` credits against `$996.35`.
+
+So `view.denomination` carries the interpretation beside the raw string, and
+`app/utils/denomination.py` is the only module that produces one:
+
+```jsonc
+"denomination": {
+  "value": 2.0,                 // what the log wrote, in `unit`
+  "unit": "cent",
+  "label": "2c",                // for reading, not for arithmetic
+  "money_per_credit": 0.02,     // the only field to multiply or divide by
+  "declared_multiplier": 2,     // gameConfig.cfg's MinDenomMultiplier
+  "agrees": true,
+  "resolved_from": "paytable-id"
+}
+```
+
+Three fields on this response name a denomination and they are **not**
+interchangeable. `source.denomination` is the raw string; `identity.denominations`
+is the loaded folder's own `DenomConfig` list, which is *not* the set the cabinet
+currently offers and is not guaranteed to contain the current one (the `-2c-`
+folder lists 1, 5, 10, 50 and 100 while running at 2 — so do not check a live
+denomination against it); and `denomination` is the interpretation.
+
+**The unit comes from the id's suffix and is never guessed.** Every paytable
+folder on the reference install that ships a `gameConfig.cfg` follows the
+convention (1c, 2c, 4c, 5c, 10c, 100c, 200c), and its `MinDenomMultiplier` was
+measured to equal the suffix amount in every case — which is what `agrees`
+reports. An id that carries no unit leaves `money_per_credit` null, logs a
+warning, and makes a spin's award verdict `indeterminate`. The supported ladder
+looks like conclusive evidence of cents, but a cabinet denominated in whole
+currency units prints a ladder of the same shape, and a multiplier wrong by a
+hundred reads as a game bug rather than as a parsing assumption.
+
+> The value is the *current* denomination while the id and the declared
+> multiplier are properties of a folder, so a disagreement does not change the
+> rate — the logged value still wins. It means one of the two readings is stale,
+> and `agrees: false` is how that is said.
 
 The log is read **backwards** (`app/utils/log_search.py`), not forwards.
 `log_tail.py` answers *what happened after this cursor*, which is the shape for
@@ -2030,10 +2122,31 @@ decided it:
 
 | Check                          | Relation                                          |
 | ------------------------------ | ------------------------------------------------- |
-| `bet-stable`                   | the bet reads the same before and after           |
-| `bet-deducted`                 | balance after = balance before − bet              |
+| `bet-stable-<unit>`            | the bet reads the same before and after           |
+| `bet-deducted-<unit>`          | balance after = balance before − bet              |
 | `win-registered` / `win-empty` | the WIN cell agrees with what the log said        |
-| `win-collected`                | balance after collecting = balance at the result + the win |
+| `win-collected-<unit>`         | balance after collecting = balance at the result + the win |
+| `balance-reconciled-<unit>`    | balance at the end = balance before − bet + win   |
+
+**Every amount relation is checked twice, once in each unit** — hence the
+`-credits`/`-cash` suffix and `checks[].unit`. The cabinet draws one unit and the
+paytable speaks the other, so a reader comparing an award against the glass needs
+the arithmetic in whichever of the two they are holding. The pair is the same
+equation scaled, so a genuine discrepancy shows in both; what differs is the
+precision each was read at, and a relation that holds in money to two decimals
+while being a whole credit out is a statement about the OCR rather than about the
+game. Each unit has its own tolerance (`ANALYZE_SPIN_METER_TOLERANCE` and
+`ANALYZE_SPIN_METER_CREDIT_TOLERANCE`), and **a unit with no figures contributes
+no checks at all** rather than a table of indeterminate rows about numbers that
+were never going to exist.
+
+`win-registered` is the one check with no unit: whether an amount was drawn at all
+is the same question either way, and asking it twice would be asking it twice.
+
+`balance-reconciled` is not implied by the two relations above it even though it
+follows from them. Each of those compares one *pair* of frames, so a compensating
+misread in the middle frame cancels across them, and only the end-to-end identity
+notices.
 
 There is deliberately **no "the win meter cleared" check**: these games leave the
 last win showing on the WIN cell after it has been collected, so an empty one
@@ -2053,9 +2166,27 @@ the values (`"?"` when money was read but its symbol was not — the yen glyph
 these games draw reads as nothing at every mode and scale). Without it every
 figure above is ambiguous: the same `1250` is 1250 credits or 1250 of some
 currency, and the arithmetic is only checkable against the glass once that is
-settled. It is also what makes the `bet_credits` conversion in the expected award
-legible — dividing the meter's bet by the denomination reaches credits **only on
-a cash meter**.
+settled.
+
+**The third unit is the denomination**, on `meter.denomination`, and unlike the
+other two it does not come off the strip: it converts *between* the two units
+`mode` picks between, so it is the game's log by way of the paytable. What is on
+the strip is an unlabelled `1c`/`2c` badge at the far right of the meter row, and
+it stays unread —
+[the reason is measured](#the-denomination-badge-on-the-strip-is-not-what-is-read).
+`money_per_credit` (0.02 on a 2c cabinet) is the number the award conversion runs
+through and `label` (`"2c"`) is the operator-facing form; they differ by a factor
+of a hundred, so the block deliberately carries both rather than one figure that
+could be read as either.
+
+Because the denomination converts between the two, **every reading carries both
+units**: `readings[].credits` and `readings[].cash`, each with the same
+`balance`/`win`/`bet`. One of the pair is what was read — `mode` says which — and
+the other is derived, so nothing downstream has to do the division that was the
+source of the hundredfold error. Both are null when the denomination is unknown
+(nothing to convert with), and both are null when `mode` is `unknown` (nothing to
+convert *from*: without knowing which unit was read, filling either would be a
+guess about what the raw figures mean).
 
 One answer for the whole run rather than one per frame, since a cabinet does not
 change denomination between the screenshots of one spin. `services/meter.combine()`
@@ -2229,18 +2360,50 @@ spans were never a claim about the maths — they were the width of what the pic
 had failed to identify. An unreadable input still makes the verdict
 `indeterminate` rather than a guess.
 
-The money conversion is spelled out field by field on `expected`, because it runs
-through the denomination and the line count and a wrong verdict is nearly always
-one of those:
+**The award is one multiplication.** A paytable combo's value *is* the award in
+credits, so the whole conversion is:
 
 ```
-bet_credits      = total_bet (off the meter) / denomination (off the log)
+cash = credits × money_per_credit
+```
+
+Measured rather than assumed: one captured win the game drew both ways reads `75`
+on a credit meter and `$0.75` on a cash one, against a bet of `88`/`$0.88` at 1c.
+`75 × 0.01` is `$0.75` exactly, with no per-line factor anywhere. Scaling the
+award by the credits staked per line inflates the expectation by that stake and
+fails a correct spin.
+
+The bet is reported beside it and is **not** an input:
+
+```
+bet_credits      = total_bet (off the meter) / money_per_credit   # cash meter
+                 = total_bet                                     # credit meter
 credits_per_line = bet_credits / line_count
-cash             = credits × credits_per_line × denomination
 ```
 
-It rests on one assumption, stated on the schema and nowhere else: a line combo's
-value is credits per line at one credit staked on that line.
+It is carried because it is what says the denomination resolved correctly —
+`bet_credits` should read back as the cabinet's own declared `MinTotalBet`. So an
+unreadable bet costs that check and not the verdict: pricing the award needs the
+denomination and the win off the meter, and nothing else. `credits_per_line` is
+computed and reported but nothing reads it and the dashboard no longer shows it.
+
+**`money_per_credit` is not the denomination**, and the difference is a factor of
+a hundred. The log reports a `-2c-` cabinet as `denom[2.000]` — a count of cents
+— so a credit is worth `0.02` and dividing a `$1.76` bet by `2.000` gives 0.88
+credits where the paytable's own `MinTotalBet` says 88.
+`app/utils/denomination.py` is the only module that turns one into the other, and
+`expected.denomination_label` (`"2c"`) is there for reading rather than for
+arithmetic. See
+[Which denomination is in play](#which-denomination-is-in-play-and-what-a-credit-is-worth).
+
+**The comparison happens in whatever units the glass was drawing**, and
+`expected.unit` says which. On a credit meter the paytable's own credits are what
+the WIN cell is already showing, so nothing is converted: `observed_win` is checked
+against `credits` rather than `cash`, and `money_per_credit` takes no part at all.
+That side is compared because it was *read* — the other is derived from it, so only
+this one's difference is measured rather than computed and only this one's tolerance
+means anything. Both sides travel anyway (`credits`/`cash` beside
+`observed_credits`/`observed_cash`), so the award is legible in either unit.
 
 ### Failures, and what they are not
 

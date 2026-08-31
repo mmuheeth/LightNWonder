@@ -42,34 +42,60 @@ function amount(value, money) {
  * whatever units the glass was drawing, and a reader comparing a balance against
  * the game needs to know which.
  */
-function Units({ mode, currency }) {
-  if (mode !== "cash" && mode !== "credits") {
-    return (
-      <span
-        className="text-muted-foreground text-[0.65rem] tracking-wide uppercase"
-        title="Nothing was readable, so there is nothing to judge the units by"
-      >
-        Units unknown
-      </span>
-    );
-  }
+function Units({ mode, currency, denomination }) {
+  const known = mode === "cash" || mode === "credits";
   const cash = mode === "cash";
   return (
-    <span className="text-muted-foreground text-[0.65rem] tracking-wide uppercase">
-      {cash ? "Cash" : "Credits"}
-      {cash ? (
-        <span className="text-foreground ml-1.5 font-mono normal-case">
-          {currency === UNNAMED_SYMBOL || !currency ? (
-            <span
-              className="text-muted-foreground text-[0.65rem] uppercase"
-              title="A symbol is drawn here that Tesseract will not name — the yen glyph reads as nothing at every mode and scale"
-            >
-              symbol unreadable
+    <span className="text-muted-foreground flex items-baseline gap-1.5 text-[0.65rem] tracking-wide uppercase">
+      {known ? (
+        <span>
+          {cash ? "Cash" : "Credits"}
+          {cash ? (
+            <span className="text-foreground ml-1.5 font-mono normal-case">
+              {currency === UNNAMED_SYMBOL || !currency ? (
+                <span
+                  className="text-muted-foreground text-[0.65rem] uppercase"
+                  title="A symbol is drawn here that Tesseract will not name — the yen glyph reads as nothing at every mode and scale"
+                >
+                  symbol unreadable
+                </span>
+              ) : (
+                currency
+              )}
             </span>
-          ) : (
-            currency
-          )}
+          ) : null}
         </span>
+      ) : (
+        <span title="Nothing was readable, so there is nothing to judge the units by">
+          Units unknown
+        </span>
+      )}
+
+      {/* The denomination sits with the units because it is one: it converts
+          between the two the mode picks between. It comes from the game's log
+          rather than off the strip — the badge the games draw beside the cells
+          is unlabelled and its unit glyph does not OCR at any setting. */}
+      {denomination ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span
+            className="text-foreground font-mono normal-case"
+            title={
+              denomination.money_per_credit === null
+                ? `Denomination ${denomination.value} — its paytable names no unit, so credits cannot be priced in money`
+                : `One credit is ${denomination.money_per_credit}${
+                    denomination.agrees === false
+                      ? "; the log and the paytable disagree about the amount, so one reading is stale"
+                      : ""
+                  }`
+            }
+          >
+            {denomination.label}
+            {denomination.agrees === false ? (
+              <span className="text-destructive ml-1">!</span>
+            ) : null}
+          </span>
+        </>
       ) : null}
     </span>
   );
@@ -84,6 +110,15 @@ function Units({ mode, currency }) {
  * one line above it so the whole reading is still one glance.
  */
 function Reading({ reading, crop, money }) {
+  // The unit the strip was drawing goes first, because that one was *read*; the
+  // other is derived from it through the denomination. Shown only when it has
+  // figures — without a denomination there is nothing to convert with.
+  const drawn = money ? reading.cash : reading.credits;
+  const derived = money ? reading.credits : reading.cash;
+  const hasDerived =
+    derived &&
+    (derived.balance !== null || derived.win !== null || derived.bet !== null);
+
   return (
     <div className="border-border/60 bg-muted/20 space-y-2 rounded-lg border p-3">
       <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
@@ -92,16 +127,29 @@ function Reading({ reading, crop, money }) {
         </p>
         <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
           {[
-            ["Balance", reading.balance],
-            ["Win", reading.win],
-            ["Bet", reading.bet],
-          ].map(([label, value]) => (
+            ["Balance", reading.balance, drawn?.balance, derived?.balance],
+            ["Win", reading.win, drawn?.win, derived?.win],
+            ["Bet", reading.bet, drawn?.bet, derived?.bet],
+          ].map(([label, raw, , other]) => (
             <div key={label} className="flex items-baseline gap-1.5">
               <dt className="text-muted-foreground text-[0.6rem] tracking-wide uppercase">
                 {label}
               </dt>
               <dd className="font-mono text-sm font-medium tabular-nums">
-                {amount(value, money)}
+                {amount(raw, money)}
+                {/* The same figure in the other unit, in the same cell rather
+                    than a second table: it is one number said twice, and putting
+                    it beside its twin is what makes a credit award checkable
+                    against a cash meter at a glance. */}
+                {hasDerived && typeof other === "number" ? (
+                  <span
+                    className="text-muted-foreground ml-1.5 text-[0.65rem]"
+                    title={`${money ? "In credits" : "In money"}, converted through the denomination`}
+                  >
+                    {money ? amount(other, false) : amount(other, true)}
+                    {money ? " cr" : ""}
+                  </span>
+                ) : null}
               </dd>
             </div>
           ))}
@@ -135,13 +183,20 @@ function Reading({ reading, crop, money }) {
  * Just the readings: one row per frame, each carrying its three numbers and the
  * strip they came off at full width. The relations between them (the bet came off
  * the balance, the win went onto it) are still computed and still on the payload
- * as `checks`, and `verdict` in the header is their summary — they are simply not
- * a table worth reading past on the way to the award. The one comparison a reader
- * actually wants is the WIN cell against what the paytable owed, and that has its
- * own card at the foot of the page.
+ * as `checks` — now in **both units**, `credits` and `cash`, since a cabinet draws
+ * one and the paytable speaks the other — and `verdict` in the header is their
+ * summary. They are simply not a table worth reading past on the way to the award.
+ * The one comparison a reader actually wants is the WIN cell against what the
+ * paytable owed, and that has its own card at the foot of the page.
+ *
+ * Each figure does carry its counterpart in the other unit, greyed beside it. One
+ * number said twice, deliberately: an award is priced in credits and the glass may
+ * be showing money, and the pair sitting together is what makes the two
+ * comparable without arithmetic in the reader's head.
  *
  * What the header does carry beside that verdict is the units — cash and its
- * currency, or credits — because every figure below is ambiguous without them.
+ * currency, or credits, and the denomination that converts between them —
+ * because every figure below is ambiguous without them.
  *
 
  * Crops come from the report rather than the progress stream, so they appear a
@@ -163,7 +218,11 @@ export function MeterValidationCard({ meter, detailed }) {
           Read off every screenshot the spin took, in the order it took them
         </CardDescription>
         <CardAction className="flex items-center gap-3">
-          <Units mode={meter.mode} currency={meter.currency} />
+          <Units
+            mode={meter.mode}
+            currency={meter.currency}
+            denomination={meter.denomination}
+          />
           <VerdictBadge verdict={meter.verdict} />
         </CardAction>
       </CardHeader>

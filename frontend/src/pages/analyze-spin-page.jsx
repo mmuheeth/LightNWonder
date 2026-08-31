@@ -90,10 +90,7 @@ export function AnalyzeSpinPage() {
             <MeterValidationCard meter={run.meter} detailed={detailed?.meter} />
           ) : null}
           {run?.paylines?.expected ? (
-            <AwardComparisonCard
-              expected={run.paylines.expected}
-              tolerance={run.meter?.tolerance}
-            />
+            <AwardComparisonCard expected={run.paylines.expected} meter={run.meter} />
           ) : null}
         </>
       )}

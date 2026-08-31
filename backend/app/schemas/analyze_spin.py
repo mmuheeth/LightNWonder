@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.meter import MeterMode, MeterValues
 from app.schemas.paylines import PaylineStats, PaylineStep
+from app.schemas.paytable import DenominationInfo
 
 __all__ = [
     "SpinAnalysisState",
@@ -40,7 +41,9 @@ __all__ = [
     "SpinLineAward",
     "SpinLogEvent",
     "SpinMeterCheck",
+    "SpinMeterFigures",
     "SpinMeterReading",
+    "SpinMeterUnit",
     "SpinMeterValidation",
     "SpinOutcome",
     "SpinPaylineValidation",
@@ -196,8 +199,34 @@ class SpinRecording(BaseModel):
 # --- cash meter validation ------------------------------------------------
 
 
+class SpinMeterUnit(StrEnum):
+    """Which of the two quantities a figure or a check is expressed in."""
+
+    CREDITS = "credits"
+    CASH = "cash"
+
+
+class SpinMeterFigures(BaseModel):
+    """The strip's three numbers in one unit.
+
+    A meter draws one of the two and the other follows from the denomination, so
+    both are always reported: the paytable talks in credits while the glass may be
+    drawing money, and a reader should not have to do the conversion to compare
+    them. Which one was *read* is the validation's ``mode``; the other is derived.
+    All three are null when the denomination is unknown, since then there is
+    nothing to convert with.
+    """
+
+    balance: float | None = Field(default=None, description="The balance cell.")
+    win: float | None = Field(
+        default=None,
+        description="The WIN cell. Null is normal between spins -- it is empty.",
+    )
+    bet: float | None = Field(default=None, description="The BET cell.")
+
+
 class SpinMeterReading(BaseModel):
-    """The meter as one screenshot drew it."""
+    """The meter as one screenshot drew it, in both units."""
 
     frame: str = Field(description="Which frame this was read off, by key.")
     label: str = Field(description="That frame's moment, for a table heading.")
@@ -205,15 +234,28 @@ class SpinMeterReading(BaseModel):
     balance: float | None = Field(
         default=None,
         description=(
-            "The balance, whichever of cash and credits the meter was showing. "
-            "Null when it could not be read."
+            "The balance exactly as drawn, in whichever of cash and credits the "
+            "meter was showing -- see the validation's `mode`. Null when it could "
+            "not be read. This is the reading; `credits` and `cash` are the "
+            "interpretation."
         ),
     )
     win: float | None = Field(
         default=None,
-        description="The WIN cell. Null is normal between spins -- it is empty.",
+        description="The WIN cell as drawn. Null is normal between spins.",
     )
-    bet: float | None = Field(default=None, description="The BET cell.")
+    bet: float | None = Field(default=None, description="The BET cell as drawn.")
+    credits: SpinMeterFigures = Field(
+        default_factory=SpinMeterFigures,
+        description=(
+            "The same three numbers in credits -- what the paytable is denominated "
+            "in, so what an award is compared against."
+        ),
+    )
+    cash: SpinMeterFigures = Field(
+        default_factory=SpinMeterFigures,
+        description="The same three numbers in money.",
+    )
     values: MeterValues | None = Field(
         default=None,
         description=(
@@ -235,9 +277,22 @@ class SpinMeterReading(BaseModel):
 
 
 class SpinMeterCheck(BaseModel):
-    """One arithmetic relation between two readings, checked."""
+    """One arithmetic relation between two readings, checked in one unit."""
 
-    key: str = Field(description="Stable identifier, e.g. 'bet-deducted'.")
+    key: str = Field(
+        description=(
+            "Stable identifier, e.g. 'bet-deducted-credits'. Unit-suffixed for the "
+            "relations that are checked in both."
+        )
+    )
+    unit: SpinMeterUnit | None = Field(
+        default=None,
+        description=(
+            "Which quantity the figures below are in. Null for a relation that is "
+            "not about an amount at all -- whether the WIN cell showed anything is "
+            "the same question in either unit."
+        ),
+    )
     label: str = Field(description="The relation in words.")
     verdict: SpinVerdict = Field(description="Whether the relation held.")
     expected: float | None = Field(
@@ -253,12 +308,25 @@ class SpinMeterCheck(BaseModel):
 class SpinMeterValidation(BaseModel):
     """Every frame's meter, and what the differences between them prove.
 
-    ``mode`` and ``currency`` come first because they are the units every number
-    below is in: the same ``1250`` is 1250 credits or 1250 of some currency, and
-    which one it is changes what the balance, the win and the bet *mean*. One
-    answer for the run rather than one per frame, since a machine does not change
-    denomination mid-spin -- the per-frame reading is still on
+    ``mode``, ``currency`` and ``denomination`` come first because they are the
+    units every number below is in: the same ``1250`` is 1250 credits or 1250 of
+    some currency, and which one it is changes what the balance, the win and the
+    bet *mean*. One answer for the run rather than one per frame, since a machine
+    does not change denomination mid-spin -- the per-frame reading is still on
     ``readings[].values`` for a run where the frames disagreed.
+
+    The three are not three readings of one thing. ``mode`` and ``currency`` are
+    read off the strip; ``denomination`` is what converts between the two units
+    ``mode`` chooses between, and it comes from the game's log.
+
+    Because it does convert between them, **every reading carries both units and
+    every arithmetic relation is checked in both** -- once over ``credits`` and
+    once over ``cash``, each with its own tolerance, and ``checks[].unit`` says
+    which. They are the same equation scaled, so neither can fail alone for a real
+    reason; what differs is the precision they are read at, and a relation that
+    holds in money to two decimals while being a whole credit out is a statement
+    about the OCR rather than about the game. A unit whose figures are unknown
+    contributes no checks rather than indeterminate ones.
     """
 
     mode: MeterMode = Field(
@@ -281,6 +349,16 @@ class SpinMeterValidation(BaseModel):
             "credits mode and when nothing was read."
         ),
     )
+    denomination: DenominationInfo | None = Field(
+        default=None,
+        description=(
+            "What one credit is worth, which is the third unit these numbers are "
+            "in: it converts between the two the mode chooses between. Comes from "
+            "the game's log by way of the paytable, not off the strip -- the "
+            "denomination badge the games draw is unlabelled and its unit glyph "
+            "does not OCR. Null when the paytable could not be read."
+        ),
+    )
     readings: list[SpinMeterReading] = Field(
         default_factory=list,
         description="One per screenshot, in the order they were taken.",
@@ -293,8 +371,17 @@ class SpinMeterValidation(BaseModel):
         default=0.0,
         ge=0,
         description=(
-            "How far two amounts may differ and still be called equal -- "
+            "How far two money amounts may differ and still be called equal -- "
             "absorbing the OCR of the last decimal, not a real discrepancy."
+        ),
+    )
+    credit_tolerance: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "The same, for the checks made in credits. Separate because a credit "
+            "is a whole number: this absorbs a converted figure's rounding and "
+            "nothing else, so it is far tighter than the money one in proportion."
         ),
     )
     verdict: SpinVerdict = Field(
@@ -549,10 +636,18 @@ class SpinExpectedAward(BaseModel):
     """What the paytable says the spin should have paid, and whether the meter
     agrees.
 
-    Every intermediate is carried rather than only the answer, because the
-    conversion from paytable credits to money on the glass runs through the
-    denomination and the line count -- and a wrong verdict is nearly always one
-    of those rather than the pay itself.
+    The award is one multiplication -- ``credits x money_per_credit`` -- because a
+    paytable combo's value *is* the award in credits and not a per-line rate to be
+    scaled by the stake. The bet in credits and the stake per line are reported
+    beside it as context, since a wrong verdict is usually a misread bet or a
+    misresolved denomination and those are where it shows, but neither is an input.
+
+    The denomination arrives as two fields on purpose. The game's log reports it
+    as a count of cents (``denom[2.000]`` on a ``-2c-`` paytable), so the number
+    to divide a money bet by is ``money_per_credit`` (0.02) and never the value
+    itself -- the two differ by a factor of a hundred, and the wrong one produces
+    a plausible-looking figure rather than an error. ``denomination_label`` is the
+    operator-facing form and takes no part in the arithmetic.
 
     One number rather than a range, unlike the version this replaced: the
     classifier names the symbol on every tile, so each awarded line resolves to
@@ -565,33 +660,82 @@ class SpinExpectedAward(BaseModel):
     line_count: int | None = Field(
         default=None, description="Lines the loaded paytable plays."
     )
-    denomination: float | None = Field(
-        default=None, description="Denomination the game's log reported."
+    denomination_label: str | None = Field(
+        default=None,
+        description=(
+            "The denomination as an operator says it, e.g. '2c'. For reading, not "
+            "for arithmetic -- the number the conversion runs through is "
+            "`money_per_credit`, and they differ by a factor of a hundred."
+        ),
+    )
+    money_per_credit: float | None = Field(
+        default=None,
+        description=(
+            "One credit in money -- 0.02 on a 2c game. Null when the denomination "
+            "was reported but its unit could not be resolved, which leaves the "
+            "verdict indeterminate rather than priced by a guess."
+        ),
     )
     total_bet: float | None = Field(
-        default=None, description="Total bet as the meter drew it, in money."
+        default=None,
+        description=(
+            "Total bet as the meter drew it, in whichever of money and credits it "
+            "was showing -- see the meter validation's own `mode`."
+        ),
     )
     bet_credits: float | None = Field(
-        default=None, description="total_bet divided by denomination."
+        default=None,
+        description=(
+            "The bet in credits: total_bet divided by money_per_credit on a cash "
+            "meter, and total_bet itself on a credit meter, which is already "
+            "counting them. Context, not a step -- it prices nothing below, and "
+            "is carried because it is the one figure that checks the denomination "
+            "against the cabinet's own declared minimum bet."
+        ),
     )
     credits_per_line: float | None = Field(
-        default=None, description="bet_credits divided by line_count."
+        default=None,
+        description=(
+            "bet_credits divided by line_count -- the stake on each line. Takes no "
+            "part in the award: a paytable value is the award, not a per-line rate "
+            "to be scaled by the stake."
+        ),
     )
     cash: float | None = Field(
         default=None,
         description=(
-            "credits x credits_per_line x denomination -- the award in money, on "
-            "the assumption that a paytable value is credits per line at one "
-            "credit staked. Null when any input above could not be read."
+            "credits x money_per_credit -- the award in money, and the whole "
+            "conversion. Null only when money_per_credit could not be resolved; it "
+            "needs neither the bet nor the line count."
+        ),
+    )
+    unit: SpinMeterUnit = Field(
+        default=SpinMeterUnit.CASH,
+        description=(
+            "Which of the pairs above the verdict was reached on: the unit the "
+            "meter was actually drawing, since the other side of every pair is "
+            "derived from that one and only this one's tolerance means anything."
         ),
     )
     observed_win: float | None = Field(
-        default=None, description="The WIN cell of the outcome screenshot."
+        default=None,
+        description="The WIN cell of the outcome screenshot, in `unit`.",
+    )
+    observed_credits: float | None = Field(
+        default=None,
+        description=(
+            "The same WIN cell in credits -- the side to compare `credits` "
+            "against. Null when the denomination was not known."
+        ),
+    )
+    observed_cash: float | None = Field(
+        default=None,
+        description="The same WIN cell in money -- the side to compare `cash` against.",
     )
     verdict: SpinVerdict = Field(
         description=(
-            "Whether observed_win matches 'cash' to the meter tolerance. "
-            "'indeterminate' whenever any input above is missing."
+            "Whether the WIN cell matches the award in `unit`. 'indeterminate' "
+            "whenever an input to that is missing."
         )
     )
     detail: str = Field(description="The comparison in one line.")

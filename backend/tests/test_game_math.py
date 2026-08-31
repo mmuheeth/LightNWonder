@@ -323,6 +323,9 @@ def test_reads_the_paytable_identity(tmp_path: Path) -> None:
     assert identity.min_total_bet == 88
     assert identity.max_bets == (88, 176, 880)
     assert identity.denominations == (1.0, 5.0)
+    # Indented inside its tag in the shipped file, and the one declared statement
+    # of a denomination's amount -- the folder is `-1c-`, so it reads 1.
+    assert identity.min_denom_multiplier == 1
 
 
 def test_max_bets_are_split_on_whitespace(tmp_path: Path) -> None:

@@ -36,6 +36,7 @@ from app.schemas.analyze_spin import (
     SpinOutcome,
     SpinVerdict,
 )
+from app.schemas.meter import MeterMode
 from app.schemas.paylines import (
     PaylineCheckResult,
     PaylineLine,
@@ -45,6 +46,7 @@ from app.schemas.paylines import (
     PaylineStep,
 )
 from app.schemas.paytable import (
+    DenominationInfo,
     GameMathInfo,
     MathDefaultsInfo,
     PaylineComboInfo,
@@ -56,6 +58,7 @@ from app.schemas.paytable import (
 )
 from app.services import analyze_spin as spin_service
 from app.services import image_classifier as classifier_service
+from app.utils import denomination as denomination_util
 from tests.asserts import assert_failure, assert_success
 
 API = "/api/analyze-spin"
@@ -74,8 +77,49 @@ PAY_TABLE = [
 ]
 
 
-def paytable(*, denomination: str | None = "0.01", lines: int = 5) -> PaytableView:
-    """A paytable view carrying only what pricing a line actually reads."""
+PAYTABLE_ID = "FortuneOx-1101YX-1c-90"
+
+
+def resolved_denomination(
+    value: str | None, paytable_id: str, multiplier: int | None
+) -> DenominationInfo | None:
+    """The denomination as the paytable service would report it.
+
+    Built through the real parser rather than by hand, so a fixture cannot
+    interpret a denomination differently from production -- which is exactly the
+    mistake this module's own fixture used to encode, declaring `0.01` where the
+    log writes `1.000`.
+    """
+    parsed = denomination_util.parse(
+        value, paytable_id=paytable_id, declared_multiplier=multiplier
+    )
+    if parsed is None:
+        return None
+    return DenominationInfo(
+        value=parsed.value,
+        unit=parsed.unit,
+        label=parsed.label,
+        money_per_credit=parsed.money_per_credit,
+        declared_multiplier=parsed.declared_multiplier,
+        agrees=parsed.agrees,
+        resolved_from=parsed.resolved_from,
+    )
+
+
+def paytable(
+    *,
+    denomination: str | None = "1.000",
+    lines: int = 5,
+    paytable_id: str = PAYTABLE_ID,
+    declared_multiplier: int | None = 1,
+) -> PaytableView:
+    """A paytable view carrying only what pricing a line actually reads.
+
+    The denomination defaults to `"1.000"` because that is what the game's log
+    actually writes for the `-1c-` paytable named below -- a count of cents. It
+    used to default to `"0.01"`, a money-per-credit value no log ever writes, and
+    that is what hid a hundredfold error in the conversion.
+    """
     combos = [
         PaylineComboInfo(
             combo_id=index,
@@ -101,10 +145,13 @@ def paytable(*, denomination: str | None = "0.01", lines: int = 5) -> PaytableVi
     return PaytableView(
         game="FortuneOx",
         label="Fortune Ox",
-        paytable_id="FortuneOx-1101YX-1c-90",
-        directory="C:/game/GameConfig/FortuneOx-1101YX-1c-90",
+        paytable_id=paytable_id,
+        directory=f"C:/game/GameConfig/{paytable_id}",
         source=PaytableSource(origin="log", denomination=denomination),
-        available=["FortuneOx-1101YX-1c-90"],
+        denomination=resolved_denomination(
+            denomination, paytable_id, declared_multiplier
+        ),
+        available=[paytable_id],
         math=GameMathInfo(
             path="C:/game/.../math.xml",
             defaults=MathDefaultsInfo(),
@@ -343,27 +390,140 @@ def test_nothing_awarded_says_so() -> None:
     ) == ("No line pays")
 
 
-def meter(*, bet: float | None, win: float | None) -> SpinMeterValidation:
-    """A cash-meter validation carrying only the two figures pricing reads."""
+def meter(
+    *,
+    bet: float | None,
+    win: float | None,
+    mode: MeterMode = MeterMode.CASH,
+    rate: float | None = 0.01,
+) -> SpinMeterValidation:
+    """A cash-meter validation carrying only the two figures pricing reads.
+
+    ``mode`` matters to pricing and not only to display: a credit meter is already
+    counting the thing the paytable is denominated in, so it converts by not
+    converting.
+
+    The readings go through the production conversion rather than declaring their
+    own ``credits``/``cash`` blocks, so a fixture cannot express a figure in both
+    units differently from the way a real run would. ``rate`` defaults to the 0.01
+    the default :func:`paytable` resolves to.
+    """
+    readings = [
+        SpinMeterReading(
+            frame=spin_service.FRAME_INITIAL,
+            label="Before the spin",
+            file_name="a.png",
+            balance=100.0,
+            bet=bet,
+        ),
+        SpinMeterReading(
+            frame=spin_service.FRAME_OUTCOME,
+            label="Result on screen",
+            file_name="b.png",
+            balance=100.0,
+            win=win,
+        ),
+    ]
     return SpinMeterValidation(
+        mode=mode,
         readings=[
-            SpinMeterReading(
-                frame=spin_service.FRAME_INITIAL,
-                label="Before the spin",
-                file_name="a.png",
-                balance=100.0,
-                bet=bet,
-            ),
-            SpinMeterReading(
-                frame=spin_service.FRAME_OUTCOME,
-                label="Result on screen",
-                file_name="b.png",
-                balance=100.0,
-                win=win,
-            ),
+            spin_service._in_both_units(reading, mode, rate) for reading in readings
         ],
         verdict=SpinVerdict.PASSED,
     )
+
+
+# --- both units ------------------------------------------------------------
+
+
+def test_a_cash_meter_reports_its_figures_in_credits_too() -> None:
+    """The strip drew money; the paytable speaks credits. Both are on the
+    reading, so nobody downstream has to do the division -- which is the one that
+    was got wrong."""
+    validation = meter(bet=1.76, win=1.00, mode=MeterMode.CASH, rate=0.02)
+    initial, outcome = validation.readings
+
+    assert initial.cash.bet == pytest.approx(1.76)
+    assert initial.credits.bet == pytest.approx(88)
+    assert initial.cash.balance == pytest.approx(100.0)
+    assert initial.credits.balance == pytest.approx(5000)
+    assert outcome.cash.win == pytest.approx(1.00)
+    assert outcome.credits.win == pytest.approx(50)
+
+
+def test_a_credit_meter_reports_its_figures_in_cash_too() -> None:
+    validation = meter(bet=88.0, win=50.0, mode=MeterMode.CREDITS, rate=0.02)
+    initial, outcome = validation.readings
+
+    assert initial.credits.bet == pytest.approx(88)
+    assert initial.cash.bet == pytest.approx(1.76)
+    assert outcome.credits.win == pytest.approx(50)
+    assert outcome.cash.win == pytest.approx(1.00)
+
+
+def test_without_a_denomination_only_the_unit_that_was_read_is_filled() -> None:
+    """Nothing to convert with, so the other side stays empty rather than
+    repeating the figures under a label that would be wrong."""
+    validation = meter(bet=1.76, win=1.00, mode=MeterMode.CASH, rate=None)
+    initial = validation.readings[0]
+
+    assert initial.cash.bet == pytest.approx(1.76)
+    assert initial.credits.bet is None
+    assert initial.bet == pytest.approx(1.76)
+
+
+def test_an_unknown_mode_fills_neither_unit() -> None:
+    """Without knowing which side was read there is nothing to convert *from*,
+    and filling either would be a guess about what the raw figures mean."""
+    validation = meter(bet=1.76, win=1.00, mode=MeterMode.UNKNOWN, rate=0.02)
+    initial = validation.readings[0]
+
+    assert initial.credits.bet is None
+    assert initial.cash.bet is None
+    assert initial.bet == pytest.approx(1.76)
+
+
+def test_the_balance_arithmetic_is_checked_in_both_units() -> None:
+    """A cabinet draws one unit and the paytable speaks the other, so the
+    relations are stated in both -- and `unit` says which each one is."""
+    run = run_for(meter(bet=1.76, win=1.00, rate=0.02), SpinOutcome.WIN)
+    readings = run.meter.readings
+
+    checks = spin_service._meter_checks(run, readings)
+    units = {check.unit for check in checks}
+
+    assert spin_service.SpinMeterUnit.CREDITS in units
+    assert spin_service.SpinMeterUnit.CASH in units
+    # The one relation that is not about an amount is asked once, not twice.
+    assert [check.key for check in checks].count("win-registered") == 1
+    assert {check.key for check in checks} >= {
+        "bet-deducted-credits",
+        "bet-deducted-cash",
+    }
+
+
+def test_a_unit_with_no_figures_contributes_no_checks() -> None:
+    """A table of indeterminate rows about numbers that were never going to
+    exist says less than its absence."""
+    run = run_for(meter(bet=1.76, win=1.00, rate=None), SpinOutcome.WIN)
+
+    checks = spin_service._meter_checks(run, run.meter.readings)
+
+    assert all(check.unit is not spin_service.SpinMeterUnit.CREDITS for check in checks)
+    assert any(check.unit is spin_service.SpinMeterUnit.CASH for check in checks)
+
+
+def test_credits_are_checked_to_a_tighter_tolerance_than_money() -> None:
+    """A credit is a whole number, so the credits tolerance only has a converted
+    figure's rounding to absorb -- it cannot hide a real discrepancy, since the
+    smallest real one is a whole credit."""
+    assert spin_service._tolerance(spin_service.SpinMeterUnit.CASH) == pytest.approx(
+        settings.ANALYZE_SPIN_METER_TOLERANCE
+    )
+    assert spin_service._tolerance(spin_service.SpinMeterUnit.CREDITS) == pytest.approx(
+        settings.ANALYZE_SPIN_METER_CREDIT_TOLERANCE
+    )
+    assert settings.ANALYZE_SPIN_METER_CREDIT_TOLERANCE < 1.0
 
 
 def run_for(
@@ -442,9 +602,121 @@ def test_a_missing_denomination_leaves_the_verdict_indeterminate() -> None:
 
     expected = spin_service._expected(run, paytable(denomination=None), awards)
 
-    assert expected.denomination is None
+    assert expected.money_per_credit is None
+    assert expected.denomination_label is None
     assert expected.cash is None
     assert expected.verdict is SpinVerdict.INDETERMINATE
+
+
+def test_the_logged_denomination_is_cents_so_the_bet_is_not_divided_by_it() -> None:
+    """The regression this exists for, with the numbers off the real cabinet.
+
+    The log writes `denom[2.000]` for the `-2c-` paytable and the meter draws a
+    bet of $1.76. Dividing the bet by the logged value gives 0.88 credits;
+    the folder's own `MinTotalBet` says 88. The rate is 0.02, not 2.
+    """
+    awards = award(("1", ["AA", "AA", "AA", "AA", "BB"]))
+    # The rate is passed to both halves because a real run derives it once, from
+    # the paytable, and hands it to the meter step -- see `_validate_meter`.
+    run = run_for(meter(bet=1.76, win=1.00, rate=0.02), SpinOutcome.WIN)
+    view = paytable(
+        denomination="2.000",
+        paytable_id="FortuneOx-1103AX-2c-90",
+        declared_multiplier=2,
+        lines=40,
+    )
+
+    expected = spin_service._expected(run, view, awards)
+
+    assert expected.money_per_credit == pytest.approx(0.02)
+    assert expected.denomination_label == "2c"
+    # The bet reads back as the cabinet's own declared MinTotalBet, which is what
+    # makes this figure worth carrying even though it prices nothing.
+    assert expected.bet_credits == pytest.approx(88)
+    assert expected.credits_per_line == pytest.approx(2.2)
+    # 50 credits at 0.02 -- and *not* scaled by the 2.2 staked on the line.
+    assert expected.credits == pytest.approx(50)
+    assert expected.cash == pytest.approx(1.00)
+    assert expected.verdict is SpinVerdict.PASSED
+
+
+def test_the_award_is_not_scaled_by_the_stake_on_the_line() -> None:
+    """The correction, pinned on its own.
+
+    Measured on one captured win the game drew both ways: `75` on a credit meter
+    and `$0.75` on a cash one, against a bet of `88`/`$0.88` at 1c. 75 x 0.01 is
+    $0.75 exactly, with no per-line factor anywhere -- so a paytable value is the
+    award, and multiplying it by the credits staked per line inflates the
+    expectation by that stake and fails a correct spin.
+    """
+    awards = award(("1", ["AA", "AA", "AA", "AA", "BB"]))
+    # A bet of 8.80 over 5 lines is 176 credits at 1c, or 35.2 a line -- so a
+    # per-line scaling would be off by more than an order of magnitude here.
+    run = run_for(meter(bet=8.80, win=0.50), SpinOutcome.WIN)
+
+    expected = spin_service._expected(run, paytable(), awards)
+
+    assert expected.credits_per_line == pytest.approx(176)
+    assert expected.cash == pytest.approx(0.50)
+    assert expected.verdict is SpinVerdict.PASSED
+
+
+def test_the_award_is_priced_without_the_bet_or_the_line_count() -> None:
+    """Neither is an input any more, so an unreadable bet no longer costs the
+    verdict -- it only costs the diagnostic beside it."""
+    awards = award(("1", ["AA", "AA", "AA", "AA", "BB"]))
+    run = run_for(meter(bet=None, win=0.50), SpinOutcome.WIN)
+
+    expected = spin_service._expected(run, paytable(), awards)
+
+    assert expected.bet_credits is None
+    assert expected.credits_per_line is None
+    assert expected.cash == pytest.approx(0.50)
+    assert expected.verdict is SpinVerdict.PASSED
+
+
+def test_a_paytable_naming_no_unit_says_so_rather_than_pricing_a_guess() -> None:
+    """A different failure from a denomination that was never reported, and a
+    different fix -- so a different sentence, naming the paytable."""
+    awards = award(("1", ["AA"] * 5))
+    run = run_for(meter(bet=0.05, win=1.00), SpinOutcome.WIN)
+    view = paytable(paytable_id="FortuneOx-1106HX-LATAM", declared_multiplier=None)
+
+    expected = spin_service._expected(run, view, awards)
+
+    assert expected.money_per_credit is None
+    assert expected.denomination_label == "1"
+    assert expected.verdict is SpinVerdict.INDETERMINATE
+    assert "FortuneOx-1106HX-LATAM" in expected.detail
+    assert "names no unit" in expected.detail
+
+
+def test_a_credit_meter_converts_by_not_converting() -> None:
+    """In credits mode the bet is already the thing the paytable is denominated
+    in, so no rate takes part -- and the win it drew is compared against the
+    award in credits rather than against the same award in money."""
+    awards = award(("1", ["AA", "AA", "AA", "AA", "BB"]))
+    run = run_for(meter(bet=5.0, win=50.0, mode=MeterMode.CREDITS), SpinOutcome.WIN)
+
+    expected = spin_service._expected(run, paytable(), awards)
+
+    assert expected.bet_credits == pytest.approx(5)
+    assert expected.credits == pytest.approx(50)
+    assert expected.observed_win == pytest.approx(50)
+    assert expected.verdict is SpinVerdict.PASSED
+    assert "already counting them" in expected.detail
+
+
+def test_a_credit_meter_is_not_priced_as_money() -> None:
+    """The bug this branch prevents: 50 credits at a 1c denomination is 0.50 in
+    money, and comparing a credit meter's 50 against that would fail a correct
+    spin."""
+    awards = award(("1", ["AA", "AA", "AA", "AA", "BB"]))
+    run = run_for(meter(bet=5.0, win=0.50, mode=MeterMode.CREDITS), SpinOutcome.WIN)
+
+    expected = spin_service._expected(run, paytable(), awards)
+
+    assert expected.verdict is SpinVerdict.FAILED
 
 
 def test_an_unreadable_meter_leaves_the_verdict_indeterminate() -> None:

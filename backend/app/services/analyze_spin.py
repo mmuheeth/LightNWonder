@@ -110,7 +110,9 @@ from app.schemas.analyze_spin import (
     SpinLineAward,
     SpinLogEvent,
     SpinMeterCheck,
+    SpinMeterFigures,
     SpinMeterReading,
+    SpinMeterUnit,
     SpinMeterValidation,
     SpinOutcome,
     SpinPaylineValidation,
@@ -128,7 +130,7 @@ from app.schemas.image_classifier import ClassifyRequest, ClassifyResult
 from app.schemas.meter import MeterMode
 from app.schemas.obs import ScreenshotRequest
 from app.schemas.paylines import PaylineCheckResult
-from app.schemas.paytable import PaylineComboInfo, PaytableView
+from app.schemas.paytable import DenominationInfo, PaylineComboInfo, PaytableView
 from app.schemas.roi import RoiExtractRequest
 from app.services import game_input as game_input_service
 from app.services import grid as grid_service
@@ -912,15 +914,19 @@ def _balance(reading_cash: float | None, reading_credits: float | None) -> float
     return reading_cash if reading_cash is not None else reading_credits
 
 
-def _units(mode: MeterMode, currency: str | None) -> str:
+def _units(
+    mode: MeterMode, currency: str | None, denomination: DenominationInfo | None
+) -> str:
     """What the step's own one-line detail calls the numbers it read. The units
     belong on the step because every figure under it is ambiguous without them --
     ``1250`` is a credit count or an amount of money, and only this says which."""
     if mode is not MeterMode.CASH:
-        return mode.value
-    if currency is None or currency == meter_service.UNNAMED_SYMBOL:
-        return "cash (currency symbol unreadable)"
-    return f"cash ({currency})"
+        read = mode.value
+    elif currency is None or currency == meter_service.UNNAMED_SYMBOL:
+        read = "cash (currency symbol unreadable)"
+    else:
+        read = f"cash ({currency})"
+    return read if denomination is None else f"{read} at {denomination.label}"
 
 
 async def _read_meter(frame: SpinFrame) -> SpinMeterReading:
@@ -948,6 +954,62 @@ async def _read_meter(frame: SpinFrame) -> SpinMeterReading:
     )
 
 
+def _scaled(figures: SpinMeterFigures, factor: float | None) -> SpinMeterFigures:
+    """``figures`` in the other unit, or empty when there is no rate to use."""
+    if factor is None:
+        return SpinMeterFigures()
+
+    def convert(value: float | None) -> float | None:
+        return None if value is None else round(value * factor, 4)
+
+    return SpinMeterFigures(
+        balance=convert(figures.balance),
+        win=convert(figures.win),
+        bet=convert(figures.bet),
+    )
+
+
+def _in_both_units(
+    reading: SpinMeterReading, mode: MeterMode, rate: float | None
+) -> SpinMeterReading:
+    """The reading's three numbers in credits *and* in money.
+
+    The run's ``mode`` decides which side the strip was drawing rather than the
+    frame's own, because it is the more reliable of the two -- a frame whose cells
+    all happened to be whole reads as credits on a cash machine, and
+    :func:`app.services.meter.combine` is what settles that. An unknown mode
+    leaves both sides empty: without knowing which unit was read there is nothing
+    to convert *from*, and filling either would be a guess about what the figures
+    already there mean.
+    """
+    if mode is MeterMode.UNKNOWN:
+        return reading
+    drawn = SpinMeterFigures(balance=reading.balance, win=reading.win, bet=reading.bet)
+    if mode is MeterMode.CASH:
+        # Money to credits divides, so a zero rate would raise rather than report.
+        return reading.model_copy(
+            update={
+                "cash": drawn,
+                "credits": _scaled(drawn, None if not rate else 1 / rate),
+            }
+        )
+    return reading.model_copy(update={"credits": drawn, "cash": _scaled(drawn, rate)})
+
+
+def _figures(reading: SpinMeterReading, unit: SpinMeterUnit) -> SpinMeterFigures:
+    """One reading's numbers in ``unit``."""
+    return reading.credits if unit is SpinMeterUnit.CREDITS else reading.cash
+
+
+def _tolerance(unit: SpinMeterUnit) -> float:
+    """How far two amounts of ``unit`` may differ and still be called equal."""
+    return (
+        settings.ANALYZE_SPIN_METER_CREDIT_TOLERANCE
+        if unit is SpinMeterUnit.CREDITS
+        else settings.ANALYZE_SPIN_METER_TOLERANCE
+    )
+
+
 def _close(left: float, right: float, tolerance: float) -> bool:
     """Whether two amounts are the same number to the precision they were read at."""
     return abs(left - right) <= tolerance
@@ -962,6 +1024,7 @@ def _relation(
     key: str,
     label: str,
     *,
+    unit: SpinMeterUnit,
     expected: float | None,
     actual: float | None,
     tolerance: float,
@@ -971,6 +1034,7 @@ def _relation(
     if expected is None or actual is None:
         return SpinMeterCheck(
             key=key,
+            unit=unit,
             label=label,
             verdict=SpinVerdict.INDETERMINATE,
             expected=expected,
@@ -979,6 +1043,7 @@ def _relation(
         )
     return SpinMeterCheck(
         key=key,
+        unit=unit,
         label=label,
         verdict=(
             SpinVerdict.PASSED
@@ -992,97 +1057,93 @@ def _relation(
     )
 
 
-def _meter_checks(
-    run: _ActiveRun, readings: list[SpinMeterReading], tolerance: float
+def _unit_checks(
+    by_frame: dict[str, SpinMeterReading], unit: SpinMeterUnit
 ) -> list[SpinMeterCheck]:
-    """What the differences between the frames' meters ought to be.
+    """The balance arithmetic over one unit's figures.
 
     Each relation is stated as arithmetic over two readings rather than as a
     rule about the game, because that is what a reader can check by eye against
     the crops beside it: the bet leaves the balance when the reels turn, and the
     win joins it when it is collected.
+
+    Nothing at all when this unit has no figures -- which is a meter with no
+    denomination to convert by, not a failure -- because a table of indeterminate
+    rows about numbers that were never going to exist says less than its absence.
     """
-    by_frame = {reading.frame: reading for reading in readings}
     initial = by_frame.get(FRAME_INITIAL)
     outcome = by_frame.get(FRAME_OUTCOME)
     collected = by_frame.get(FRAME_COLLECTED)
+    known = [
+        _figures(reading, unit)
+        for reading in by_frame.values()
+        if _figures(reading, unit).balance is not None
+        or _figures(reading, unit).bet is not None
+    ]
+    if not known:
+        return []
+
+    tolerance = _tolerance(unit)
+    suffix = unit.value
+    named = "credits" if unit is SpinMeterUnit.CREDITS else "money"
     checks: list[SpinMeterCheck] = []
 
     if initial is not None and outcome is not None:
+        before, after = _figures(initial, unit), _figures(outcome, unit)
         checks.append(
             _relation(
-                "bet-stable",
-                "The bet is unchanged by the spin",
-                expected=initial.bet,
-                actual=outcome.bet,
+                f"bet-stable-{suffix}",
+                f"The bet is unchanged by the spin ({named})",
+                unit=unit,
+                expected=before.bet,
+                actual=after.bet,
                 tolerance=tolerance,
                 detail=(
-                    f"bet was {_amount(initial.bet)} before the spin and "
-                    f"{_amount(outcome.bet)} after it"
+                    f"bet was {_amount(before.bet)} before the spin and "
+                    f"{_amount(after.bet)} after it"
                 ),
             )
         )
         expected = (
             None
-            if initial.balance is None or initial.bet is None
-            else initial.balance - initial.bet
+            if before.balance is None or before.bet is None
+            else before.balance - before.bet
         )
         checks.append(
             _relation(
-                "bet-deducted",
-                "The bet came off the balance",
+                f"bet-deducted-{suffix}",
+                f"The bet came off the balance ({named})",
+                unit=unit,
                 expected=expected,
-                actual=outcome.balance,
+                actual=after.balance,
                 tolerance=tolerance,
                 detail=(
-                    f"{_amount(initial.balance)} - {_amount(initial.bet)} = "
+                    f"{_amount(before.balance)} - {_amount(before.bet)} = "
                     f"{_amount(expected)}, and the balance reads "
-                    f"{_amount(outcome.balance)}"
-                ),
-            )
-        )
-
-    if outcome is not None:
-        won = run.outcome is SpinOutcome.WIN
-        registered = outcome.win is not None and outcome.win > 0
-        if outcome.error is not None:
-            verdict = SpinVerdict.INDETERMINATE
-        else:
-            verdict = SpinVerdict.PASSED if registered == won else SpinVerdict.FAILED
-        checks.append(
-            SpinMeterCheck(
-                key="win-registered" if won else "win-empty",
-                label=(
-                    "The win meter shows an amount"
-                    if won
-                    else "The win meter stayed empty"
-                ),
-                verdict=verdict,
-                actual=outcome.win,
-                detail=(
-                    f"the game logged {'a win' if won else 'no win'} and the WIN "
-                    f"cell reads {'nothing' if outcome.win is None else _amount(outcome.win)}"
+                    f"{_amount(after.balance)}"
                 ),
             )
         )
 
     if outcome is not None and collected is not None:
+        after, end = _figures(outcome, unit), _figures(collected, unit)
         expected = (
             None
-            if outcome.balance is None or outcome.win is None
-            else outcome.balance + outcome.win
+            if after.balance is None or after.win is None
+            else after.balance + after.win
         )
         checks.append(
             _relation(
-                "win-collected",
-                "The win went onto the balance",
+                f"win-collected-{suffix}",
+                f"The win went onto the balance ({named})",
+                unit=unit,
                 expected=expected,
-                actual=collected.balance,
+                actual=end.balance,
                 tolerance=tolerance,
                 detail=(
-                    f"{_amount(outcome.balance)} + {_amount(outcome.win)} = "
+                    f"{_amount(after.balance)} + {_amount(after.win)} = "
                     f"{_amount(expected)}, and the balance reads "
-                    f"{_amount(collected.balance)}"
+                    f"{_amount(end.balance)}"
                 ),
             )
         )
@@ -1091,6 +1152,81 @@ def _meter_checks(
         # would be the surprise. The balance moving is the proof of collection,
         # and that is the check above.
 
+        # And the whole spin as one identity, end to end. Not implied by the two
+        # relations above even though it follows from them: each of those compares
+        # one *pair* of frames, so a compensating misread in the middle frame
+        # cancels out across them and only this notices.
+        before = _figures(initial, unit) if initial is not None else SpinMeterFigures()
+        reconciled = (
+            None
+            if before.balance is None or before.bet is None or after.win is None
+            else before.balance - before.bet + after.win
+        )
+        checks.append(
+            _relation(
+                f"balance-reconciled-{suffix}",
+                f"The whole spin adds up ({named})",
+                unit=unit,
+                expected=reconciled,
+                actual=end.balance,
+                tolerance=tolerance,
+                detail=(
+                    f"{_amount(before.balance)} - {_amount(before.bet)} bet + "
+                    f"{_amount(after.win)} won = {_amount(reconciled)}, and the "
+                    f"balance ends at {_amount(end.balance)}"
+                ),
+            )
+        )
+
+    return checks
+
+
+def _win_registered(run: _ActiveRun, outcome: SpinMeterReading) -> SpinMeterCheck:
+    """Whether the WIN cell agrees with what the game's log said.
+
+    Unit-free, and the only check here that is: whether an amount was drawn at all
+    is the same question in credits and in money, and asking it twice would be
+    asking it twice.
+    """
+    won = run.outcome is SpinOutcome.WIN
+    registered = outcome.win is not None and outcome.win > 0
+    if outcome.error is not None:
+        verdict = SpinVerdict.INDETERMINATE
+    else:
+        verdict = SpinVerdict.PASSED if registered == won else SpinVerdict.FAILED
+    return SpinMeterCheck(
+        key="win-registered" if won else "win-empty",
+        label=(
+            "The win meter shows an amount" if won else "The win meter stayed empty"
+        ),
+        verdict=verdict,
+        actual=outcome.win,
+        detail=(
+            f"the game logged {'a win' if won else 'no win'} and the WIN cell reads "
+            f"{'nothing' if outcome.win is None else _amount(outcome.win)}"
+        ),
+    )
+
+
+def _meter_checks(
+    run: _ActiveRun, readings: list[SpinMeterReading]
+) -> list[SpinMeterCheck]:
+    """Every relation between the frames' meters, checked in both units.
+
+    Both, because the cabinet draws one and the paytable speaks the other: a
+    reader comparing an award against the glass needs the arithmetic in whichever
+    of the two they are holding. The pair is the same equation scaled, so a
+    genuine discrepancy shows in both -- what differs is the precision each was
+    read at, and one holding in money while being a whole credit out is a
+    statement about the OCR.
+    """
+    by_frame = {reading.frame: reading for reading in readings}
+    outcome = by_frame.get(FRAME_OUTCOME)
+    checks: list[SpinMeterCheck] = []
+    if outcome is not None:
+        checks.append(_win_registered(run, outcome))
+    for unit in (SpinMeterUnit.CREDITS, SpinMeterUnit.CASH):
+        checks.extend(_unit_checks(by_frame, unit))
     return checks
 
 
@@ -1131,16 +1267,28 @@ async def _validate_meter(run: _ActiveRun) -> None:
                     failure = exc.message
                     break
 
-            checks = _meter_checks(run, readings, tolerance)
+            # The units are settled before anything is checked, and in this
+            # order: which side the strip was drawing comes from every frame at
+            # once, the rate that converts to the other side comes from the
+            # paytable read at `prepare` -- before the reels turned, so it is the
+            # denomination this spin actually played at -- and only then can a
+            # reading be expressed in both.
             mode, currency = meter_service.combine(
                 reading.values for reading in readings
             )
+            denomination = None if run.paytable is None else run.paytable.denomination
+            rate = None if denomination is None else denomination.money_per_credit
+            readings = [_in_both_units(reading, mode, rate) for reading in readings]
+
+            checks = _meter_checks(run, readings)
             validation = SpinMeterValidation(
                 mode=mode,
                 currency=currency,
+                denomination=denomination,
                 readings=readings,
                 checks=checks,
                 tolerance=tolerance,
+                credit_tolerance=settings.ANALYZE_SPIN_METER_CREDIT_TOLERANCE,
                 verdict=_verdict_of([check.verdict for check in checks]),
                 error=failure,
             )
@@ -1164,7 +1312,8 @@ async def _validate_meter(run: _ActiveRun) -> None:
             if failure is not None:
                 raise SpinAnalysisUnavailableError(failure)
             step.detail = (
-                f"{len(readings)} frames read in {_units(mode, currency)}, "
+                f"{len(readings)} frames read in "
+                f"{_units(mode, currency, denomination)}, "
                 f"{len(checks)} checks: {validation.verdict.value}"
             )
     except _Cancelled:
@@ -1469,28 +1618,31 @@ def _summarise_awards(awards: list[SpinLineAward]) -> str:
     )
 
 
-def _number(value: str | None) -> float | None:
-    """A denomination as the log wrote it, or ``None`` when it is unusable."""
-    if value is None:
-        return None
-    try:
-        parsed = float(value)
-    except ValueError:
-        return None
-    return parsed if parsed > 0 else None
-
-
 def _expected(
     run: _ActiveRun, view: PaytableView, awards: list[SpinLineAward]
 ) -> SpinExpectedAward:
     """What the paytable says this spin owed, and whether the meter agrees.
 
-    The conversion from paytable credits to money on the glass is spelled out
-    field by field rather than collapsed into one number, because it runs through
-    the denomination and the line count and a wrong verdict is nearly always one
-    of those. It rests on one assumption, stated here and nowhere else: a line
-    combo's value is credits per line at one credit staked on that line. Anything
-    missing makes the verdict ``indeterminate`` rather than a guess.
+    **The award is one multiplication:** the credits the awarded lines came to,
+    times what a credit is worth. A paytable combo's value is the award itself,
+    not a per-line rate to be scaled by the stake -- measured on a captured win
+    the game drew both ways, ``75`` on a credit meter and ``$0.75`` on a cash one
+    against a bet of ``88``/``$0.88`` at 1c. Scaling by the credits staked per
+    line inflated the expectation by that stake and failed correct spins.
+
+    The bet in credits and the stake per line are still reported, because
+    ``bet_credits`` is the one figure that checks the denomination against the
+    cabinet -- 88 there is the ``MinTotalBet`` the game's own paytable declares --
+    but neither is an input to the award. Anything missing makes the verdict
+    ``indeterminate`` rather than a guess.
+
+    Two things about the denomination are load-bearing, and both used to be wrong
+    here. The game's log reports it as a **count of cents**, so what money divides
+    by is ``money_per_credit`` from :mod:`app.utils.denomination` and never the
+    logged value -- dividing by the value gave a bet of 0.88 credits where the
+    cabinet says 88. And the meter is not always drawing money: in credits mode it
+    is already counting the thing the paytable is denominated in, so the win it
+    shows is compared against ``credits`` directly and no rate takes part.
 
     One total rather than a range, because every awarded line names its symbol
     and so resolves to one paytable value. This used to be a span, and the span
@@ -1503,61 +1655,99 @@ def _expected(
     line_count = view.win_geometry.line_count or (
         view.identity.number_of_lines if view.identity is not None else None
     )
-    denomination = _number(view.source.denomination)
+    denomination = view.denomination
+    rate = None if denomination is None else denomination.money_per_credit
 
     meter = run.meter
     readings = {} if meter is None else {r.frame: r for r in meter.readings}
-    total_bet = readings[FRAME_INITIAL].bet if FRAME_INITIAL in readings else None
-    observed = readings[FRAME_OUTCOME].win if FRAME_OUTCOME in readings else None
+    initial = readings.get(FRAME_INITIAL)
+    outcome = readings.get(FRAME_OUTCOME)
+    total_bet = None if initial is None else initial.bet
+    # Credits mode is the case that needs no rate at all: the meter is already
+    # counting the thing the paytable is denominated in.
+    in_credits = meter is not None and meter.mode is MeterMode.CREDITS
 
-    bet_credits = (
-        None if total_bet is None or denomination is None else total_bet / denomination
-    )
+    # Both sides of the comparison in both units, off the readings' own converted
+    # figures rather than divided again here -- one conversion per run, done where
+    # the mode and the rate were settled together.
+    cash = None if rate is None else credits * rate
+    observed_credits = None if outcome is None else outcome.credits.win
+    observed_cash = None if outcome is None else outcome.cash.win
+
+    # The bet in credits. Context rather than a step: it takes no part in pricing
+    # the award below, and is carried because it is the one figure that checks the
+    # denomination against the cabinet -- an 88 here is the `MinTotalBet` the
+    # game's own paytable declares.
+    bet_credits = None if initial is None else initial.credits.bet
     per_line = (
         None if bet_credits is None or not line_count else bet_credits / line_count
     )
-    cash = (
-        None
-        if per_line is None or denomination is None
-        else credits * per_line * denomination
-    )
 
-    tolerance = settings.ANALYZE_SPIN_METER_TOLERANCE
-    if cash is None or observed is None:
+    # Compare in whatever the glass was drawing, since that side was read and the
+    # other is derived from it -- and it is the side whose tolerance means
+    # something. `observed` falls back to the raw reading so a run with no
+    # denomination is still graded in the one unit it does know.
+    unit = SpinMeterUnit.CREDITS if in_credits else SpinMeterUnit.CASH
+    owed = credits if in_credits else cash
+    observed = observed_credits if in_credits else observed_cash
+    if observed is None and outcome is not None:
+        observed = outcome.win
+    tolerance = _tolerance(unit)
+    if owed is None or observed is None:
         # A spin that paid nothing and a meter that shows nothing agree without
         # needing any of the conversion above.
         if not paying and observed is None and run.outcome is SpinOutcome.NO_WIN:
             verdict = SpinVerdict.PASSED
             detail = "No line pays, and the win meter is empty"
+        elif denomination is not None and rate is None:
+            # Reported but not priceable: a different failure from never reported,
+            # and a different fix -- the paytable id has to name its unit.
+            verdict = SpinVerdict.INDETERMINATE
+            detail = (
+                f"The denomination reads {denomination.value:g} but paytable "
+                f"{view.paytable_id} names no unit for it, so credits cannot be "
+                "priced in money"
+            )
         else:
+            # Short list on purpose: pricing the award needs the denomination and
+            # the win, and nothing else. The bet and the line count used to be
+            # inputs, back when the award was scaled by the stake per line.
             verdict = SpinVerdict.INDETERMINATE
             detail = (
                 "Not enough was readable to price the spin: needs the "
-                "denomination, the bet off the meter, the line count and the "
-                "win off the meter"
+                "denomination and the win off the meter"
             )
     else:
         verdict = (
             SpinVerdict.PASSED
-            if _close(cash, observed, tolerance)
+            if _close(owed, observed, tolerance)
             else SpinVerdict.FAILED
         )
+        priced = (
+            "a credit meter is already counting them"
+            if in_credits
+            else f"at {rate:g} a credit on denom "
+            f"{denomination.label if denomination else '?'}"
+        )
         detail = (
-            f"{len(paying)} line(s) pay {credits:g} credits; at {per_line:g} "
-            f"credit(s) per line and denom {denomination:g} that is {cash:.2f}, "
-            f"and the meter shows {observed:.2f}"
+            f"{len(paying)} line(s) pay {credits:g} credits; {priced} that is "
+            f"{owed:.2f} in {unit.value}, and the meter shows {observed:.2f}"
         )
 
     return SpinExpectedAward(
         paying_lines=len(paying),
         credits=round(credits, 4),
         line_count=line_count,
-        denomination=denomination,
+        denomination_label=None if denomination is None else denomination.label,
+        money_per_credit=rate,
         total_bet=total_bet,
         bet_credits=None if bet_credits is None else round(bet_credits, 4),
         credits_per_line=None if per_line is None else round(per_line, 6),
         cash=None if cash is None else round(cash, 4),
+        unit=unit,
         observed_win=observed,
+        observed_credits=observed_credits,
+        observed_cash=observed_cash,
         verdict=verdict,
         detail=detail,
     )

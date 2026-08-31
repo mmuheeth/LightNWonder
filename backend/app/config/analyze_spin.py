@@ -82,6 +82,12 @@ class AnalyzeSpinSettings(BaseSettings):
     # drawn to two decimals, so this only absorbs the OCR of the last one.
     ANALYZE_SPIN_METER_TOLERANCE: float = Field(default=0.005, ge=0)
 
+    # The same, for the relations checked in credits. A credit is a whole number
+    # and a credit figure is usually *converted* from a money one, so this absorbs
+    # that division's rounding and nothing else -- half a credit cannot hide a
+    # real discrepancy, since the smallest real one is a whole credit.
+    ANALYZE_SPIN_METER_CREDIT_TOLERANCE: float = Field(default=0.5, ge=0)
+
     # Recognised log events kept on a run, so a game that logs continuously
     # cannot grow one run's record without bound.
     ANALYZE_SPIN_MAX_EVENTS: int = Field(default=200, ge=1)

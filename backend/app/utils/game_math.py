@@ -165,10 +165,22 @@ class PaytableIdentity:
 
     min_total_bet: int | None
 
+    min_denom_multiplier: int | None
+    """``MinDenomMultiplier``: how many of the base unit one credit is worth on
+    this folder -- 2 on a ``-2c-`` paytable. The only place the *amount* of a
+    denomination is declared rather than logged, so it is what corroborates the
+    value the log reported. See :mod:`app.utils.denomination`, which does the
+    corroborating; nothing here interprets it."""
+
     max_bets: tuple[int, ...]
     """``SpecificMaxBets`` of the first denomination block that declares any."""
 
     denominations: tuple[float, ...]
+    """``DenomConfig``'s own ``Denom`` entries. **Not the denominations the
+    cabinet currently offers, and not guaranteed to contain the current one** --
+    the ``-2c-`` folder lists 1, 5, 10, 50 and 100 while running at 2. Kept
+    because it is what the file says; do not check a live denomination against
+    it."""
 
 
 def load_paytable_identity(path: Path) -> PaytableIdentity:
@@ -201,6 +213,7 @@ def load_paytable_identity(path: Path) -> PaytableIdentity:
         min_game_base_pct=_float(root, "MinGameBasePct"),
         number_of_lines=_int(root, "NumberOfLines"),
         min_total_bet=_int(root, "MinTotalBet"),
+        min_denom_multiplier=_int(root, "MinDenomMultiplier"),
         max_bets=max_bets,
         denominations=tuple(denominations),
     )

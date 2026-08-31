@@ -493,8 +493,43 @@ things it exists to get right:
   absence of both — so a frame whose cells all happened to be whole reads as
   credits on a cash machine. One answer per run because a cabinet does not change
   denomination between the screenshots of one spin; `readings[].values.mode` keeps
-  the per-frame reading. It is not only display: `_expected` divides the meter's
-  bet by the denomination to reach credits, which holds **only on a cash meter**.
+  the per-frame reading.
+- **The third unit is the denomination, and the value is not the rate.**
+  `meter.denomination` comes from the game's log by way of the paytable — *not*
+  off the strip: the games do draw an unlabelled `1c`/`2c` badge at the far right
+  of the meter row, but its unit glyph does not OCR at any band, scale or mode, so
+  `utils/meter.py` still discards it as chrome. **The log reports a count of
+  cents** (`denom[2.000]` on a `-2c-` paytable, corroborated by that folder's
+  `<MinDenomMultiplier>`), so the number that prices an award is
+  `money_per_credit` (0.02) and never the value (2) — the two differ by a factor
+  of a hundred and the wrong one yields a plausible figure rather than an error.
+  `utils/denomination.py` is the only module that interprets one; the unit comes
+  from the paytable id's `-Nc-` suffix and an id that names none leaves
+  `money_per_credit` null and the award verdict `indeterminate` rather than
+  guessing from the supported ladder.
+- **The award is `credits × money_per_credit`, and nothing else.** A paytable
+  combo's value *is* the award in credits, not a per-line rate to be scaled by the
+  stake — one captured win reads `75` on a credit meter and `$0.75` on a cash one
+  at 1c, no per-line factor. `bet_credits`/`credits_per_line` are still reported
+  but are **not inputs**: they exist because `bet_credits` should read back as the
+  cabinet's declared `MinTotalBet`, which is what proves the denomination
+  resolved. So an unreadable bet no longer costs the verdict. On a credit meter
+  no rate takes part at all — the meter is already counting credits, and
+  `observed_win` is compared against `credits` directly (`expected.unit` says
+  which side was compared).
+- **Both units, everywhere on the meter step.** The cabinet draws one and the
+  paytable speaks the other, so `readings[].credits` and `readings[].cash` each
+  carry the same `balance`/`win`/`bet`, and **every amount relation is checked in
+  both** — `bet-deducted-credits` beside `bet-deducted-cash`, with
+  `checks[].unit`, its own tolerance per unit
+  (`ANALYZE_SPIN_METER_CREDIT_TOLERANCE` is 0.5 against the money 0.005), plus an
+  end-to-end `balance-reconciled-<unit>` that the two pairwise relations do not
+  imply. `win-registered` is the only unit-free check. The conversion happens once
+  per run in `_in_both_units`, after `meter.combine()` settles which side was read
+  and the paytable supplies the rate — a unit with no figures contributes **no
+  checks** rather than indeterminate ones, and an `unknown` mode fills neither
+  side, because without knowing which unit was read there is nothing to convert
+  from.
 - **The three readings at the end cannot fail each other**, and each catches its
   own exceptions so the run reaches all of them. A validation that runs and
   reports `failed` is a *completed* step; only one that could not run at all

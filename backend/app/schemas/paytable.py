@@ -348,8 +348,79 @@ class PaytableIdentityInfo(BaseModel):
         description="Lines the cabinet plays: what selects the payline set.",
     )
     min_total_bet: int | None = None
+    min_denom_multiplier: int | None = Field(
+        default=None,
+        description=(
+            "How many of the base unit one credit is worth on this folder -- 2 on "
+            "a '-2c-' paytable. The only *declared* statement of a denomination's "
+            "amount, so it is what corroborates the logged one."
+        ),
+    )
     max_bets: list[int] = Field(default_factory=list)
-    denominations: list[float] = Field(default_factory=list)
+    denominations: list[float] = Field(
+        default_factory=list,
+        description=(
+            "This folder's own DenomConfig entries. Not the denominations the "
+            "cabinet currently offers, and not guaranteed to contain the current "
+            "one -- the '-2c-' folder lists 1, 5, 10, 50, 100 while running at 2. "
+            "Do not check a live denomination against it."
+        ),
+    )
+
+
+class DenominationInfo(BaseModel):
+    """The denomination the cabinet is running, interpreted.
+
+    Three fields on this response name a denomination and they are not
+    interchangeable: ``source.denomination`` is the raw string the game's log
+    wrote, ``identity.denominations`` is the loaded folder's own ``DenomConfig``
+    list (which does *not* contain the current one), and this is the
+    interpretation of the first. Anything doing arithmetic wants
+    ``money_per_credit`` from here and nothing else.
+    """
+
+    value: float = Field(
+        description=(
+            "The number the log reported, in `unit` -- 2.0 for a 2c game. Not a "
+            "rate: a bet divided by this is wrong by a factor of a hundred."
+        )
+    )
+    unit: str = Field(
+        description="'cent' or 'unknown', taken from the paytable id's suffix."
+    )
+    label: str = Field(
+        description=(
+            "The denomination as an operator says it, e.g. '2c'. Carries no "
+            "currency: which currency those cents are in is a property of the "
+            "meter and is read off the glass."
+        )
+    )
+    money_per_credit: float | None = Field(
+        default=None,
+        description=(
+            "One credit in money -- 0.02 for a 2c game. The only field to "
+            "multiply or divide by. Null when the paytable id named no unit, "
+            "which is a refusal to guess rather than a missing value: the "
+            "cabinet's supported ladder looks like proof of cents, but a machine "
+            "denominated in whole currency units prints the same shape."
+        ),
+    )
+    declared_multiplier: int | None = Field(
+        default=None,
+        description="gameConfig.cfg's MinDenomMultiplier, the evidence behind `agrees`.",
+    )
+    agrees: bool | None = Field(
+        default=None,
+        description=(
+            "Whether every source that named an amount named the same one. Null "
+            "when there was nothing to check against. False changes no number "
+            "here -- the logged value is the current one, the others are "
+            "properties of a folder -- but it means a reading somewhere is stale."
+        ),
+    )
+    resolved_from: str = Field(
+        description="'paytable-id' when the unit was resolved, else 'unresolved'."
+    )
 
 
 class PaytableView(BaseModel):
@@ -365,6 +436,14 @@ class PaytableView(BaseModel):
     )
     identity: PaytableIdentityInfo | None = Field(
         default=None, description="Null when the folder ships no gameConfig.cfg."
+    )
+    denomination: DenominationInfo | None = Field(
+        default=None,
+        description=(
+            "The denomination in play, interpreted from the logged value and the "
+            "paytable id. Null when no value was reported -- a requested id, or a "
+            "log that never named one."
+        ),
     )
     math: GameMathInfo
     win_geometry: WinGeometryInfo

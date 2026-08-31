@@ -243,13 +243,19 @@ load-bearing:
   nearly always one misread digit, and at a third of the width a 3 read as an 8
   is not something a reader can see. The relations between the frames are still
   computed and still on the payload as `checks` (and `verdict` summarises them),
-  but they are not a table worth scrolling past on the way to the award. What the
-  header does carry beside the verdict is **the units** -- `Cash $` or `Credits`,
-  from `meter.mode`/`meter.currency` -- because every figure below it is otherwise
-  ambiguous, and they decide the format too (money takes two decimals, a credit
-  count is whole). Once for the card rather than per figure and per frame: the
-  units are a property of the machine, and the backend already resolved one answer
-  across every frame it read.
+  but they are not a table worth scrolling past on the way to the award. Each
+  figure does carry **its counterpart in the other unit**, greyed beside it: one
+  number said twice, because an award is priced in credits while the glass may be
+  drawing money, and the pair sitting together is what makes them comparable
+  without arithmetic in the reader's head. What the
+  header carries beside the verdict is **the units** -- `Cash $ · 2c`, from
+  `meter.mode`/`meter.currency`/`meter.denomination` -- because every figure below
+  it is otherwise ambiguous, and they decide the format too (money takes two
+  decimals, a credit count is whole). Once for the card rather than per figure and
+  per frame: the units are a property of the machine, and the backend already
+  resolved one answer across every frame it read. The denomination is the odd one
+  of the three -- it is what *converts* between the two units the mode picks
+  between, and it comes from the game's log rather than off the strip.
 - `reel-reading-card` -- **what landed**, from `run.reels`: the codes the image
   classifier read off the result screenshot, as two matrices (codes and display
   names), and every tile that came back *unnamed* with the candidate it leaned
@@ -261,9 +267,42 @@ load-bearing:
   credits**, taken off `expected` rather than summed here so the figure on the
   card and the one the verdict was reached with cannot differ.
 - `award-comparison-card` -- the only card that is a *check* rather than a
-  reading: those credits, converted through the credits per line and the
-  denomination, against the WIN cell. Each step of the conversion is a row,
-  because a wrong verdict is nearly always one of them rather than the pay.
+  reading: those credits, times what a credit is worth, against the WIN cell.
+  **Two rows, because the award is one multiplication** -- a paytable value is the
+  award, not a per-line rate to be scaled by the stake. Still a ladder rather than
+  one figure, because a wrong verdict is nearly always one of the two inputs
+  rather than the pay. The rate row shows **`money_per_credit`, not the
+  denomination** -- the log reports a 2c cabinet as `2` and a credit is worth
+  `0.02`, so showing the value is what once made the ladder fail to reach its own
+  total. The label rides in the hint, where a reader recognises it and no
+  arithmetic can pick it up. **On a credit meter that row is not rendered at all**
+  -- the glass is already counting what the paytable is denominated in, so there is
+  no conversion, and a `× 0.02` over a total that did not use it is the same
+  ladder-does-not-add-up problem in the other direction. Every row above the total
+  is a step that actually happened.
+
+  Under the ladder it carries **the spin as a table, in both units, always both**:
+  before the spin, bet value, won, after the spin -- then the paytable's own claim
+  and the WIN cell under a rule, because that is where a reading becomes a check.
+  A table rather than two lists because the comparison a reader makes is *across*
+  the units as often as down them, and one row holding both is what makes a credit
+  award checkable against a cash meter at a glance. The column heading marks which
+  side was **read**: the other is converted through the denomination and so cannot
+  disagree with it. "After the spin" is the collected frame when there is one and
+  the result frame when there is not -- take-win is skipped on a losing spin, and
+  there the result screenshot already *is* the end of it.
+
+  There is deliberately **no difference row**. The verdict badge is the answer and
+  the two figures it compared are adjacent rows, so a signed delta was a third way
+  of saying the same thing; the tolerance behind the badge is *not* self-evident
+  from the pair, so that says itself in the caption. The stake per line is not
+  shown at all either; it is still on the payload as `credits_per_line`.
+
+  It takes the whole `meter` block rather than just a tolerance, because the table
+  is built off `meter.readings` and the tolerance to quote depends on which unit
+  the verdict was reached in. `award-comparison-card.test.jsx` pins the invariants:
+  no conversion row when nothing is converted, both units accounted for with one
+  marked as read, no difference row, and the collected-frame fallback.
 
 The reading sits **above** the paylines because the paylines are read from it.
 The confidence floor is set above where the classifier's classes separate, so a

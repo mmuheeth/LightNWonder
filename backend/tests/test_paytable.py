@@ -15,6 +15,7 @@ be able to tell you which.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +150,7 @@ IDENTITY_CFG = """<?xml version="1.0" encoding="utf-8"?>
   <GamePct>88.01</GamePct>
   <NumberOfLines>{lines}</NumberOfLines>
   <MinTotalBet>88</MinTotalBet>
+  <MinDenomMultiplier> {multiplier} </MinDenomMultiplier>
   <DenomConfig>
     <Denom>1</Denom>
     <SpecificMaxBets>88 176 880</SpecificMaxBets>
@@ -214,9 +216,24 @@ def write_paytable(
     )
     if lines is not None:
         (directory / "gameConfig.cfg").write_text(
-            IDENTITY_CFG.format(game_id=paytable_id, lines=lines), encoding="utf-8-sig"
+            IDENTITY_CFG.format(
+                game_id=paytable_id,
+                lines=lines,
+                multiplier=_declared_multiplier(paytable_id),
+            ),
+            encoding="utf-8-sig",
         )
     return directory
+
+
+def _declared_multiplier(paytable_id: str) -> int:
+    """The amount out of the folder's own name, which is what the real
+    ``MinDenomMultiplier`` was measured to equal on every shipped folder. Derived
+    rather than passed so a fixture folder cannot declare a multiplier its own
+    name contradicts -- that disagreement is a real state and it has its own
+    test."""
+    match = re.search(r"-(\d+)c(?=-|$)", paytable_id)
+    return int(match.group(1)) if match else 1
 
 
 @pytest.fixture
@@ -305,6 +322,75 @@ async def test_the_log_line_also_says_which_denominations_are_available(
 
     assert source["denomination"] == "1.000"
     assert source["supported_denominations"] == ["1.000", "2.000"]
+
+
+async def test_the_denomination_is_interpreted_into_a_rate(
+    client: AsyncClient, active_game
+) -> None:
+    """The logged value is a count of cents, so the number that prices an award
+    is the value over a hundred. Reading the value itself as the rate is wrong by
+    a factor of a hundred while still looking like a plausible figure, which is
+    the whole reason this block exists beside ``source.denomination``."""
+    active_game()
+
+    denomination = assert_success((await client.get(f"{API}/")).json())["denomination"]
+
+    assert denomination["value"] == 1.0
+    assert denomination["money_per_credit"] == pytest.approx(0.01)
+    assert denomination["unit"] == "cent"
+    assert denomination["label"] == "1c"
+    assert denomination["resolved_from"] == "paytable-id"
+    # The folder's own gameConfig.cfg says 1 as well, so nothing is stale.
+    assert denomination["declared_multiplier"] == 1
+    assert denomination["agrees"] is True
+
+
+async def test_a_hundred_cent_paytable_prices_a_credit_at_one_unit(
+    client: AsyncClient, active_game, tmp_path: Path
+) -> None:
+    """Two- and three-digit amounts are where a suffix parser goes wrong: the
+    ``-100c-`` folder must price a credit at 1.00, not 0.10 or 0.01."""
+    active_game()
+    log = tmp_path / "FortuneOx_Client.log"
+    log.write_text(log_line(OTHER, denom="100.000"), encoding="utf-8")
+
+    denomination = assert_success((await client.get(f"{API}/")).json())["denomination"]
+
+    assert denomination["value"] == 100.0
+    assert denomination["money_per_credit"] == pytest.approx(1.00)
+    assert denomination["label"] == "100c"
+    assert denomination["agrees"] is True
+
+
+async def test_a_logged_value_the_folder_contradicts_is_reported_not_corrected(
+    client: AsyncClient, active_game, tmp_path: Path
+) -> None:
+    """The logged value is the *current* denomination; the folder's declared
+    multiplier is a property of the folder. So a mismatch means one reading is
+    stale and it is worth saying -- but the rate still follows the log."""
+    active_game()
+    log = tmp_path / "FortuneOx_Client.log"
+    log.write_text(log_line(OTHER, denom="1.000"), encoding="utf-8")
+
+    denomination = assert_success((await client.get(f"{API}/")).json())["denomination"]
+
+    assert denomination["declared_multiplier"] == 100
+    assert denomination["agrees"] is False
+    assert denomination["money_per_credit"] == pytest.approx(0.01)
+
+
+async def test_a_requested_id_has_no_denomination_to_interpret(
+    client: AsyncClient, active_game
+) -> None:
+    """Nothing reported the value, so there is no denomination -- as distinct from
+    one that was reported and could not be priced."""
+    active_game()
+
+    data = assert_success((await client.get(f"{API}/?paytable_id={OTHER}")).json())
+
+    assert data["source"]["origin"] == "requested"
+    assert data["denomination"] is None
+    assert data["identity"]["min_denom_multiplier"] == 100
 
 
 async def test_the_answer_says_it_came_from_the_log(

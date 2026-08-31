@@ -36,7 +36,7 @@ function percent(value) {
  * do, keyboard and screen reader included.
  */
 export function PaytableSummary({ data, selected, onSelect, onRefresh, isFetching }) {
-  const { source, identity, math } = data;
+  const { source, identity, math, denomination } = data;
   const loggedAt = formatLoggedAt(source.logged_at);
   const supported = source.supported_denominations ?? [];
 
@@ -82,10 +82,43 @@ export function PaytableSummary({ data, selected, onSelect, onRefresh, isFetchin
           </StatRow>
           <StatRow label="Lines">{identity?.number_of_lines ?? "—"}</StatRow>
           {/* The denomination is what selects the paytable on this cabinet, so
-              the one in play and the ones it could move to belong together. */}
+              the one in play and the ones it could move to belong together.
+              Shown interpreted rather than raw: the log writes `1.000` for a 1c
+              cabinet — a count of cents — and read as money that is a thousand
+              times the truth. The rate beside it is the number everything
+              downstream actually multiplies by. */}
           <StatRow label="Current denom">
-            {source.denomination ?? <span className="text-muted-foreground">—</span>}
+            {denomination ? (
+              <span className="font-mono">
+                {denomination.label}
+                {denomination.money_per_credit !== null ? (
+                  <span className="text-muted-foreground ml-2 text-xs">
+                    {denomination.money_per_credit} per credit
+                  </span>
+                ) : (
+                  <span
+                    className="text-destructive ml-2 text-xs"
+                    title={`Paytable ${data.paytable_id} names no unit for its denomination, so credits cannot be priced in money. The id is expected to end in an amount and a unit letter, as in '-2c-'.`}
+                  >
+                    unit unresolved
+                  </span>
+                )}
+              </span>
+            ) : (
+              (source.denomination ?? <span className="text-muted-foreground">—</span>)
+            )}
           </StatRow>
+          {denomination?.agrees === false ? (
+            <StatRow label="">
+              <span
+                className="text-destructive text-xs"
+                title="The value comes from the log and the multiplier from the paytable folder's own gameConfig.cfg. The logged one wins, because it is the current one — but the two disagreeing means a reading somewhere is stale."
+              >
+                Log says {denomination.value}, paytable declares{" "}
+                {denomination.declared_multiplier}
+              </span>
+            </StatRow>
+          ) : null}
           <StatRow label="Min total bet">{identity?.min_total_bet ?? "—"}</StatRow>
           <StatRow label="Max bets">
             {identity?.max_bets?.length ? identity.max_bets.join(", ") : "—"}

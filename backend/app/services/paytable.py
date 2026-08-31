@@ -49,6 +49,7 @@ from app.exceptions.base import (
     PaytableUnavailableError,
 )
 from app.schemas.paytable import (
+    DenominationInfo,
     GameMathInfo,
     MathDefaultsInfo,
     PaylineComboInfo,
@@ -65,7 +66,7 @@ from app.schemas.paytable import (
     SymbolInfo,
     WinGeometryInfo,
 )
-from app.utils import game_log
+from app.utils import denomination, game_log
 from app.utils.game_math import (
     GameMath,
     GameMathError,
@@ -596,6 +597,7 @@ def _identity_info(identity: PaytableIdentity | None) -> PaytableIdentityInfo | 
         min_game_base_pct=identity.min_game_base_pct,
         number_of_lines=identity.number_of_lines,
         min_total_bet=identity.min_total_bet,
+        min_denom_multiplier=identity.min_denom_multiplier,
         max_bets=list(identity.max_bets),
         denominations=list(identity.denominations),
     )
@@ -643,6 +645,53 @@ def _math_info(math: GameMath, config: GameConfig) -> GameMathInfo:
     )
 
 
+def _denomination(
+    source: PaytableSource, paytable_id: str, identity: PaytableIdentity | None
+) -> DenominationInfo | None:
+    """Interpret the denomination the log reported: its unit, and the rate that
+    turns credits into money.
+
+    This is the third of the three-way join's outputs, and it needs all three
+    legs -- the log for the value, the folder name for the unit, the folder's own
+    ``gameConfig.cfg`` for the corroboration -- which is why it is assembled here
+    rather than in :func:`_from_log`. ``PaytableSource`` stays a record of *how
+    the id was arrived at*, a different question.
+    """
+    resolved = denomination.parse(
+        source.denomination,
+        paytable_id=paytable_id,
+        declared_multiplier=None if identity is None else identity.min_denom_multiplier,
+    )
+    if resolved is None:
+        return None
+    if resolved.money_per_credit is None:
+        # Loud, because the cost is silent: every award verdict downstream goes
+        # `indeterminate` and the only other sign is one sentence on a payload.
+        logger.warning(
+            "Paytable %s names no denomination unit, so credits cannot be priced "
+            "in money. The id is expected to end in an amount and a unit letter, "
+            "as in '-2c-'.",
+            paytable_id,
+        )
+    elif resolved.agrees is False:
+        logger.warning(
+            "Denomination %s from the log disagrees with paytable %s (declared "
+            "multiplier %s) -- one of the two readings is stale",
+            resolved.value,
+            paytable_id,
+            resolved.declared_multiplier,
+        )
+    return DenominationInfo(
+        value=resolved.value,
+        unit=resolved.unit,
+        label=resolved.label,
+        money_per_credit=resolved.money_per_credit,
+        declared_multiplier=resolved.declared_multiplier,
+        agrees=resolved.agrees,
+        resolved_from=resolved.resolved_from,
+    )
+
+
 def _view(paytable_id: str | None) -> PaytableView:
     """Blocking half of :func:`view`: file reads and XML parsing."""
     game, config = _active_config()
@@ -652,6 +701,7 @@ def _view(paytable_id: str | None) -> PaytableView:
 
     math = _load_math(directory)
     identity = _load_identity(directory)
+    denomination = _denomination(source, resolved_id, identity)
 
     logger.info("Read paytable %s for %s (%s)", resolved_id, game, source.origin)
 
@@ -663,6 +713,7 @@ def _view(paytable_id: str | None) -> PaytableView:
         source=source,
         available=available,
         identity=_identity_info(identity),
+        denomination=denomination,
         math=_math_info(math, config),
         win_geometry=_win_geometry(_geometry_path(config, root), math, identity),
     )

@@ -46,8 +46,18 @@ function paytable(overrides = {}) {
       min_game_base_pct: 82.9,
       number_of_lines: 40,
       min_total_bet: 88,
+      min_denom_multiplier: 1,
       max_bets: [88, 880],
       denominations: [1, 5],
+    },
+    denomination: {
+      value: 1,
+      unit: "cent",
+      label: "1c",
+      money_per_credit: 0.01,
+      declared_multiplier: 1,
+      agrees: true,
+      resolved_from: "paytable-id",
     },
     math: {
       path: "C:\\re\\math.xml",
@@ -309,6 +319,11 @@ describe("GameConfigPage", () => {
     // supported set is the maths this session can reach without a restart.
     expect(await screen.findByText("Current denom")).toBeInTheDocument();
     expect(screen.getByText("1.000, 5.000, 100.000")).toBeInTheDocument();
+
+    // Interpreted, not raw: the log writes `1.000` for a 1c cabinet -- a count
+    // of cents -- and the rate beside it is what prices an award in money.
+    expect(screen.getByText("1c")).toBeInTheDocument();
+    expect(screen.getByText("0.01 per credit")).toBeInTheDocument();
   });
 
   it("names the symbol codes wherever they appear", async () => {
