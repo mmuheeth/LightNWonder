@@ -30,7 +30,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from app.schemas.meter import MeterValues
+from app.schemas.meter import MeterMode, MeterValues
 from app.schemas.paylines import PaylineStats, PaylineStep
 
 __all__ = [
@@ -251,8 +251,36 @@ class SpinMeterCheck(BaseModel):
 
 
 class SpinMeterValidation(BaseModel):
-    """Every frame's meter, and what the differences between them prove."""
+    """Every frame's meter, and what the differences between them prove.
 
+    ``mode`` and ``currency`` come first because they are the units every number
+    below is in: the same ``1250`` is 1250 credits or 1250 of some currency, and
+    which one it is changes what the balance, the win and the bet *mean*. One
+    answer for the run rather than one per frame, since a machine does not change
+    denomination mid-spin -- the per-frame reading is still on
+    ``readings[].values`` for a run where the frames disagreed.
+    """
+
+    mode: MeterMode = Field(
+        default=MeterMode.UNKNOWN,
+        description=(
+            "Whether the meter was counting money or credits, across every frame "
+            "read. 'cash' wins a disagreement: money is read *positively* (a "
+            "currency symbol, or an amount with a fractional part) while credits "
+            "is inferred from the absence of both, so one frame whose digits "
+            "happened to be whole and whose symbol did not OCR is not evidence "
+            "of a credit meter. 'unknown' means nothing was readable."
+        ),
+    )
+    currency: str | None = Field(
+        default=None,
+        description=(
+            "The symbol drawn on the values in cash mode, e.g. '$'. '?' means "
+            "money was read but no symbol Tesseract will name -- the yen glyph "
+            "these games draw reads as nothing at every mode and scale. Null in "
+            "credits mode and when nothing was read."
+        ),
+    )
     readings: list[SpinMeterReading] = Field(
         default_factory=list,
         description="One per screenshot, in the order they were taken.",

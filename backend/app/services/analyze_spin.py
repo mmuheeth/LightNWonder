@@ -69,6 +69,17 @@ paid and reports no run is a floor question first, which is why
 ``unnamed_positions`` travels on the validation. There is deliberately no
 fallback to similarity: a run measured one way and priced as if measured the
 other is worse than a run reported short.
+
+**The meter half reports its units, and one answer for the run rather than one
+per frame.** Whether the glass was counting money or credits -- and in cash mode
+which currency -- is :func:`app.services.meter.combine` over every frame's own
+classification, because a cabinet does not change denomination between the
+screenshots of one spin and because the two modes are not symmetric evidence:
+money is read positively (a symbol, or a fractional amount) and credits is the
+absence of both, so a frame whose cells all happened to be whole reads as credits
+on a cash machine. It matters beyond display -- :func:`_expected` divides the
+meter's bet by the denomination to reach credits, which is arithmetic that only
+holds on a cash meter -- so ``meter.mode`` is where a reader checks that first.
 """
 
 from __future__ import annotations
@@ -114,6 +125,7 @@ from app.schemas.analyze_spin import (
 )
 from app.schemas.grid import GridSplitRequest
 from app.schemas.image_classifier import ClassifyRequest, ClassifyResult
+from app.schemas.meter import MeterMode
 from app.schemas.obs import ScreenshotRequest
 from app.schemas.paylines import PaylineCheckResult
 from app.schemas.paytable import PaylineComboInfo, PaytableView
@@ -122,6 +134,7 @@ from app.services import game_input as game_input_service
 from app.services import grid as grid_service
 from app.services import ideck as ideck_service
 from app.services import image_classifier as classifier_service
+from app.services import meter as meter_service
 from app.services import obs as obs_service
 from app.services import paylines as paylines_service
 from app.services import paytable as paytable_service
@@ -899,6 +912,17 @@ def _balance(reading_cash: float | None, reading_credits: float | None) -> float
     return reading_cash if reading_cash is not None else reading_credits
 
 
+def _units(mode: MeterMode, currency: str | None) -> str:
+    """What the step's own one-line detail calls the numbers it read. The units
+    belong on the step because every figure under it is ambiguous without them --
+    ``1250`` is a credit count or an amount of money, and only this says which."""
+    if mode is not MeterMode.CASH:
+        return mode.value
+    if currency is None or currency == meter_service.UNNAMED_SYMBOL:
+        return "cash (currency symbol unreadable)"
+    return f"cash ({currency})"
+
+
 async def _read_meter(frame: SpinFrame) -> SpinMeterReading:
     """Read the meter off one frame. Never raises for a bad *reading* -- ROI
     carries that as ``meter.error`` -- only for a frame or region it cannot
@@ -1108,7 +1132,12 @@ async def _validate_meter(run: _ActiveRun) -> None:
                     break
 
             checks = _meter_checks(run, readings, tolerance)
+            mode, currency = meter_service.combine(
+                reading.values for reading in readings
+            )
             validation = SpinMeterValidation(
+                mode=mode,
+                currency=currency,
                 readings=readings,
                 checks=checks,
                 tolerance=tolerance,
@@ -1135,8 +1164,8 @@ async def _validate_meter(run: _ActiveRun) -> None:
             if failure is not None:
                 raise SpinAnalysisUnavailableError(failure)
             step.detail = (
-                f"{len(readings)} frames read, {len(checks)} checks: "
-                f"{validation.verdict.value}"
+                f"{len(readings)} frames read in {_units(mode, currency)}, "
+                f"{len(checks)} checks: {validation.verdict.value}"
             )
     except _Cancelled:
         raise

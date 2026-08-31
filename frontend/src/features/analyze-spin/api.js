@@ -118,7 +118,8 @@ export function cancelSpin() {
  * @property {Array<{event: string, summary: string, at: string|null,
  *   log_line: string}>} events
  * @property {{output_path: string|null, duration_ms: number}|null} recording
- * @property {{readings: Array<{frame: string, label: string, file_name: string,
+ * @property {{mode: "cash"|"credits"|"unknown", currency: string|null,
+ *   readings: Array<{frame: string, label: string, file_name: string,
  *     balance: number|null, win: number|null, bet: number|null,
  *     values: object|null, error: string|null, crop_image: string|null}>,
  *   checks: Array<{key: string, label: string,

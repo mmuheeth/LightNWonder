@@ -10,8 +10,69 @@ import {
 } from "@/components/ui/card";
 import { VerdictBadge } from "@/features/analyze-spin/verdict-badge";
 
-function amount(value) {
-  return typeof value === "number" ? value.toFixed(2) : "—";
+/** Money read with no symbol Tesseract would name — see `Units` below. */
+const UNNAMED_SYMBOL = "?";
+
+/**
+ * `1250.4` is money and reads as `1,250.40`; `49531` is a credit count and reads
+ * as `49,531`. Neither wants the other's format, which is the whole reason the
+ * mode is on the payload.
+ */
+function amount(value, money) {
+  if (typeof value !== "number") return "—";
+  return money
+    ? value.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+    : value.toLocaleString();
+}
+
+/**
+ * What the numbers below are *in*, stated once for the whole card.
+ *
+ * Once rather than per figure, and per card rather than per frame: the units are
+ * a property of the machine, not of a screenshot, so the backend resolves one
+ * answer across every frame it read (`meter.mode`) and the per-frame reading
+ * stays on `readings[].values` for a run where they disagreed. Prefixing nine
+ * figures with a symbol would say it eight times over.
+ *
+ * It sits beside the verdict because it qualifies the verdict: the arithmetic
+ * under it — the bet leaving the balance, the win joining it — is checked in
+ * whatever units the glass was drawing, and a reader comparing a balance against
+ * the game needs to know which.
+ */
+function Units({ mode, currency }) {
+  if (mode !== "cash" && mode !== "credits") {
+    return (
+      <span
+        className="text-muted-foreground text-[0.65rem] tracking-wide uppercase"
+        title="Nothing was readable, so there is nothing to judge the units by"
+      >
+        Units unknown
+      </span>
+    );
+  }
+  const cash = mode === "cash";
+  return (
+    <span className="text-muted-foreground text-[0.65rem] tracking-wide uppercase">
+      {cash ? "Cash" : "Credits"}
+      {cash ? (
+        <span className="text-foreground ml-1.5 font-mono normal-case">
+          {currency === UNNAMED_SYMBOL || !currency ? (
+            <span
+              className="text-muted-foreground text-[0.65rem] uppercase"
+              title="A symbol is drawn here that Tesseract will not name — the yen glyph reads as nothing at every mode and scale"
+            >
+              symbol unreadable
+            </span>
+          ) : (
+            currency
+          )}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 /**
@@ -22,7 +83,7 @@ function amount(value) {
  * width a misread 8 for a 3 is not something a reader can see. The numbers sit on
  * one line above it so the whole reading is still one glance.
  */
-function Reading({ reading, crop }) {
+function Reading({ reading, crop, money }) {
   return (
     <div className="border-border/60 bg-muted/20 space-y-2 rounded-lg border p-3">
       <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1">
@@ -40,7 +101,7 @@ function Reading({ reading, crop }) {
                 {label}
               </dt>
               <dd className="font-mono text-sm font-medium tabular-nums">
-                {amount(value)}
+                {amount(value, money)}
               </dd>
             </div>
           ))}
@@ -79,6 +140,10 @@ function Reading({ reading, crop }) {
  * actually wants is the WIN cell against what the paytable owed, and that has its
  * own card at the foot of the page.
  *
+ * What the header does carry beside that verdict is the units — cash and its
+ * currency, or credits — because every figure below is ambiguous without them.
+ *
+
  * Crops come from the report rather than the progress stream, so they appear a
  * moment after the numbers do.
  */
@@ -97,7 +162,8 @@ export function MeterValidationCard({ meter, detailed }) {
         <CardDescription>
           Read off every screenshot the spin took, in the order it took them
         </CardDescription>
-        <CardAction>
+        <CardAction className="flex items-center gap-3">
+          <Units mode={meter.mode} currency={meter.currency} />
           <VerdictBadge verdict={meter.verdict} />
         </CardAction>
       </CardHeader>
@@ -112,6 +178,9 @@ export function MeterValidationCard({ meter, detailed }) {
             key={reading.frame}
             reading={reading}
             crop={crops.get(reading.frame) ?? null}
+            // Credits are whole; only money wants the two decimals. An unknown
+            // mode means nothing read, so the format never shows.
+            money={meter.mode !== "credits"}
           />
         ))}
       </CardContent>

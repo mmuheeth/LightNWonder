@@ -4,12 +4,16 @@ No endpoint of its own — ROI calls :func:`read` while it holds the crop, so on
 extraction serves both. Never raises: failures come back as ``MeterValues.error``.
 A declared ``meter.band`` wins over fitting one from the frame; fitted bands are
 cached per (game, width, height).
+
+:func:`combine` is the other public door, for a caller reading the same meter off
+several frames -- Analyze Spin reads one strip per screenshot -- and folds their
+modes and currencies into the one answer the machine actually had.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -28,6 +32,11 @@ from app.schemas.meter import (
 from app.utils import meter, ocr
 
 logger = get_logger("meter")
+
+# Reported as the currency when money was read but its symbol was not. The yen
+# glyph these games draw reads as nothing at every mode and scale, so "there is a
+# symbol here and it is not legible" is a different fact from "there is none".
+UNNAMED_SYMBOL = "?"
 
 # Fitted row bands, keyed by (game, strip width, strip height). Cleared by reset().
 _bands: dict[tuple[str, int, int], meter.Band] = {}
@@ -66,10 +75,38 @@ def _classify(fields: dict[str, meter.MeterField]) -> tuple[MeterMode, str | Non
         return MeterMode.CREDITS, None
     if symbols:
         return MeterMode.CASH, sorted(symbols)[0]
-    # Money without a symbol the engine would name. The yen glyph these games draw
-    # reads as nothing at every mode and scale, so "there is one and it is not
-    # legible" is reported rather than "there is none".
-    return MeterMode.CASH, "?"
+    # Money without a symbol the engine would name -- see :data:`UNNAMED_SYMBOL`.
+    return MeterMode.CASH, UNNAMED_SYMBOL
+
+
+def combine(readings: Iterable[MeterValues | None]) -> tuple[MeterMode, str | None]:
+    """One mode and currency for several readings of the *same* meter -- the
+    frames of one spin, say.
+
+    Not a vote, and deliberately not: the two modes are not symmetric evidence.
+    Cash is read positively (a currency symbol, or an amount with a fractional
+    part) while credits is what :func:`_classify` concludes from the absence of
+    both, so a frame whose three cells all happened to be whole numbers and whose
+    symbol did not OCR reads as credits on a cash machine. One frame that saw
+    money therefore settles it, and only frames that all saw none mean credits.
+
+    The currency is the first symbol the engine actually named, so a frame that
+    read ``$`` outranks one that only knew a symbol was there.
+    """
+    read = [values for values in readings if values is not None]
+    modes = [values.mode for values in read]
+    named = sorted(
+        {
+            values.currency
+            for values in read
+            if values.currency and values.currency != UNNAMED_SYMBOL
+        }
+    )
+    if MeterMode.CASH in modes:
+        return MeterMode.CASH, named[0] if named else UNNAMED_SYMBOL
+    if MeterMode.CREDITS in modes:
+        return MeterMode.CREDITS, None
+    return MeterMode.UNKNOWN, None
 
 
 def _as_field(reading: meter.MeterField) -> MeterField:

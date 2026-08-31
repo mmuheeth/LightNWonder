@@ -31,7 +31,7 @@ from PIL import Image, ImageDraw
 from app.config.game_config import GameConfigError, load_game_config
 from app.config.ocr import EXECUTABLE_NAME, discover_executable
 from app.core.config import settings
-from app.schemas.meter import MeterMode
+from app.schemas.meter import MeterMode, MeterValues
 from app.services import meter as meter_service
 from app.services import roi as roi_service
 from app.utils import image_roi, meter, ocr
@@ -455,6 +455,64 @@ def test_an_amount_with_an_unreadable_symbol_reports_the_currency_as_unknown(
     values = meter_service.read(image, game="Fake")
     assert values.mode is MeterMode.CASH
     assert values.currency == "?"
+
+
+# --- one mode for several frames of the same meter --------------------------
+
+
+def reading(mode: MeterMode, currency: str | None = None) -> MeterValues:
+    """One frame's reading, carrying only what ``combine`` looks at."""
+    return MeterValues(mode=mode, currency=currency)
+
+
+def test_one_frame_that_saw_money_settles_the_mode_for_all_of_them() -> None:
+    """Cash and credits are not symmetric evidence: money is read *positively*
+    (a symbol, or a fractional amount) and credits is what is concluded from the
+    absence of both. So a frame whose three cells all happened to be whole
+    numbers reads as credits on a cash machine, and a vote would let it win."""
+    mode, currency = meter_service.combine(
+        [
+            reading(MeterMode.CREDITS),
+            reading(MeterMode.CASH, "$"),
+            reading(MeterMode.CREDITS),
+        ]
+    )
+
+    assert mode is MeterMode.CASH
+    assert currency == "$"
+
+
+def test_a_named_symbol_outranks_one_the_engine_could_not_name() -> None:
+    mode, currency = meter_service.combine(
+        [reading(MeterMode.CASH, "?"), reading(MeterMode.CASH, "$")]
+    )
+
+    assert mode is MeterMode.CASH
+    assert currency == "$"
+
+
+def test_money_no_frame_could_name_a_symbol_for_stays_unnamed_not_absent() -> None:
+    mode, currency = meter_service.combine([reading(MeterMode.CASH, "?")])
+
+    assert mode is MeterMode.CASH
+    assert currency == meter_service.UNNAMED_SYMBOL
+
+
+def test_credits_needs_every_frame_to_have_seen_no_money() -> None:
+    mode, currency = meter_service.combine(
+        [reading(MeterMode.CREDITS), reading(MeterMode.UNKNOWN)]
+    )
+
+    assert mode is MeterMode.CREDITS
+    assert currency is None
+
+
+def test_nothing_readable_leaves_the_units_unknown_rather_than_guessed() -> None:
+    assert meter_service.combine([]) == (MeterMode.UNKNOWN, None)
+    assert meter_service.combine([None, reading(MeterMode.UNKNOWN)]) == (
+        MeterMode.UNKNOWN,
+        None,
+    )
 
 
 def test_the_fitted_band_is_cached_per_game_and_size(

@@ -485,6 +485,16 @@ things it exists to get right:
   probed with `roi.is_blank` and retried. A frame that stays blank sets
   `blank` on itself and fails its step *without raising* — see the
   error-without-raising convention on `_step`.
+- **The meter reports its units, once for the run.** `meter.mode`
+  (`cash`/`credits`/`unknown`) and `meter.currency` come from
+  `services/meter.combine()` over every frame's own classification, not from a
+  vote: **cash wins a disagreement**, because money is read positively (a symbol,
+  or a fractional amount) and credits is what `_classify` concludes from the
+  absence of both — so a frame whose cells all happened to be whole reads as
+  credits on a cash machine. One answer per run because a cabinet does not change
+  denomination between the screenshots of one spin; `readings[].values.mode` keeps
+  the per-frame reading. It is not only display: `_expected` divides the meter's
+  bet by the denomination to reach credits, which holds **only on a cash meter**.
 - **The three readings at the end cannot fail each other**, and each catches its
   own exceptions so the run reaches all of them. A validation that runs and
   reports `failed` is a *completed* step; only one that could not run at all

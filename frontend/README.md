@@ -243,7 +243,13 @@ load-bearing:
   nearly always one misread digit, and at a third of the width a 3 read as an 8
   is not something a reader can see. The relations between the frames are still
   computed and still on the payload as `checks` (and `verdict` summarises them),
-  but they are not a table worth scrolling past on the way to the award.
+  but they are not a table worth scrolling past on the way to the award. What the
+  header does carry beside the verdict is **the units** -- `Cash $` or `Credits`,
+  from `meter.mode`/`meter.currency` -- because every figure below it is otherwise
+  ambiguous, and they decide the format too (money takes two decimals, a credit
+  count is whole). Once for the card rather than per figure and per frame: the
+  units are a property of the machine, and the backend already resolved one answer
+  across every frame it read.
 - `reel-reading-card` -- **what landed**, from `run.reels`: the codes the image
   classifier read off the result screenshot, as two matrices (codes and display
   names), and every tile that came back *unnamed* with the candidate it leaned

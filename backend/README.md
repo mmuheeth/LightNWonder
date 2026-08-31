@@ -2047,6 +2047,26 @@ soft failure: an unreadable meter and a wrong balance need different fixes. Two
 amounts count as equal within `ANALYZE_SPIN_METER_TOLERANCE`, which absorbs the
 OCR of the last decimal and nothing larger.
 
+**The validation also says what units it read in.** `meter.mode` is `cash`,
+`credits` or `unknown`, and in cash mode `meter.currency` is the symbol drawn on
+the values (`"?"` when money was read but its symbol was not — the yen glyph
+these games draw reads as nothing at every mode and scale). Without it every
+figure above is ambiguous: the same `1250` is 1250 credits or 1250 of some
+currency, and the arithmetic is only checkable against the glass once that is
+settled. It is also what makes the `bet_credits` conversion in the expected award
+legible — dividing the meter's bet by the denomination reaches credits **only on
+a cash meter**.
+
+One answer for the whole run rather than one per frame, since a cabinet does not
+change denomination between the screenshots of one spin. `services/meter.combine()`
+folds the frames' own classifications, and it is not a vote: **cash wins a
+disagreement**, because the two modes are not symmetric evidence. Money is read
+positively (a currency symbol, or an amount with a fractional part) and credits is
+what `_classify` concludes from the absence of both — so a frame whose three cells
+all happened to be whole numbers and whose symbol did not OCR reads as credits on
+a cash machine, and one frame that saw money settles it. Each frame's own reading
+stays on `readings[].values.mode` for a run where they differed.
+
 ### The payline validation: two judgements, one reading
 
 **The picture decides what landed, and the image classifier is what reads it.**
