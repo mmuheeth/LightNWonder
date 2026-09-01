@@ -281,28 +281,37 @@ load-bearing:
   ladder-does-not-add-up problem in the other direction. Every row above the total
   is a step that actually happened.
 
-  Under the ladder it carries **the spin as a table, in both units, always both**:
-  before the spin, bet value, won, after the spin -- then the paytable's own claim
-  and the WIN cell under a rule, because that is where a reading becomes a check.
-  A table rather than two lists because the comparison a reader makes is *across*
-  the units as often as down them, and one row holding both is what makes a credit
-  award checkable against a cash meter at a glance. The column heading marks which
-  side was **read**: the other is converted through the denomination and so cannot
-  disagree with it. "After the spin" is the collected frame when there is one and
-  the result frame when there is not -- take-win is skipped on a losing spin, and
-  there the result screenshot already *is* the end of it.
+  Under the ladder it carries **the spin as a table** -- before the spin, bet
+  value, won, after the spin -- with four value columns in two pairs,
+  **Calculated** and **Read by OCR**, each split by unit.
 
-  There is deliberately **no difference row**. The verdict badge is the answer and
-  the two figures it compared are adjacent rows, so a signed delta was a third way
-  of saying the same thing; the tolerance behind the badge is *not* self-evident
-  from the pair, so that says itself in the caption. The stake per line is not
-  shown at all either; it is still on the payload as `credits_per_line`.
+  That split is the load-bearing part, and getting it wrong was a real bug here.
+  **Only one unit is ever read**: the meter draws credits or money, never both, so
+  one of the two OCR columns is empty for the whole run, and the other unit's
+  figures are *calculated* from it through the denomination. A calculated figure
+  cannot disagree with the thing it was calculated from, so showing both as though
+  OCR had seen them claimed two independent readings where there was one.
+
+  The verdict then reads straight off the table: **a calculated figure beside a
+  read one in the same unit is a check** (the award against the WIN cell, the
+  balance arithmetic against the closing balance), and a lone figure is not --
+  which is why an opening balance and a bet have no calculated counterpart in
+  their own unit. The badge is the worst of those verdicts, **taken from the
+  backend's own** (`expected.verdict` plus the `balance-reconciled-<unit>` check,
+  falling back to `bet-deducted-<unit>` on a losing spin where take-win is
+  skipped) rather than recomputed here: the tolerances live there, and two places
+  deciding the same thing is how they come to disagree.
+
+  There is deliberately **no difference row**. The badge is the answer and the
+  figures it compared are adjacent cells, so a signed delta was a third way of
+  saying the same thing; the tolerance behind the badge is *not* self-evident from
+  the pair, so that says itself in the caption. The stake per line is not shown at
+  all either; it is still on the payload as `credits_per_line`.
 
   It takes the whole `meter` block rather than just a tolerance, because the table
-  is built off `meter.readings` and the tolerance to quote depends on which unit
-  the verdict was reached in. `award-comparison-card.test.jsx` pins the invariants:
-  no conversion row when nothing is converted, both units accounted for with one
-  marked as read, no difference row, and the collected-frame fallback.
+  is built off `meter.readings` and `meter.checks` and the tolerance to quote
+  depends on which unit the verdict was reached in.
+  `award-comparison-card.test.jsx` pins all of the above.
 
 The reading sits **above** the paylines because the paylines are read from it.
 The confidence floor is set above where the classifier's classes separate, so a

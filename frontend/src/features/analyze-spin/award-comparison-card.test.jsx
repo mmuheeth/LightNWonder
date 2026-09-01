@@ -5,15 +5,22 @@ import { AwardComparisonCard } from "@/features/analyze-spin/award-comparison-ca
 
 /**
  * The one card that is a check rather than a reading, and the one that has been
- * arithmetically wrong twice: once multiplying the award by the stake per line,
- * once multiplying by the denomination instead of by what a credit is worth. So
- * what these tests hold in place is not the layout but the two invariants behind
- * it:
+ * wrong three times: multiplying the award by the stake per line, multiplying by
+ * the denomination instead of by what a credit is worth, and presenting both
+ * units as though OCR had read them. So what these tests hold in place is not the
+ * layout but the invariants behind it:
  *
+ * * **only one unit is ever read.** The meter draws credits or money, so one of
+ *   the two "read by OCR" columns is empty for the whole run and the other unit's
+ *   figures are calculated from it.
+ * * **a pair means a check.** A calculated figure beside a read one in the same
+ *   unit is two independent measurements; a lone figure is not, which is why an
+ *   opening balance has no calculated counterpart in its own unit.
  * * **every row above the total is a step that actually happened** — on a credit
- *   meter nothing is converted, so no `×` row is drawn at all;
- * * **both units are always accounted for, and only one of them is evidence** —
- *   the side the meter drew was read, the other is derived from it.
+ *   meter nothing is converted, so no `×` row is drawn at all.
+ * * **the verdict is the backend's**, combined here and not recomputed: the
+ *   tolerances live there, and two places deciding the same thing is how they
+ *   come to disagree.
  */
 
 /**
@@ -37,6 +44,26 @@ function meter({ mode = "cash", collected = true } = {}) {
     ? ["initial", "outcome", "collected"]
     : ["initial", "outcome"];
   const drawn = mode === "credits" ? credits : cash;
+  // The closing-balance check, as `_unit_checks` emits it in each unit. Only
+  // `balance-reconciled` when the win was collected; on a losing spin `bet-deducted`
+  // is asking the same question, since with nothing won the balance after the bet
+  // *is* the balance at the end.
+  const ending = (unit, values) =>
+    collected
+      ? {
+          key: `balance-reconciled-${unit}`,
+          unit,
+          verdict: "passed",
+          expected: values.collected.balance,
+          actual: values.collected.balance,
+        }
+      : {
+          key: `bet-deducted-${unit}`,
+          unit,
+          verdict: "passed",
+          expected: values.outcome.balance,
+          actual: values.outcome.balance,
+        };
   return {
     mode,
     currency: mode === "cash" ? "$" : null,
@@ -44,6 +71,7 @@ function meter({ mode = "cash", collected = true } = {}) {
     tolerance: 0.005,
     credit_tolerance: 0.5,
     verdict: "passed",
+    checks: [ending("credits", credits), ending("cash", cash)],
     readings: frames.map((frame) => ({
       frame,
       label: frame,
@@ -79,53 +107,52 @@ function expected({ unit = "cash", ...overrides } = {}) {
 }
 
 describe("AwardComparisonCard", () => {
-  /** One table row, as `[label, credits, cash]`. */
+  /**
+   * One table row as `{ calcCredits, calcCash, ocrCredits, ocrCash }`, which is
+   * the order the four value columns appear in.
+   */
   function row(label) {
-    const cells = screen.getByRole("rowheader", { name: new RegExp(`^${label}`) })
-      .parentElement.children;
-    return [...cells].map((cell) => cell.textContent.trim());
+    const cells = [
+      ...screen.getByRole("rowheader", { name: new RegExp(`^${label}`) }).parentElement
+        .children,
+    ].map((cell) => cell.textContent.trim());
+    const [, calcCredits, calcCash, ocrCredits, ocrCash] = cells;
+    return { calcCredits, calcCash, ocrCredits, ocrCash };
   }
 
-  it("shows every figure of the spin in both units, one row each", () => {
+  it("reads only the unit the meter drew, and calculates the other", () => {
     render(
       <AwardComparisonCard expected={expected()} meter={meter({ mode: "cash" })} />,
     );
 
-    // Credits and cash on the same row, so the two are comparable across as well
-    // as down: 5000 credits is 100.00 at 0.02 a credit.
-    expect(row("Before the spin")).toEqual(["Before the spin", "5000", "100.00"]);
-    expect(row("Bet value")).toEqual(["Bet value", "88", "1.76"]);
-    expect(row("Won")).toEqual(["Won", "50", "1.00"]);
-    // 4912 credits after the bet came off, plus the 50 won when it was collected.
-    expect(row("After the spin")).toEqual(["After the spin", "4962", "99.24"]);
+    // Cash mode: the balance was read in money and the credits figure is what
+    // that divides to at 0.02 a credit. Claiming OCR saw both would claim two
+    // independent readings where there is one.
+    expect(row("Before the spin")).toEqual({
+      calcCredits: "5000",
+      calcCash: "",
+      ocrCredits: "",
+      ocrCash: "100.00",
+    });
+    expect(row("Bet value")).toEqual({
+      calcCredits: "88",
+      calcCash: "",
+      ocrCredits: "",
+      ocrCash: "1.76",
+    });
   });
 
-  it("puts the paytable's claim and the OCR reading in the same table", () => {
+  it("leaves the whole credits OCR column empty on a cash meter", () => {
     render(
       <AwardComparisonCard expected={expected()} meter={meter({ mode: "cash" })} />,
     );
 
-    expect(row("Expected win")).toEqual([
-      "Expected winfrom the paytable",
-      "50",
-      "1.00",
-    ]);
-    expect(row("WIN cell")).toEqual(["WIN cellread by OCR", "50", "1.00"]);
+    for (const label of ["Before the spin", "Bet value", "Won", "After the spin"]) {
+      expect(row(label).ocrCredits).toBe("");
+    }
   });
 
-  it("marks the unit the meter drew as the validated column", () => {
-    render(
-      <AwardComparisonCard expected={expected()} meter={meter({ mode: "cash" })} />,
-    );
-
-    // Only one of the two is evidence: the other is converted through the
-    // denomination and cannot disagree with it.
-    const [, creditsColumn, cashColumn] = screen.getAllByRole("columnheader");
-    expect(creditsColumn).toHaveTextContent(/CreditsDerived/i);
-    expect(cashColumn).toHaveTextContent(/Cashvalidated/i);
-  });
-
-  it("validates against the credit column on a credit meter", () => {
+  it("leaves the whole cash OCR column empty on a credit meter", () => {
     render(
       <AwardComparisonCard
         expected={expected({ unit: "credits" })}
@@ -133,9 +160,69 @@ describe("AwardComparisonCard", () => {
       />,
     );
 
-    const [, creditsColumn, cashColumn] = screen.getAllByRole("columnheader");
-    expect(creditsColumn).toHaveTextContent(/Creditsvalidated/i);
-    expect(cashColumn).toHaveTextContent(/Cashderived/i);
+    for (const label of ["Before the spin", "Bet value", "Won", "After the spin"]) {
+      expect(row(label).ocrCash).toBe("");
+    }
+    // And the credits column is the one carrying the readings.
+    expect(row("Before the spin").ocrCredits).toBe("5000");
+  });
+
+  it("has a calculated figure beside a read one only where a check exists", () => {
+    render(
+      <AwardComparisonCard expected={expected()} meter={meter({ mode: "cash" })} />,
+    );
+
+    // The award: priced off the symbols by the paytable, and read off the glass
+    // by OCR. Two independent measurements, so the pair is a real check.
+    expect(row("Won")).toEqual({
+      calcCredits: "50",
+      calcCash: "1.00",
+      ocrCredits: "",
+      ocrCash: "1.00",
+    });
+    // The closing balance: before − bet + won against what the meter ended at.
+    expect(row("After the spin")).toEqual({
+      calcCredits: "4962",
+      calcCash: "99.24",
+      ocrCredits: "",
+      ocrCash: "99.24",
+    });
+    // An opening balance is an input -- nothing calculates it in its own unit.
+    expect(row("Before the spin").calcCash).toBe("");
+  });
+
+  it("marks the read column rather than labelling either as derived", () => {
+    render(
+      <AwardComparisonCard expected={expected()} meter={meter({ mode: "cash" })} />,
+    );
+
+    // Two group headings, and the unit headings under them.
+    expect(screen.getByText("Calculated")).toBeInTheDocument();
+    expect(screen.getByText("Read by OCR")).toBeInTheDocument();
+  });
+
+  it("fails when a calculated figure and the read one disagree", () => {
+    // The backend already decided this: the card takes the worst of the verdicts
+    // it was handed rather than re-comparing the numbers itself.
+    render(
+      <AwardComparisonCard
+        expected={expected({ verdict: "failed" })}
+        meter={meter({ mode: "cash" })}
+      />,
+    );
+
+    expect(screen.getByText(/failed/i)).toBeInTheDocument();
+  });
+
+  it("fails when the balance arithmetic disagrees even if the award matched", () => {
+    const broken = meter({ mode: "cash" });
+    broken.checks = broken.checks.map((check) =>
+      check.key === "balance-reconciled-cash" ? { ...check, verdict: "failed" } : check,
+    );
+
+    render(<AwardComparisonCard expected={expected()} meter={broken} />);
+
+    expect(screen.getByText(/failed/i)).toBeInTheDocument();
   });
 
   it("shows no difference row -- the badge is the answer", () => {
@@ -146,7 +233,7 @@ describe("AwardComparisonCard", () => {
     expect(screen.queryByText("Difference")).not.toBeInTheDocument();
     // The tolerance behind that badge is not self-evident from the pair, so it
     // does still say itself.
-    expect(screen.getByText(/Equal within 0.005/)).toBeInTheDocument();
+    expect(screen.getByText(/within 0.005/)).toBeInTheDocument();
   });
 
   it("draws no conversion row on a credit meter, because none happens", () => {
@@ -193,9 +280,10 @@ describe("AwardComparisonCard", () => {
     expect(screen.getByText(/0.5 of a credit/)).toBeInTheDocument();
   });
 
-  it("falls back to the result frame when the win was never collected", () => {
-    // Take-win is skipped on a losing spin, so there is no collected frame and
-    // the result screenshot already *is* the end of the spin.
+  it("falls back to the bet-deducted check when the win was never collected", () => {
+    // Take-win is skipped on a losing spin, so there is no collected frame and no
+    // reconciliation check -- but with nothing won, the balance after the bet
+    // already *is* the balance at the end.
     render(
       <AwardComparisonCard
         expected={expected()}
@@ -203,15 +291,26 @@ describe("AwardComparisonCard", () => {
       />,
     );
 
-    expect(row("After the spin")).toEqual(["After the spin", "4912", "98.24"]);
+    expect(row("After the spin")).toEqual({
+      calcCredits: "4912",
+      calcCash: "98.24",
+      ocrCredits: "",
+      ocrCash: "98.24",
+    });
   });
 
   it("survives a meter that could not be read at all", () => {
     render(<AwardComparisonCard expected={expected()} meter={null} />);
 
-    // Nothing to summarise, but the award itself is still the paytable's own
-    // statement and is worth showing beside an em dash.
+    // Nothing was read, so every cell that would hold a reading is blank rather
+    // than zero. The award itself is still the paytable's own statement.
     expect(screen.getByText("Credits awarded")).toBeInTheDocument();
-    expect(row("Before the spin")).toEqual(["Before the spin", "—", "—"]);
+    expect(row("Before the spin")).toEqual({
+      calcCredits: "",
+      calcCash: "",
+      ocrCredits: "",
+      ocrCash: "",
+    });
+    expect(row("Won").calcCredits).toBe("50");
   });
 });

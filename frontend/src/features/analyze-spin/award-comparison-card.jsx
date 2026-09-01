@@ -56,99 +56,85 @@ function Step({ operator, label, value, hint, emphasis }) {
   );
 }
 
-/** Which of the two columns the verdict was actually reached on. */
-function UnitHeading({ title, validated }) {
-  return (
-    <div className="flex items-baseline justify-end gap-1.5">
-      <span className="text-foreground text-[0.65rem] font-semibold tracking-wide uppercase">
-        {title}
-      </span>
-      {validated ? (
-        <span
-          className="text-primary text-[0.55rem] font-semibold tracking-wide uppercase"
-          title="The meter was drawing this unit, so this is the side the OCR reading was validated against"
-        >
-          validated
-        </span>
-      ) : (
-        <span
-          className="text-muted-foreground/60 text-[0.55rem] tracking-wide uppercase"
-          title="Converted through the denomination rather than read, so not what the verdict compared"
-        >
-          derived
-        </span>
-      )}
-    </div>
-  );
-}
+/** A blank cell, for a figure that does not exist rather than one that is zero. */
+const EMPTY = "";
 
 /**
- * The spin in both units, side by side.
+ * The spin, calculated beside read.
  *
- * A table rather than two lists because the comparison a reader makes is
- * *across* the units as often as down them — the award is priced in credits and
- * the glass may be drawing money, and one row holding both is what makes those
- * two comparable at a glance. Column headings mark which side was read: the other
- * is converted through the denomination and so cannot disagree with it.
+ * Four value columns in two pairs, and the split is the point: **only one unit is
+ * ever read.** The meter draws credits or money, never both, so one of the two
+ * "read by OCR" columns is empty for the whole run — and the figures in the other
+ * unit are *calculated* from it through the denomination, which is a different kind
+ * of number and cannot disagree with its source.
  *
- * The last two rows are the check rather than the reading, hence the rule above
- * them: everything over it came off the meter, and what is under it is the
- * paytable's own claim against the WIN cell OCR saw.
+ * That is what makes the verdict legible: where a row has a calculated figure and
+ * a read one in the same unit, the two were measured independently and their
+ * agreement is the check. Where it has only one, there was nothing to compare.
  */
 function SpinTable({ rows, inCredits }) {
+  const columns = [
+    { key: "calcCredits", format: count },
+    { key: "calcCash", format: money },
+    { key: "ocrCredits", format: count, read: inCredits },
+    { key: "ocrCash", format: money, read: !inCredits },
+  ];
+
   return (
     <table className="w-full text-sm">
-      <thead>
-        <tr>
-          <th className="w-1/2" />
-          <th className="px-2 pb-1.5 text-right font-normal">
-            <UnitHeading title="Credits" validated={inCredits} />
+      <thead className="text-muted-foreground">
+        <tr className="text-[0.6rem] tracking-[0.14em] uppercase">
+          <th className="w-2/5" />
+          <th colSpan={2} className="border-border/60 border-b px-2 pb-1 font-semibold">
+            Calculated
           </th>
-          <th className="pb-1.5 text-right font-normal">
-            <UnitHeading title="Cash" validated={!inCredits} />
+          <th colSpan={2} className="border-border/60 border-b pb-1 font-semibold">
+            Read by OCR
+          </th>
+        </tr>
+        <tr className="text-[0.6rem] tracking-wide uppercase">
+          <th />
+          <th className="px-2 pt-1 pb-1.5 text-right font-normal">Credits</th>
+          <th className="pt-1 pb-1.5 text-right font-normal">Cash</th>
+          <th className="px-2 pt-1 pb-1.5 text-right font-normal">
+            <span className={cn(inCredits && "text-primary font-semibold")}>
+              Credits
+            </span>
+          </th>
+          <th className="pt-1 pb-1.5 text-right font-normal">
+            <span className={cn(!inCredits && "text-primary font-semibold")}>Cash</span>
           </th>
         </tr>
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr
-            key={row.label}
-            className={cn(
-              row.rule && "border-border/60 border-t",
-              row.emphasis && "font-medium",
-            )}
-          >
+          <tr key={row.label} className="border-border/40 border-t">
             <th
               scope="row"
-              className={cn(
-                "py-1 text-left font-normal",
-                row.rule && "pt-2.5",
-                row.emphasis ? "text-foreground" : "text-muted-foreground",
-              )}
+              className="text-muted-foreground py-1.5 text-left font-normal"
             >
               {row.label}
               {row.hint ? (
-                <span className="text-muted-foreground/70 ml-2 text-[0.65rem]">
+                <span className="text-muted-foreground/60 ml-2 text-[0.65rem]">
                   {row.hint}
                 </span>
               ) : null}
             </th>
-            <td
-              className={cn(
-                "px-2 py-1 text-right font-mono tabular-nums",
-                row.rule && "pt-2.5",
-              )}
-            >
-              {count(row.credits)}
-            </td>
-            <td
-              className={cn(
-                "py-1 text-right font-mono tabular-nums",
-                row.rule && "pt-2.5",
-              )}
-            >
-              {money(row.cash)}
-            </td>
+            {columns.map(({ key, format, read }) => (
+              <td
+                key={key}
+                className={cn(
+                  "py-1.5 text-right font-mono tabular-nums",
+                  key.endsWith("Credits") && "px-2",
+                  // The read column is the evidence; the calculated ones are
+                  // consequences of it, so they sit back a shade.
+                  read === undefined && "text-muted-foreground",
+                  row.verdict === "failed" && "text-destructive",
+                )}
+              >
+                {row[key] === null || row[key] === undefined ? EMPTY : format(row[key])}
+              </td>
+            ))}
           </tr>
         ))}
       </tbody>
@@ -185,19 +171,31 @@ function SpinTable({ rows, inCredits }) {
  * uses, so the row carries both — the number in the value column, the name in the
  * hint.
  *
- * Under the ladder, the spin as a **table, in both units, always both**: before,
- * the bet, the win, after — then the paytable's claim and the WIN cell under a
- * rule, because that is where a reading becomes a check. A table rather than two
- * lists because the comparison a reader makes is *across* the units as often as
- * down them, and one row holding both is what makes a credit award checkable
- * against a cash meter at a glance. The column heading marks which side was
- * **read**: the other is converted through the denomination and so cannot disagree
- * with it.
+ * Under the ladder, the spin as a table: before, bet value, won, after — with four
+ * value columns in two pairs, **calculated** and **read by OCR**, each split by
+ * unit.
  *
- * There is deliberately **no difference row**. The verdict badge is the answer and
- * the two figures it compared are adjacent rows in the table, so a signed delta
- * was a third way of saying the same thing. What is *not* self-evident from the
- * pair is the tolerance behind the verdict, so that says itself in the caption.
+ * That split is the load-bearing part, and getting it wrong was a real bug here.
+ * **Only one unit is ever read.** The meter draws credits or money, never both, so
+ * one of the two OCR columns is empty for the whole run; the figures in the other
+ * unit are *calculated* from it through the denomination, and a calculated figure
+ * cannot disagree with the thing it was calculated from. Showing both as though
+ * OCR had seen them claimed two independent readings where there was one.
+ *
+ * So the verdict reads straight off the table: where a row has a calculated figure
+ * **and** a read one in the same unit, the two were measured independently and
+ * their agreement is the check — the award against the WIN cell, and the balance
+ * arithmetic against the closing balance. Where a row has only one, there was
+ * nothing to compare, which is why an opening balance and a bet have no calculated
+ * counterpart in their own unit. The badge is the worst of those verdicts, taken
+ * from the backend's own rather than by re-comparing the numbers here: the
+ * tolerances live there, and two places deciding the same thing is how they come
+ * to disagree.
+ *
+ * There is deliberately **no difference row**. The badge is the answer and the
+ * figures it compared are adjacent cells, so a signed delta was a third way of
+ * saying the same thing. What is *not* self-evident from the pair is the tolerance
+ * behind the verdict, so that says itself in the caption.
  *
  * Two things once multiplied into the expectation that should not have: the stake
  * per line, which inflated it by that stake, and the denomination itself. The
@@ -228,38 +226,96 @@ function figuresOf(meter, unit) {
   };
 }
 
+/** The worst of several verdicts, as `_verdict_of` ranks them on the backend. */
+function worstVerdict(verdicts) {
+  const known = verdicts.filter(Boolean);
+  if (!known.length) return "indeterminate";
+  if (known.includes("failed")) return "failed";
+  if (known.includes("indeterminate")) return "indeterminate";
+  return "passed";
+}
+
+/**
+ * The check that says where the balance ended up, in one unit.
+ *
+ * `balance-reconciled` is the whole spin as one identity and is the right answer
+ * when the win was collected. On a losing spin take-win is skipped, so there is no
+ * collected frame and no such check — but `bet-deducted` is asking the same
+ * question there, since with nothing won the balance after the bet *is* the
+ * balance at the end.
+ */
+function endingCheck(meter, unit) {
+  const checks = meter?.checks ?? [];
+  return (
+    checks.find((c) => c.key === `balance-reconciled-${unit}`) ??
+    checks.find((c) => c.key === `bet-deducted-${unit}`) ??
+    null
+  );
+}
+
 export function AwardComparisonCard({ expected, meter }) {
-  // The comparison happens in whatever the glass was drawing: that side was read
-  // and the other is derived from it, so it is the only side whose difference is
-  // measured rather than computed.
+  // Only one unit is ever *read*: the meter draws it. The other is computed from
+  // it through the denomination, so it can never disagree and is never evidence.
   const inCredits = expected.unit === "credits";
   const tolerance = inCredits ? meter?.credit_tolerance : meter?.tolerance;
   const credits = figuresOf(meter, "credits");
   const cash = figuresOf(meter, "cash");
+  const endCredits = endingCheck(meter, "credits");
+  const endCash = endingCheck(meter, "cash");
 
-  // What the meter said, then what the paytable says about it. The rule between
-  // the two groups is the boundary between a reading and a check.
+  // Which of the four value columns a figure belongs in. A figure the meter drew
+  // goes under "read by OCR" in its own unit and nowhere else; everything else is
+  // calculated, whether from the paytable, from the arithmetic, or by converting
+  // the drawn unit into the other one.
+  const readCredits = (value) => (inCredits ? value : null);
+  const readCash = (value) => (inCredits ? null : value);
+  const convCredits = (value) => (inCredits ? null : value);
+  const convCash = (value) => (inCredits ? value : null);
+
   const rows = [
-    { label: "Before the spin", credits: credits.before, cash: cash.before },
-    { label: "Bet value", credits: credits.bet, cash: cash.bet },
-    { label: "Won", credits: credits.won, cash: cash.won },
-    { label: "After the spin", credits: credits.after, cash: cash.after },
     {
-      label: "Expected win",
-      hint: "from the paytable",
-      credits: expected.credits,
-      cash: expected.cash,
-      rule: true,
-      emphasis: true,
+      label: "Before the spin",
+      // Nothing calculates an opening balance -- it is an input. So the only
+      // calculated cell on this row is the conversion into the other unit.
+      calcCredits: convCredits(credits.before),
+      calcCash: convCash(cash.before),
+      ocrCredits: readCredits(credits.before),
+      ocrCash: readCash(cash.before),
     },
     {
-      label: "WIN cell",
-      hint: "read by OCR",
-      credits: expected.observed_credits,
-      cash: expected.observed_cash,
-      emphasis: true,
+      label: "Bet value",
+      calcCredits: convCredits(credits.bet),
+      calcCash: convCash(cash.bet),
+      ocrCredits: readCredits(credits.bet),
+      ocrCash: readCash(cash.bet),
+    },
+    {
+      label: "Won",
+      hint: "paytable vs. the WIN cell",
+      // The one row where both sides are measured independently: the paytable
+      // priced this off the symbols that landed, and OCR read it off the glass.
+      calcCredits: expected.credits,
+      calcCash: expected.cash,
+      ocrCredits: readCredits(expected.observed_credits ?? expected.observed_win),
+      ocrCash: readCash(expected.observed_cash ?? expected.observed_win),
+      verdict: expected.verdict,
+    },
+    {
+      label: "After the spin",
+      hint: "before − bet + won",
+      calcCredits: endCredits?.expected ?? null,
+      calcCash: endCash?.expected ?? null,
+      ocrCredits: readCredits(endCredits?.actual ?? credits.after),
+      ocrCash: readCash(endCash?.actual ?? cash.after),
+      verdict: (inCredits ? endCredits : endCash)?.verdict ?? null,
     },
   ];
+
+  // Pass only if every row that has both a calculated and a read figure agrees.
+  // Taken from the backend's own verdicts rather than by re-comparing the numbers
+  // here: the tolerances live there, and two places deciding the same thing is
+  // how they come to disagree.
+  const verdict = worstVerdict(rows.map((row) => row.verdict));
 
   return (
     <Card>
@@ -273,7 +329,7 @@ export function AwardComparisonCard({ expected, meter }) {
           actually showed
         </CardDescription>
         <CardAction>
-          <VerdictBadge verdict={expected.verdict} />
+          <VerdictBadge verdict={verdict} />
         </CardAction>
       </CardHeader>
 
@@ -321,25 +377,26 @@ export function AwardComparisonCard({ expected, meter }) {
           />
         </div>
 
-        {/* The spin in both units, always both, whichever the meter was drawing:
-            the award is priced in credits and the glass may be showing money, so
-            a reader checking a run against the cabinet needs the side they are
-            holding. The column heading marks which one was *read*. */}
+        {/* Calculated beside read, in both units. One "read by OCR" column is
+            empty for the whole run, because the meter draws one unit and not the
+            other — and that is the honest shape: the other unit's figures are
+            calculated from it and were never independently seen. */}
         <SpinTable rows={rows} inCredits={inCredits} />
 
-        {/* No difference row: the verdict badge is the answer and the two figures
-            it compared are in the table above, so a signed delta was a third way
-            of saying the same thing. The tolerance behind that verdict is not
-            self-evident from the pair, though, so it says itself here. */}
-        {typeof tolerance === "number" ? (
-          <p className="text-muted-foreground/70 text-[0.65rem]">
-            {inCredits
-              ? `Equal within ${tolerance} of a credit.`
-              : `Equal within ${tolerance}, which absorbs the OCR of the last decimal.`}{" "}
-            Judged on the {inCredits ? "credits" : "cash"} column, the one the meter
-            drew.
-          </p>
-        ) : null}
+        {/* No difference row: the badge is the answer and the figures it compared
+            are adjacent cells, so a signed delta was a third way of saying the
+            same thing. The tolerance behind the verdict is not self-evident from
+            the pair, though, so it says itself here. */}
+        <p className="text-muted-foreground/70 text-[0.65rem]">
+          Passes when every calculated figure matches the one OCR read in the same unit
+          {typeof tolerance === "number"
+            ? inCredits
+              ? `, within ${tolerance} of a credit`
+              : `, within ${tolerance} — enough to absorb the OCR of the last decimal`
+            : ""}
+          . The meter drew {inCredits ? "credits" : "cash"}, so that is the column
+          judged; the other is calculated from it and cannot disagree.
+        </p>
 
         <p className="text-muted-foreground text-xs break-words">{expected.detail}</p>
       </CardContent>
