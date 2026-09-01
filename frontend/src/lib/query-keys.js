@@ -28,6 +28,11 @@ export const queryKeys = Object.freeze({
     // exist once a run has finished -- so it is its own key rather than a
     // parameter on one, and the progress stream never invalidates it mid-run.
     report: () => [...queryKeys.analyzeSpin.all, "report"],
+    // The bet rungs the loaded paytable offers. Under this slice rather than
+    // `paytable` because it is asked for a different reason and on a different
+    // schedule -- it is a spin control, wanted before a run rather than while
+    // reading the maths.
+    betConfig: () => [...queryKeys.analyzeSpin.all, "bet-config"],
   }),
   paytable: Object.freeze({
     all: ["paytable"],

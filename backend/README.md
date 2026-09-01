@@ -1666,9 +1666,12 @@ Three things have to agree, and each is owned by someone else:
   ... current paytableId[FortuneOx-1101YX-1c-90]`, written on every denomination
   change;
 - **the game's install** has one directory per paytable under its `GameConfig`
-  directory, named *byte-identically* to that id, holding `math.xml` and
-  `gameConfig.cfg`, with a single `winGeometry.xml` beside them shared by all of
-  them;
+  directory, named *byte-identically* to that id, holding `math.xml`,
+  `gameConfig.cfg` and the two bet configurations (`betPerUnitConfig.xml`,
+  `betUnitConfig.xml`), with a single `winGeometry.xml` beside them shared by all
+  of them. Those four are what this reads; a folder ships ten files, and the rest
+  (`maxBetConfig.xml`, `progConfig.xml`, `PersistenceData.xml`, the `.n40.x880`
+  duplicates, `gameConfig.unlimited.cfg`) are not opened;
 - **the game config in this repo** points at that directory (`game_config`) and
   is the only place a two-letter symbol code gets a readable name (`symbols`).
 
@@ -2011,7 +2014,7 @@ cash meter and payline validations over the frames it took.
 
 ```
 POST /api/analyze-spin/start          spin once, and validate it
-                                      ?record=, ?architecture=
+                                      ?record=, ?architecture=, ?bet_per_unit=
 GET  /api/analyze-spin/status         the run in progress, or the last one
 POST /api/analyze-spin/cancel         ask the run in progress to stop
 GET  /api/analyze-spin/frames/{file}  one screenshot the run took
@@ -2308,6 +2311,19 @@ There is deliberately **no fallback to cosine similarity** when the reading fail
 a run measured by likeness and then priced as though it had been named is worse
 than a run reported short.
 
+**What the cabinet's bet was set to is the other per-run choice**, and it is a
+different kind of one: the architecture changes how the spin is *measured*, while
+`?bet_per_unit=` changes what it is *worth*. It falls back to
+`ANALYZE_SPIN_BET_PER_UNIT` and then to nothing, and is offered beside the
+classifier dropdown as a select filled from the loaded paytable's own ladder --
+`1, 2, 3, 5, 10` on FortuneOx, `1, 2, 3, 5, 8` on HuffNPuffLink. That list is
+fetched rather than hardcoded, unlike the two architectures, because it is the
+game's and not this repo's; when the game is not installed on this machine the
+control falls back to a plain number input and the backend stays the validator.
+Only the shape is refused here (a 400 for anything not a positive integer) --
+a rung the game does not offer becomes a note on the run at `prepare`, since the
+ladder is in a file only the game's install has.
+
 ### What landed, as its own block
 
 `run.reels` is the reading, beside `run.meter` and `run.paylines` rather than
@@ -2360,20 +2376,76 @@ spans were never a claim about the maths — they were the width of what the pic
 had failed to identify. An unreadable input still makes the verdict
 `indeterminate` rather than a guess.
 
-**The award is one multiplication.** A paytable combo's value *is* the award in
-credits, so the whole conversion is:
+**The award is two multiplications.** A paytable combo's value is a rate *per bet
+unit*, not a flat credit amount, so it has to be staked before it is converted:
 
 ```
-cash = credits × money_per_credit
+credits = Σ (combo_value × bet_per_unit)     # per line, in `_award`
+cash    = credits × money_per_credit         # once, in `_expected`
 ```
 
-Measured rather than assumed: one captured win the game drew both ways reads `75`
-on a credit meter and `$0.75` on a cash one, against a bet of `88`/`$0.88` at 1c.
-`75 × 0.01` is `$0.75` exactly, with no per-line factor anywhere. Scaling the
-award by the credits staked per line inflates the expectation by that stake and
-fails a correct spin.
+A line reading "pays 25" therefore awards 25 credits at one credit a unit and 250
+at ten. `SpinLineAward` carries both numbers — `combo_value` is the paytable
+row's own figure (what the Game Config page shows) and `credits` is the product.
 
-The bet is reported beside it and is **not** an input:
+The captured win often quoted for the second half — `75` on a credit meter and
+`$0.75` on a cash one against a bet of `88`/`$0.88` at 1c — is a spin at **one**
+credit a bet unit, since 88 is the cabinet's `MinTotalBet`, which is the unit cost
+times the first rung. It is consistent with the multiplier rather than evidence
+against it: at n=1 an award and its paytable row are the same number, which is
+exactly why the multiplication went unnoticed. What it does rule out is scaling by
+the stake spread over a *line*, which for FortuneOx is `88 / 40 = 2.2` — not a
+whole number and not a rung of any ladder.
+
+**Where the stake comes from.** Nothing states it outright — the meter's BET cell
+shows the *total* and the game's log mentions a bet only when one is changed — but
+it follows from two figures the run already has:
+
+```
+bet_per_unit = ?bet_per_unit= → ANALYZE_SPIN_BET_PER_UNIT → bet_credits / unit_cost
+```
+
+The last one is the ordinary case, so a run needs nothing configured; the first two
+are overrides for a cabinet whose meter will not OCR. Deriving is **not** simply
+rounding: `unit_cost × rungs` has to come back to the bet that was read, since 300
+credits over an 88-credit spin rounds to rung 3 while `88 × 3` is 264 — and the
+rung has to be one the ladder offers. A bet that satisfies neither leaves the
+stake unknown rather than mispricing every line on the run.
+
+It is never defaulted to 1, which would price a raised-bet spin short while looking
+certain about it. Only when the stake is neither given nor derivable is the award
+verdict `indeterminate`. A non-positive request is a 400; a rung the game does not
+offer is a **note** on the run, because the ladder lives in `betPerUnitConfig.xml`
+inside the game's own install and cannot be consulted until `prepare` has read the
+paytable.
+
+**The meter reads before the reels.** Of the three closing steps it is the only one
+that produces an *input* to another — the unit the strip drew and what a bet unit
+cost are both what turn a line's rate into an award — so the order is meter,
+classify, paylines. That is also why `expected` is built in `_check_paylines`,
+where the awards are made, rather than patched into the payline validation from
+the meter step afterwards.
+
+**Which unit the strip drew is settled by the paytable, not just by the digits.**
+`meter.combine()` reads the shape of the numbers: a currency symbol or a fractional
+amount means money, and credits is what is left when neither appears. That is thin
+— a credits cabinet whose strip OCRs one stray decimal reads as cash, and then
+every figure is divided by the denomination a second time:
+
+```
+BET 88 credits, misread as $88  ->  credits.bet = 88 / 0.01 = 8800
+8800 / 88 a spin = 100 rungs, which no ladder offers  ->  stake refused
+                                                      ->  credits won = 0
+```
+
+`_settle_mode()` settles it with evidence of a different kind. A spin costs
+`unit_cost` credits a rung, so the drawn bet is one of `88, 176, 264, 440, 880` in
+credits or `0.88 … 8.80` in money, and those two sets do not overlap — the bet
+alone says which unit was drawn. It only overrides the classification when exactly
+one of the two matches: at a `$1` denomination the sets are identical and the bet
+is no evidence, so the classification stands.
+
+The bet off the meter is reported beside it and is **not** an input:
 
 ```
 bet_credits      = total_bet (off the meter) / money_per_credit   # cash meter
@@ -2381,11 +2453,11 @@ bet_credits      = total_bet (off the meter) / money_per_credit   # cash meter
 credits_per_line = bet_credits / line_count
 ```
 
-It is carried because it is what says the denomination resolved correctly —
-`bet_credits` should read back as the cabinet's own declared `MinTotalBet`. So an
-unreadable bet costs that check and not the verdict: pricing the award needs the
-denomination and the win off the meter, and nothing else. `credits_per_line` is
-computed and reported but nothing reads it and the dashboard no longer shows it.
+What `bet_credits` is for is the `bet-declared-credits` check, which holds it up
+against `unit_cost × bet_per_unit` — the bet this spin *should* have cost. That is
+the one thing that catches a whole spin graded at the wrong rung, since every
+award is multiplied by a number nobody measured. `credits_per_line` is reported
+and prices nothing.
 
 **`money_per_credit` is not the denomination**, and the difference is a factor of
 a hundred. The log reports a `-2c-` cabinet as `denom[2.000]` — a count of cents

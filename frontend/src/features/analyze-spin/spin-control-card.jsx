@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   Circle,
+  Coins,
   Cpu,
   Dices,
   Film,
@@ -26,6 +27,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { spinFrameUrl } from "@/features/analyze-spin/api";
+import { useBetConfig } from "@/features/analyze-spin/use-analyze-spin";
 import { cn } from "@/lib/utils";
 
 /** What fixes a refused start; the backend's own message says what happened. */
@@ -129,6 +131,14 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
   // of them agreeing about a spin is worth more than one being confident, and a
   // disagreement says something about the reels.
   const [architecture, setArchitecture] = useState(ARCHITECTURES[0].name);
+  // What the cabinet's bet button is set to. Left blank normally: the run works
+  // it out from the BET cell it reads anyway, dividing the total bet by what the
+  // paytable says one spin costs. This is the override for a meter that will not
+  // OCR, which is why it opens on "from the bet" rather than on a rung.
+  const [betPerUnit, setBetPerUnit] = useState("");
+  const betConfig = useBetConfig();
+  const ladder = betConfig.data?.ladder ?? [];
+  const unitCost = betConfig.data?.unit_cost ?? null;
   const busy = start.isPending || cancel.isPending;
   const actionError = start.error ?? cancel.error;
   const hint = actionError ? ERROR_HINTS[actionError.code] : null;
@@ -171,7 +181,11 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
               size="sm"
               onClick={() => {
                 cancel.reset();
-                start.mutate({ record, architecture });
+                start.mutate({
+                  record,
+                  architecture,
+                  betPerUnit: betPerUnit ? Number(betPerUnit) : undefined,
+                });
               }}
               disabled={active || busy}
             >
@@ -222,6 +236,67 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
                 ))}
               </select>
               <ChevronDown className="text-muted-foreground pointer-events-none absolute inset-y-0 right-2 my-auto size-3.5" />
+            </div>
+          </div>
+
+          {/* What the machine's bet is set to. Not a preference like the two
+              beside it — it is the multiplier on every award, so a wrong one
+              misprices the whole spin rather than measuring it differently.
+              Which is why it defaults to reading the machine instead of
+              defaulting to a rung: the run divides the BET cell by what a spin
+              costs, and only a meter that will not OCR needs this set. */}
+          <div className="flex items-center gap-2">
+            <Label
+              htmlFor="analyze-spin-bet-per-unit"
+              className="text-muted-foreground text-sm font-normal"
+            >
+              <Coins className="size-3.5" />
+              Bet / unit
+            </Label>
+            <div className="relative">
+              {ladder.length > 0 ? (
+                <select
+                  id="analyze-spin-bet-per-unit"
+                  aria-label="Credits staked on each bet unit"
+                  value={betPerUnit}
+                  onChange={(event) => setBetPerUnit(event.target.value)}
+                  disabled={active || busy}
+                  className="border-input bg-background text-foreground hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 h-8 cursor-pointer appearance-none rounded-md border pr-8 pl-2.5 text-sm shadow-xs transition-[color,box-shadow,background-color] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
+                >
+                  <option value="" className="bg-background text-foreground">
+                    from the bet
+                  </option>
+                  {ladder.map((rung) => (
+                    <option
+                      key={rung}
+                      value={rung}
+                      className="bg-background text-foreground"
+                    >
+                      {unitCost ? `${rung} — bets ${rung * unitCost}` : rung}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                /* No ladder to offer: the game is not installed on this
+                   machine, or its paytable could not be read. A free number
+                   rather than invented rungs, and the backend is the validator
+                   either way. */
+                <input
+                  id="analyze-spin-bet-per-unit"
+                  aria-label="Credits staked on each bet unit"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="not set"
+                  value={betPerUnit}
+                  onChange={(event) => setBetPerUnit(event.target.value)}
+                  disabled={active || busy}
+                  className="border-input bg-background text-foreground focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-24 rounded-md border px-2.5 text-sm shadow-xs transition-[color,box-shadow,background-color] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
+                />
+              )}
+              {ladder.length > 0 ? (
+                <ChevronDown className="text-muted-foreground pointer-events-none absolute inset-y-0 right-2 my-auto size-3.5" />
+              ) : null}
             </div>
           </div>
 

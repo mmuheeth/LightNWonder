@@ -164,6 +164,10 @@ log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
 `log_tail.py` (rotation-aware cursor), `log_search.py` (the opposite
 question — reads a log *backwards* for the last line matching a pattern),
 `game_math.py` (a paytable folder's `math.xml` and `gameConfig.cfg`),
+`bet_config.py` (that folder's `betPerUnitConfig.xml` and `betUnitConfig.xml` —
+the rungs a player may stake on each bet unit, and what a spin costs at one;
+their product is the total bet, and is the only place the two factors are
+separate — `SpecificMaxBets` and `AllowedBetsTbl` both carry only the product),
 `win_geometry.py` (`winGeometry.xml`, plus the conversion between its
 0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
 `reel_stops.py` (a spin's logged stops plus the strips become the symbols that
@@ -306,7 +310,18 @@ tell. Failures split by whose fault it is: 409 the machine (no install), 404 the
 log or the request (that id has no folder — and the message names *both* halves),
 502 the files (present but unreadable). An unreadable `winGeometry.xml` is
 deliberately none of those: it comes back as `win_geometry.error` on a 200,
-because the symbols, strips and combos above it are all still true.
+because the symbols, strips and combos above it are all still true. `bet_config`
+makes the same bargain twice over — unreadable is an `error` on a 200, and a
+folder shipping neither file is plain `null`, since an older install not carrying
+them is not a failure to read anything.
+
+**A paytable folder holds ten files and this reads five.** `math.xml`,
+`gameConfig.cfg`, `betPerUnitConfig.xml`, `betUnitConfig.xml`, plus the shared
+`winGeometry.xml` at the `GameConfig` root. The five it does not open are
+`maxBetConfig.xml`, `progConfig.xml`, `PersistenceData.xml`, the `.n40.x880`
+duplicates of the two bet configs, and `gameConfig.unlimited.cfg`. Worth knowing
+before concluding a number is not written down anywhere: the bet ladder sat in
+two unopened files for as long as the award was priced without it.
 
 It is also the one service that caches, keyed on each file's mtime *and* size,
 because `math.xml` is close to a megabyte — hence a `reset()` and a `conftest.py`
@@ -455,7 +470,7 @@ gone from that payload.
 **`services/analyze_spin.py` is orchestration and nothing else.** It owns no
 image handling, no XML, no win32 — it is the *order* the other services go in
 (OBS record/screenshot, i-deck press, game log wait, game-input click, then
-grid+classifier, then paylines, then ROI's meter last), and every step carries the underlying
+then ROI's meter, then grid+classifier, then paylines), and every step carries the underlying
 service's own error code. `_step` also has one convention worth knowing: a body
 that sets `step.error` **without raising** is recorded as failed and the run
 carries on, for the step that did its work and knows the result is unusable. Six
@@ -507,16 +522,55 @@ things it exists to get right:
   from the paytable id's `-Nc-` suffix and an id that names none leaves
   `money_per_credit` null and the award verdict `indeterminate` rather than
   guessing from the supported ladder.
-- **The award is `credits × money_per_credit`, and nothing else.** A paytable
-  combo's value *is* the award in credits, not a per-line rate to be scaled by the
-  stake — one captured win reads `75` on a credit meter and `$0.75` on a cash one
-  at 1c, no per-line factor. `bet_credits`/`credits_per_line` are still reported
-  but are **not inputs**: they exist because `bet_credits` should read back as the
-  cabinet's declared `MinTotalBet`, which is what proves the denomination
-  resolved. So an unreadable bet no longer costs the verdict. On a credit meter
-  no rate takes part at all — the meter is already counting credits, and
-  `observed_win` is compared against `credits` directly (`expected.unit` says
-  which side was compared).
+- **The award is `combo_value × bet_per_unit × money_per_credit`, and the first
+  multiplication is the one that gets forgotten.** A paytable combo's value is a
+  rate **per bet unit**, not a flat credit amount, so a line reading "pays 25"
+  awards 25 at one credit a unit and 250 at ten. `_award` does that one per line
+  (`SpinLineAward.combo_value` is the paytable's own figure, `credits` the
+  product); `_expected` only sums and converts to money. The captured win that
+  reads `75` credits and `$0.75` at 1c is a spin at **n=1** — 88 is `MinTotalBet`,
+  the unit cost times the first rung — so it is consistent with the multiplier
+  and never was evidence against one. What it does rule out is scaling by the
+  stake spread over a *line*: 88 over 40 lines is 2.2, a rung of no ladder.
+  `bet_credits`/`credits_per_line` are still reported and still **not inputs**.
+  On a credit meter no rate takes part at all — the meter is already counting
+  credits, and `observed_win` is compared against `credits` directly
+  (`expected.unit` says which side was compared).
+- **The bet per unit is worked out, not configured.** No file and no log line
+  says what the player staked — the meter's BET cell shows the *total* and the
+  log mentions a bet only when one is changed — but it follows from two things
+  the run already has: `bet_credits / unit_cost`, the bet the meter drew over
+  what `betUnitConfig.xml` says a spin costs at one credit a unit (88 on
+  FortuneOx). So the ordinary run needs nothing configured, and
+  `ANALYZE_SPIN_BET_PER_UNIT` / `start(bet_per_unit=...)` are **overrides** for a
+  cabinet whose BET cell will not OCR. Never defaulted to 1: that prices a
+  raised-bet spin short while looking certain, which is the failure the whole
+  thing exists to prevent. Deriving is **not** rounding — `88 × rungs` has to come
+  back to the bet that was read (300 credits rounds to rung 3, but `88 × 3` is
+  264, so it is refused), and the rung has to be on the ladder when the game
+  shipped one. Only when it is neither given nor derivable is the award verdict
+  `indeterminate`.
+- **The meter reads before the reels, and that ordering is load-bearing.** It is
+  the only one of the three closing steps that produces an *input* to another:
+  which unit the strip drew and what a bet unit cost are what turn a line's rate
+  into an award. So `_validate_meter` runs first, then `_read_reels`, then
+  `_validate_paylines` — which is also why `expected` is built in
+  `_check_paylines` where the awards are, rather than patched into the payline
+  validation from the meter step afterwards. A rung the game does not offer is a
+  **note** on the run (`_note_error` plus `step.detail`, never `step.error`, which
+  would fail it), and `bet-declared-credits` catches a spin graded at the wrong
+  rung: `unit_cost × bet_per_unit` against the BET cell.
+- **Which unit the strip drew is settled by the paytable, not just by the
+  digits.** `meter.combine()` reads the *shape* of the numbers — a symbol or a
+  fractional amount means money, credits is what is left — which is thin enough
+  that a credits cabinet OCR'ing one stray decimal reads as cash. Everything is
+  then divided by the denomination a second time: an 88-credit bet becomes 8800,
+  no rung of any ladder, so the stake is refused and the award falls to **0**
+  while the table files the readings under cash. `_settle_mode()` fixes it with
+  evidence of a different kind: a spin costs `unit_cost` a rung, so the drawn bet
+  is one of `88, 176, 264, 440, 880` in credits or `0.88 … 8.80` in money, and
+  those sets do not overlap. Only when exactly one matches — at a $1 denomination
+  they are the same set, so the classification stands.
 - **Both units, everywhere on the meter step.** The cabinet draws one and the
   paytable speaks the other, so `readings[].credits` and `readings[].cash` each
   carry the same `balance`/`win`/`bet`, and **every amount relation is checked in

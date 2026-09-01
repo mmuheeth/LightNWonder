@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   cancelSpin,
+  getBetConfig,
   getSpinStatus,
   spinStreamUrl,
   startSpin,
@@ -104,6 +105,24 @@ export function useSpinReport() {
     queryKey: queryKeys.analyzeSpin.report(),
     queryFn: ({ signal }) => getSpinStatus({ includeImages: true, signal }),
     staleTime: 30_000,
+  });
+}
+
+/**
+ * The bet rungs this game's paytable offers.
+ *
+ * Its own query rather than a slice of the report: it is wanted *before* a run,
+ * to fill the control that decides how the run will be priced. No poll — the
+ * ladder changes when the cabinet changes paytable, which is not something that
+ * happens while somebody is looking at this page.
+ *
+ * @returns {import("@tanstack/react-query").UseQueryResult}
+ */
+export function useBetConfig() {
+  return useQuery({
+    queryKey: queryKeys.analyzeSpin.betConfig(),
+    queryFn: ({ signal }) => getBetConfig({ signal }),
+    staleTime: 60_000,
   });
 }
 

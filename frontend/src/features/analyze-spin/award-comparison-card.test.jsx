@@ -95,6 +95,10 @@ function expected({ unit = "cash", ...overrides } = {}) {
     total_bet: unit === "credits" ? 88 : 1.76,
     bet_credits: 88,
     credits_per_line: 2.2,
+    // 88 a spin at one credit a unit, which is the minimum bet -- the case
+    // where an award and its paytable row are the same number.
+    bet_per_unit: 1,
+    unit_cost: 88,
     cash: 1.0,
     unit,
     observed_win: unit === "credits" ? 50 : 1.0,
@@ -140,6 +144,37 @@ describe("AwardComparisonCard", () => {
       ocrCredits: "",
       ocrCash: "1.76",
     });
+  });
+
+  it("shows the stake as its own step, since it is what prices the lines", () => {
+    // 5 a bet unit turns the same 50-credit rate into 250 -- the multiplication
+    // that is invisible at the minimum bet, which is why it is a step and not a
+    // hint.
+    render(
+      <AwardComparisonCard
+        expected={expected({ bet_per_unit: 5, credits: 250, cash: 5.0 })}
+        meter={meter({ mode: "cash" })}
+      />,
+    );
+
+    expect(screen.getByText("Line rates")).toBeInTheDocument();
+    expect(screen.getByText("Bet per unit")).toBeInTheDocument();
+    // The rate total is the award over the stake: 250 / 5.
+    expect(screen.getByText("50")).toBeInTheDocument();
+    // And the hint says what that stake actually bet: 88 a spin x 5.
+    expect(screen.getByText(/bets 440/)).toBeInTheDocument();
+  });
+
+  it("says the award needs a stake when none was given", () => {
+    render(
+      <AwardComparisonCard
+        expected={expected({ bet_per_unit: null, credits: 0, verdict: "indeterminate" })}
+        meter={meter({ mode: "cash" })}
+      />,
+    );
+
+    expect(screen.queryByText("Bet per unit")).not.toBeInTheDocument();
+    expect(screen.getByText(/needs a bet per unit to price/)).toBeInTheDocument();
   });
 
   it("leaves the whole credits OCR column empty on a cash meter", () => {

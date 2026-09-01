@@ -184,6 +184,37 @@ GEOMETRY_XML = """<?xml version="1.0" encoding="utf-8"?>
 </WinGeometryData>
 """
 
+# The two files that separate what a spin costs from what multiplies a line's
+# value. Tagged the way FortuneOx ships them; `tests/test_bet_config.py` covers
+# the untagged shape and every parse failure.
+BET_PER_UNIT_XML = """<BetPerUnitData>
+  <BetPerUnitConfigurationList>
+    <BetPerUnitConfiguration>
+      <MinBetPerUnit>1</MinBetPerUnit>
+      <MaxBetPerUnit>10</MaxBetPerUnit>
+      <BetPerUnitMappings tag="1">
+        <BetPerUnit>1</BetPerUnit>
+        <BetPerUnit>2</BetPerUnit>
+        <BetPerUnit>3</BetPerUnit>
+        <BetPerUnit>5</BetPerUnit>
+        <BetPerUnit>10</BetPerUnit>
+      </BetPerUnitMappings>
+    </BetPerUnitConfiguration>
+  </BetPerUnitConfigurationList>
+</BetPerUnitData>
+"""
+
+BET_UNIT_XML = """<BetUnitData>
+  <UnitConfigurationList>
+    <UnitConfiguration numUnits="{lines}">
+      <UnitSelectMappings tag="1">
+        <UnitSelectData units="{lines}" cost="{cost}"/>
+      </UnitSelectMappings>
+    </UnitConfiguration>
+  </UnitConfigurationList>
+</BetUnitData>
+"""
+
 LOGGED = "FortuneOx-1101YX-1c-90"
 OTHER = "FortuneOx-1102RX-100c-90"
 
@@ -204,8 +235,15 @@ def write_paytable(
     lines: int | None = 5,
     math_lines: str = "20",
     math: str | None = None,
+    cost: int | None = 88,
+    bet_per_unit: str | None = BET_PER_UNIT_XML,
 ) -> Path:
-    """Write one paytable folder: its maths, and its identity when it has one."""
+    """Write one paytable folder: its maths, its identity, and what a spin costs.
+
+    ``cost`` of ``None`` writes neither bet configuration file, which is the
+    older-install shape; ``bet_per_unit`` overrides its contents so an
+    unreadable one can be written deliberately.
+    """
     directory = root / paytable_id
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "math.xml").write_text(
@@ -222,6 +260,14 @@ def write_paytable(
                 multiplier=_declared_multiplier(paytable_id),
             ),
             encoding="utf-8-sig",
+        )
+    if cost is not None:
+        if bet_per_unit is not None:
+            (directory / "betPerUnitConfig.xml").write_text(
+                bet_per_unit, encoding="utf-8"
+            )
+        (directory / "betUnitConfig.xml").write_text(
+            BET_UNIT_XML.format(lines=lines, cost=cost), encoding="utf-8"
         )
     return directory
 
@@ -822,6 +868,102 @@ async def test_a_payline_set_the_geometry_does_not_declare_is_reported(
     assert geometry["payline_set_id"] == "40"
     assert geometry["paylines"] == []
     assert "No payline set '40'" in geometry["error"]
+
+
+# --- what a spin costs ----------------------------------------------------
+
+
+async def test_the_bet_ladder_and_the_unit_cost_are_read_together(
+    client: AsyncClient, active_game, install: Path
+) -> None:
+    """The pair is what separates the two factors of a bet.
+
+    A paytable value is a rate per bet unit, so what it awards is that value
+    times the rung -- and what the spin cost is the unit cost times the same
+    rung. Neither number exists without both files.
+    """
+    active_game()
+
+    bet = assert_success((await client.get(f"{API}/")).json())["bet_config"]
+
+    assert bet["ladder"] == [1, 2, 3, 5, 10]
+    assert bet["unit_cost"] == 88
+    assert bet["minimum"] == 1
+    assert bet["maximum"] == 10
+    assert bet["error"] is None
+
+
+async def test_the_total_bets_reproduce_the_cabinet_declared_ladder(
+    client: AsyncClient, active_game, install: Path
+) -> None:
+    """`cost x each rung` is the same list `gameConfig.cfg` writes as
+    `SpecificMaxBets` and `math.xml` as `AllowedBetsTbl`. Three statements of
+    one ladder, so agreeing with them is what says this read was right."""
+    active_game()
+
+    bet = assert_success((await client.get(f"{API}/")).json())["bet_config"]
+
+    assert bet["total_bets"] == [88, 176, 264, 440, 880]
+
+
+async def test_the_unit_block_is_chosen_by_the_paytable_line_count(
+    client: AsyncClient, active_game, install: Path
+) -> None:
+    """The same two files ship in folders playing different line counts -- 40
+    lines at 88, 20 at 50 -- so the paytable's own NumberOfLines picks the
+    block, exactly as it picks the payline set."""
+    write_paytable(install, LOGGED, lines=20, cost=50)
+    active_game()
+
+    bet = assert_success((await client.get(f"{API}/")).json())["bet_config"]
+
+    assert bet["units"] == 20
+    assert bet["unit_cost"] == 50
+    assert bet["total_bets"] == [50, 100, 150, 250, 500]
+
+
+async def test_an_unreadable_bet_config_does_not_lose_the_rest_of_the_page(
+    client: AsyncClient, active_game, install: Path
+) -> None:
+    """Same bargain as the geometry: the symbols, strips and combos are all
+    still true without knowing what a spin cost."""
+    write_paytable(install, LOGGED, bet_per_unit="<BetPerUnitData><nope")
+    active_game()
+
+    data = assert_success((await client.get(f"{API}/")).json())
+
+    assert data["math"]["symbols"], "the maths should still be there"
+    assert data["bet_config"]["error"] is not None
+    assert data["bet_config"]["ladder"] == []
+    assert data["bet_config"]["unit_cost"] is None
+
+
+async def test_a_folder_shipping_neither_file_reports_no_bet_config(
+    client: AsyncClient, active_game, install: Path
+) -> None:
+    """Absent is null rather than an error: an older install may not carry them
+    at all, and that is not a failure to read anything."""
+    (install / LOGGED / "betPerUnitConfig.xml").unlink()
+    (install / LOGGED / "betUnitConfig.xml").unlink()
+    active_game()
+
+    data = assert_success((await client.get(f"{API}/")).json())
+
+    assert data["bet_config"] is None
+    assert data["math"]["symbols"], "the maths should still be there"
+
+
+async def test_the_unit_cost_agrees_with_the_folders_own_minimum_bet(
+    client: AsyncClient, active_game, install: Path
+) -> None:
+    """`MinTotalBet` is the cabinet's declared minimum, and the minimum is the
+    first rung -- so it should equal the unit cost. A free corroboration of a
+    read from two files that `gameConfig.cfg` knows nothing about."""
+    active_game()
+
+    data = assert_success((await client.get(f"{API}/")).json())
+
+    assert data["bet_config"]["unit_cost"] == data["identity"]["min_total_bet"]
 
 
 # --- caching --------------------------------------------------------------

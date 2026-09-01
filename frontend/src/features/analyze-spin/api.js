@@ -69,20 +69,59 @@ export function getSpinStatus({ includeImages = false, signal } = {}) {
 /**
  * Spin once and validate it. Returns as soon as the run is under way, not when
  * it ends — 409 when one is already going, or when the active game declares no
- * log to follow a spin through, 400 for an architecture that does not exist.
+ * log to follow a spin through, 400 for an architecture that does not exist or
+ * a bet per unit that could not be one.
  *
- * @param {{record?: boolean, architecture?: string}} [options] `record` also
- *   makes a video of the spin with OBS; off by default. `architecture` picks
- *   which trained network names the tiles of the reels — omit it to let the
+ * @param {{record?: boolean, architecture?: string,
+ *   betPerUnit?: number}} [options] `record` also makes a video of the spin with
+ *   OBS; off by default. `architecture` picks which trained network names the
+ *   tiles of the reels. `betPerUnit` is how many credits are staked on each bet
+ *   unit — the multiplier on every line's paytable value. Omit either to let the
  *   backend use its own default.
  * @returns {Promise<{active: boolean, run: SpinRun|null}>}
  */
-export function startSpin({ record = false, architecture } = {}) {
+export function startSpin({ record = false, architecture, betPerUnit } = {}) {
   return apiRequest({
     method: "POST",
     url: `${ANALYZE_SPIN_URL}/start`,
-    params: architecture ? { record, architecture } : { record },
+    params: {
+      record,
+      ...(architecture ? { architecture } : {}),
+      ...(betPerUnit ? { bet_per_unit: betPerUnit } : {}),
+    },
   });
+}
+
+/**
+ * The rungs the loaded paytable lets a player stake on each bet unit.
+ *
+ * Read from the paytable endpoint rather than hardcoded the way the classifier
+ * list is: the ladder is the game's own (`1, 2, 3, 5, 10` on FortuneOx,
+ * `1, 2, 3, 5, 8` on HuffNPuffLink), so a fixed list here would be wrong on the
+ * second game. Fetched through this slice's own client rather than by importing
+ * the paytable feature's hook, so this slice still deletes in one directory.
+ *
+ * Resolves to nulls rather than throwing when the game is not installed on this
+ * machine — there is no ladder to offer, and the control falls back to a plain
+ * number input.
+ *
+ * @param {{signal?: AbortSignal}} [options]
+ * @returns {Promise<{ladder: number[], unit_cost: number|null,
+ *   total_bets: number[], error: string|null}>}
+ */
+export async function getBetConfig({ signal } = {}) {
+  const data = await apiRequest({
+    method: "GET",
+    url: `${routes.API}/paytable/`,
+    signal,
+  });
+  const bet = data?.bet_config ?? null;
+  return {
+    ladder: bet?.ladder ?? [],
+    unit_cost: bet?.unit_cost ?? null,
+    total_bets: bet?.total_bets ?? [],
+    error: bet?.error ?? null,
+  };
 }
 
 /**
@@ -158,7 +197,8 @@ export function cancelSpin() {
  *       matched: boolean, counted: boolean}>,
  *     symbols: Array<string|null>, symbol: string|null,
  *     symbol_name: string|null, combo_id: number|null,
- *     combo_symbols: string[], credits: number|null,
+ *     combo_symbols: string[], combo_value: number|null,
+ *     credits: number|null,
  *     min_pay_length: number|null, note: string|null,
  *     image_data: string|null}>,
  *   runs_found: number, awarded_lines: number, unnamed_positions: string[],
@@ -167,6 +207,7 @@ export function cancelSpin() {
  *     score_min: number|null, score_max: number|null,
  *     matched_min: number|null, rejected_max: number|null}|null,
  *   expected: {paying_lines: number, credits: number,
+ *     bet_per_unit: number|null, unit_cost: number|null,
  *     line_count: number|null, denomination_label: string|null,
  *     money_per_credit: number|null,
  *     total_bet: number|null, bet_credits: number|null,
@@ -176,5 +217,8 @@ export function cancelSpin() {
  *     verdict: "passed"|"failed"|"indeterminate", detail: string}|null,
  *   output_dir: string|null, output_file: string|null,
  *   overlay_image: string|null, error: string|null}|null} paylines
+ * @property {{value: number|null, source: "request"|"setting"|"unset",
+ *   ladder: number[], unit_cost: number|null, total_bet: number|null,
+ *   note: string|null}} bet_per_unit
  * @property {string[]} errors
  */

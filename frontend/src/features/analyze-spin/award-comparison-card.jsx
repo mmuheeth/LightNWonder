@@ -150,12 +150,14 @@ function SpinTable({ rows, inCredits }) {
  * the reels and the game's own maths, and the WIN cell OCR read off the result
  * screenshot. Everything before this is a *reading*; this is the check.
  *
- * **The conversion is one multiplication**: the credits awarded, times what a
- * credit is worth. A paytable combo's value *is* the award and not a per-line rate
- * to be scaled by the stake — measured on a captured win the game drew both ways,
- * `75` on a credit meter and `$0.75` on a cash one at 1c. It is still shown as a
- * ladder rather than a single figure because a wrong verdict is nearly always one
- * of the two inputs rather than the pay itself.
+ * **The conversion is two multiplications**: a paytable combo's value is a rate
+ * per *bet unit*, so the lines' rates are staked first — times the bet per unit —
+ * and only the result is worth converting into money. The captured win behind
+ * the second half (`75` on a credit meter, `$0.75` on a cash one at 1c) was a
+ * spin at one credit a unit, where the two are the same number; it is consistent
+ * with the stake and never was evidence against one. What it does rule out is
+ * scaling by the stake spread over a *line*, which on FortuneOx is 88 over 40
+ * lines and not a rung of anything.
  *
  * **And on a credit meter there is no multiplication at all**, so the ladder does
  * not show one: the glass is already counting the thing the paytable is
@@ -197,15 +199,17 @@ function SpinTable({ rows, inCredits }) {
  * saying the same thing. What is *not* self-evident from the pair is the tolerance
  * behind the verdict, so that says itself in the caption.
  *
- * Two things once multiplied into the expectation that should not have: the stake
- * per line, which inflated it by that stake, and the denomination itself. The
- * stake per line is no longer shown at all; it is still on the payload as
- * `credits_per_line`.
+ * The stake *per line* is not one of the multiplications and is not shown as a
+ * step, though it is still on the payload as `credits_per_line`. It is a real
+ * thing a player reads off the glass and it prices nothing: 88 credits over 40
+ * lines is 2.2, which no ladder offers.
  *
- * `indeterminate` is not a soft failure, and it has two causes worth telling
- * apart: the denomination never appeared in the log, or it appeared but its
- * paytable named no unit so credits cannot be priced in money. The backend's
- * `detail` says which. An unreadable bet is no longer one of them.
+ * `indeterminate` is not a soft failure, and it has three causes worth telling
+ * apart: no bet per unit was given, so the lines' rates cannot be staked; the
+ * denomination never appeared in the log; or it appeared but its paytable named
+ * no unit, so credits cannot be priced in money. The backend's `detail` says
+ * which. An unreadable *bet* is none of them — the stake is an input here, not
+ * something read off the meter.
  */
 /** One unit's account of the spin, off the frames that hold each figure. */
 function figuresOf(meter, unit) {
@@ -335,11 +339,47 @@ export function AwardComparisonCard({ expected, meter }) {
 
       <CardContent className="space-y-4">
         <div>
+          {/* The first multiplication, and the only input on this card that was
+              given rather than measured. A paytable value is a rate per bet
+              unit, so the rows the maths supplies are worth nothing until the
+              stake says how many units — and a wrong stake misprices the whole
+              spin while every reading behind it stays correct. Shown as its own
+              step for exactly that reason. Divided back out of the total rather
+              than passed in: `credits` is the sum of the lines already priced,
+              so the rate total is that over the stake, exactly. */}
+          {expected.bet_per_unit ? (
+            <>
+              <Step
+                label="Line rates"
+                hint={`${expected.paying_lines} paying line${
+                  expected.paying_lines === 1 ? "" : "s"
+                }, per bet unit`}
+                value={count(expected.credits / expected.bet_per_unit)}
+              />
+              <Step
+                operator="×"
+                label="Bet per unit"
+                hint={
+                  expected.unit_cost
+                    ? `a spin costs ${expected.unit_cost}, so this bets ${
+                        expected.unit_cost * expected.bet_per_unit
+                      }`
+                    : "what the cabinet's bet button was set to"
+                }
+                value={count(expected.bet_per_unit)}
+              />
+            </>
+          ) : null}
           <Step
+            operator={expected.bet_per_unit ? "=" : undefined}
             label="Credits awarded"
-            hint={`${expected.paying_lines} paying line${
-              expected.paying_lines === 1 ? "" : "s"
-            }`}
+            hint={
+              expected.bet_per_unit
+                ? undefined
+                : `${expected.paying_lines} paying line${
+                    expected.paying_lines === 1 ? "" : "s"
+                  } — needs a bet per unit to price`
+            }
             value={count(expected.credits)}
           />
           {/* The multiplication is in the ladder only when it actually happens.

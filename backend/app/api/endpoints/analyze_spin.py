@@ -42,8 +42,8 @@ RUN_CONFLICT: ResponseSpec = {
     }
 }
 BAD_CONFIG: ResponseSpec = {500: {"description": "The game config is unreadable"}}
-BAD_ARCHITECTURE: ResponseSpec = {
-    400: {"description": "No such classifier architecture"}
+BAD_REQUEST: ResponseSpec = {
+    400: {"description": "No such classifier architecture, or an impossible bet"}
 }
 
 
@@ -85,7 +85,7 @@ async def get_status(
     "/start",
     response_model=ApiResponse[SpinAnalysisState],
     summary="Spin once, and validate it",
-    responses={**RUN_CONFLICT, **BAD_CONFIG, **BAD_ARCHITECTURE},
+    responses={**RUN_CONFLICT, **BAD_CONFIG, **BAD_REQUEST},
 )
 async def start(
     record: bool = Query(
@@ -106,6 +106,20 @@ async def start(
             "than a failed step twelve steps in."
         ),
     ),
+    bet_per_unit: int | None = Query(
+        default=None,
+        description=(
+            "Credits staked on each bet unit -- what the cabinet's bet button "
+            "was set to. A paytable value is a rate per bet unit, so this is "
+            "what a line's 'pays 25' is multiplied by. **Usually omit it**: the "
+            "run works it out as bet_credits / unit_cost once the meter has "
+            "read the BET cell. Pass it to override that, on a cabinet whose "
+            "meter will not OCR. The rungs a game offers are in its own "
+            "betPerUnitConfig.xml (1, 2, 3, 5, 10 on FortuneOx); one it does "
+            "not offer is a note on the run rather than a refusal, since only "
+            "the game's install knows the ladder."
+        ),
+    ),
 ) -> ApiResponse[SpinAnalysisState]:
     """Press spin on the active game, follow it to its result, and run the cash
     meter and payline validations over the screenshots it took.
@@ -115,7 +129,9 @@ async def start(
     check without touching the machine -- the game config parsing, its log
     existing -- refuse the request; everything else fails on its own step, with
     the error the equivalent direct request would have given."""
-    state = await analyze_spin_service.start(record=record, architecture=architecture)
+    state = await analyze_spin_service.start(
+        record=record, architecture=architecture, bet_per_unit=bet_per_unit
+    )
     run = state.run
     return ApiResponse[SpinAnalysisState].ok(
         data=state,

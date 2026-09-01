@@ -327,6 +327,67 @@ class WinGeometryInfo(BaseModel):
     )
 
 
+class BetConfigInfo(BaseModel):
+    """``betPerUnitConfig.xml`` and ``betUnitConfig.xml``: what a spin costs.
+
+    The pair answers what neither ``math.xml`` nor ``gameConfig.cfg`` answers
+    directly. A payline combo's ``value`` is a rate **per bet unit**, so what a
+    line actually awards is ``value x bet_per_unit`` -- 25 becomes 25 at the
+    minimum and 250 at ten. ``unit_cost`` is the other factor: a spin costs
+    ``unit_cost x bet_per_unit`` credits.
+
+    Read as a pair because only these two files separate the factors.
+    ``gameConfig.cfg``'s ``SpecificMaxBets`` and ``math.xml``'s ``AllowedBetsTbl``
+    both carry the *product* (``88 176 264 440 880``), which cannot be divided
+    back into a cost and a ladder without already knowing one of them.
+    """
+
+    path: str = Field(description="The betPerUnitConfig.xml it was read from.")
+    ladder: list[int] = Field(
+        default_factory=list,
+        description=(
+            "The bets per unit a player can select, in the file's own order -- "
+            "1, 2, 3, 5, 10 on FortuneOx. A ladder and never a range: there is "
+            "no 4."
+        ),
+    )
+    minimum: int | None = Field(default=None, description="MinBetPerUnit, as declared.")
+    maximum: int | None = Field(
+        default=None,
+        description=(
+            "MaxBetPerUnit. The file's own comment calls it the highest value "
+            "across all mappings, so it need not be the last rung of any one."
+        ),
+    )
+    units: int | None = Field(
+        default=None,
+        description="numUnits of the block that answered -- the paytable's lines.",
+    )
+    unit_cost: int | None = Field(
+        default=None,
+        description=(
+            "Credits one spin costs at one bet per unit. Should equal the "
+            "folder's own MinTotalBet, which is a free corroboration of this "
+            "read rather than its source."
+        ),
+    )
+    total_bets: list[int] = Field(
+        default_factory=list,
+        description=(
+            "unit_cost x each rung -- what the cabinet can actually be bet at. "
+            "Reproduces SpecificMaxBets exactly, which is what says the pair was "
+            "read correctly."
+        ),
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Why the bet configuration could not be read. Null when it was; the "
+            "symbols, strips and combos above it are still true without it."
+        ),
+    )
+
+
 # --- the whole view -------------------------------------------------------
 
 
@@ -447,3 +508,11 @@ class PaytableView(BaseModel):
     )
     math: GameMathInfo
     win_geometry: WinGeometryInfo
+    bet_config: BetConfigInfo | None = Field(
+        default=None,
+        description=(
+            "What a spin costs and what multiplies a line's value. Null when the "
+            "folder ships neither bet configuration file -- older installs, and "
+            "any machine without the game."
+        ),
+    )

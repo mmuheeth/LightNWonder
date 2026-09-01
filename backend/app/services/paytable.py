@@ -49,6 +49,7 @@ from app.exceptions.base import (
     PaytableUnavailableError,
 )
 from app.schemas.paytable import (
+    BetConfigInfo,
     DenominationInfo,
     GameMathInfo,
     MathDefaultsInfo,
@@ -67,6 +68,13 @@ from app.schemas.paytable import (
     WinGeometryInfo,
 )
 from app.utils import denomination, game_log
+from app.utils.bet_config import (
+    BetConfigError,
+    BetPerUnitConfig,
+    BetUnitConfig,
+    load_bet_per_unit_config,
+    load_bet_unit_config,
+)
 from app.utils.game_math import (
     GameMath,
     GameMathError,
@@ -86,6 +94,8 @@ logger = get_logger("paytable")
 MATH_FILE = "math.xml"
 IDENTITY_FILE = "gameConfig.cfg"
 GEOMETRY_FILE = "winGeometry.xml"
+BET_PER_UNIT_FILE = "betPerUnitConfig.xml"
+BET_UNIT_FILE = "betUnitConfig.xml"
 
 # Fallback names for a game whose config names nothing yet. Both come from
 # math.xml's structure rather than from any text in it -- it has none -- so a
@@ -582,6 +592,53 @@ def _win_geometry(
     )
 
 
+def _bet_config(
+    directory: Path, identity: PaytableIdentity | None
+) -> BetConfigInfo | None:
+    """Read the folder's two bet configuration files, if it ships them.
+
+    Absent is ``None`` rather than an error: an older install may not carry
+    them, and neither does a machine without the game. Present but unreadable is
+    an ``error`` on a 200, exactly as an unreadable ``winGeometry.xml`` is --
+    the symbols, strips and combos are all still true without knowing what a
+    spin costs.
+
+    The two are read as a pair because only together do they separate the cost
+    of a spin from the ladder that multiplies it. The line count comes from the
+    paytable's own ``NumberOfLines``, which is what picks the block: the same
+    files ship in folders playing 40 lines at 88 and 20 at 50.
+    """
+    per_unit_path = directory / BET_PER_UNIT_FILE
+    unit_path = directory / BET_UNIT_FILE
+    if not per_unit_path.is_file() and not unit_path.is_file():
+        return None
+
+    units = None if identity is None else identity.number_of_lines
+    try:
+        per_unit: BetPerUnitConfig = _cached(per_unit_path, load_bet_per_unit_config)
+        unit_config: BetUnitConfig = _cached(unit_path, load_bet_unit_config)
+    except BetConfigError as exc:
+        return BetConfigInfo(path=str(per_unit_path), error=str(exc))
+
+    # The tag pairs the two files, and only one of them can offer it -- the
+    # unit block names the scheme, the ladder follows it.
+    configuration = unit_config.configuration(units)
+    selection = None if configuration is None else configuration.selection()
+    tag = None if selection is None else selection.tag
+    ladder = per_unit.ladder(tag)
+    cost = None if selection is None else selection.cost
+
+    return BetConfigInfo(
+        path=str(per_unit_path),
+        ladder=list(ladder),
+        minimum=per_unit.minimum,
+        maximum=per_unit.maximum,
+        units=None if configuration is None else configuration.num_units,
+        unit_cost=cost,
+        total_bets=[] if cost is None else [cost * rung for rung in ladder],
+    )
+
+
 def _identity_info(identity: PaytableIdentity | None) -> PaytableIdentityInfo | None:
     """Narrow a parsed ``gameConfig.cfg`` to its public shape."""
     if identity is None:
@@ -716,6 +773,7 @@ def _view(paytable_id: str | None) -> PaytableView:
         denomination=denomination,
         math=_math_info(math, config),
         win_geometry=_win_geometry(_geometry_path(config, root), math, identity),
+        bet_config=_bet_config(directory, identity),
     )
 
 

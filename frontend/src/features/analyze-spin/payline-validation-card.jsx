@@ -140,15 +140,26 @@ function Award({ line }) {
   return (
     <div className="space-y-1">
       {/* The derivation, in the order it happens: this many of this symbol, at
-          this value. "Pays" is left for the credits alone. */}
+          this rate, staked this many times. The paytable's own figure is kept
+          beside the award rather than replaced by it — it is the number the
+          Game Config page shows, and the two are equal only at one credit a
+          unit. "Pays" is left for the credits alone. */}
       <p className="text-xs">
         <span className="text-muted-foreground">{line.pays} × </span>
         <span className="font-medium">{line.symbol_name ?? line.symbol}</span>
         <span className="text-muted-foreground"> → </span>
         <span className="font-mono font-medium tabular-nums">
-          {numeric(line.credits)}
+          {numeric(line.credits ?? line.combo_value)}
         </span>
-        <span className="text-muted-foreground"> credits</span>
+        <span className="text-muted-foreground">
+          {line.credits === null ? " a bet unit" : " credits"}
+        </span>
+        {line.credits !== null && line.combo_value !== line.credits ? (
+          <span className="text-muted-foreground">
+            {" "}
+            ({numeric(line.combo_value)} a bet unit)
+          </span>
+        ) : null}
       </p>
       {line.combo_symbols.length > 0 ? (
         <p className="text-muted-foreground font-mono text-[0.65rem]">
@@ -186,7 +197,15 @@ function AwardedLine({ line }) {
         </p>
         <span className="ml-auto shrink-0 text-sm font-semibold whitespace-nowrap">
           <span className="text-muted-foreground font-normal">pays </span>
-          <span className="font-mono tabular-nums">{numeric(line.credits)}</span>
+          <span className="font-mono tabular-nums">
+            {numeric(line.credits ?? line.combo_value)}
+          </span>
+          {/* An awarded line with no credits is a run nobody said the stake for.
+              It says the rate rather than printing it as though it were the
+              award — the same mistake as reading a rate for a total. */}
+          {line.credits === null ? (
+            <span className="text-muted-foreground font-normal"> a bet unit</span>
+          ) : null}
         </span>
       </div>
       <Codes line={line} />
@@ -205,7 +224,8 @@ function LineRow({ line, image }) {
         <span className="font-medium">{line.label}</span>
         {line.awarded ? (
           <Badge className="border-emerald-500/30 bg-emerald-500/15 font-mono text-emerald-700 dark:text-emerald-400">
-            matches {line.pays} · pays {numeric(line.credits)}
+            matches {line.pays} · pays {numeric(line.credits ?? line.combo_value)}
+            {line.credits === null ? " a bet unit" : ""}
           </Badge>
         ) : (
           <Badge variant="outline" className="text-muted-foreground font-mono">

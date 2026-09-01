@@ -36,6 +36,7 @@ from app.schemas.paytable import DenominationInfo
 
 __all__ = [
     "SpinAnalysisState",
+    "SpinBetPerUnit",
     "SpinExpectedAward",
     "SpinFrame",
     "SpinLineAward",
@@ -601,12 +602,24 @@ class SpinLineAward(BaseModel):
         default_factory=list,
         description="That combo's pattern as the file writes it, 'ANY' tail included.",
     )
+    combo_value: float | None = Field(
+        default=None,
+        description=(
+            "The paytable row's own number, before the bet unit multiplies it -- "
+            "what the Game Config page shows for this symbol at this length. Null "
+            "when the maths pays nothing for that pair, which is also when "
+            "'awarded' is false and 'note' says so."
+        ),
+    )
     credits: float | None = Field(
         default=None,
         description=(
-            "The award this line earns, per line at one credit staked. Null when "
-            "the maths pays nothing for this symbol at this length, which is also "
-            "when 'awarded' is false and 'note' says so."
+            "What this line actually awards: combo_value x bet_per_unit, since a "
+            "paytable value is a rate per bet unit rather than a flat amount. "
+            "Equal to combo_value only at one credit a unit. Null when the maths "
+            "pays nothing, and also when no bet per unit was given -- an award "
+            "that cannot be priced is not the same as one worth nothing, so "
+            "combo_value is still there to read."
         ),
     )
     min_pay_length: int | None = Field(
@@ -636,11 +649,18 @@ class SpinExpectedAward(BaseModel):
     """What the paytable says the spin should have paid, and whether the meter
     agrees.
 
-    The award is one multiplication -- ``credits x money_per_credit`` -- because a
-    paytable combo's value *is* the award in credits and not a per-line rate to be
-    scaled by the stake. The bet in credits and the stake per line are reported
-    beside it as context, since a wrong verdict is usually a misread bet or a
-    misresolved denomination and those are where it shows, but neither is an input.
+    The award is two multiplications, and they happen in different places. A
+    paytable combo's value is a rate *per bet unit*, so each line is priced
+    ``combo_value x bet_per_unit`` back in :class:`SpinLineAward` -- by the time
+    the total gets here that has already happened, and ``credits`` is just their
+    sum. The one multiplication left is ``credits x money_per_credit``, into
+    money.
+
+    ``bet_per_unit`` is an input the run was *given* rather than one it read, so
+    without it there is no award to compare and the verdict is ``indeterminate``.
+    The bet in credits is reported beside it and is not an input: it is what
+    checks the given rung against the machine, which is the
+    ``bet-declared-credits`` check on the meter validation.
 
     The denomination arrives as two fields on purpose. The game's log reports it
     as a count of cents (``denom[2.000]`` on a ``-2c-`` paytable), so the number
@@ -656,7 +676,32 @@ class SpinExpectedAward(BaseModel):
     """
 
     paying_lines: int = Field(ge=0, description="Lines with a run that pays.")
-    credits: float = Field(default=0.0, description="Total award in paytable credits.")
+    credits: float = Field(
+        default=0.0,
+        description=(
+            "Total award in credits: the awarded lines' own priced figures added "
+            "up, each already multiplied by bet_per_unit. 0 when no bet per unit "
+            "was given, in which case the verdict is indeterminate and the "
+            "unpriced figures are on the lines themselves."
+        ),
+    )
+    bet_per_unit: int | None = Field(
+        default=None,
+        description=(
+            "Credits staked on each bet unit, as the run was asked to grade at. "
+            "The multiplier behind every line's award. Null when none was given, "
+            "which is what leaves the verdict indeterminate."
+        ),
+    )
+    unit_cost: int | None = Field(
+        default=None,
+        description=(
+            "Credits one spin costs at one bet per unit, from the paytable's "
+            "betUnitConfig.xml. With bet_per_unit it gives the bet this spin "
+            "should have cost -- which is what `bet-declared-credits` checks the "
+            "meter's BET cell against."
+        ),
+    )
     line_count: int | None = Field(
         default=None, description="Lines the loaded paytable plays."
     )
@@ -688,25 +733,29 @@ class SpinExpectedAward(BaseModel):
         description=(
             "The bet in credits: total_bet divided by money_per_credit on a cash "
             "meter, and total_bet itself on a credit meter, which is already "
-            "counting them. Context, not a step -- it prices nothing below, and "
-            "is carried because it is the one figure that checks the denomination "
-            "against the cabinet's own declared minimum bet."
+            "counting them. Context, not a step -- it prices nothing below. What "
+            "it is carried for is the comparison against `unit_cost x "
+            "bet_per_unit`, which is what says the rung this run was graded at is "
+            "the rung the cabinet was actually on."
         ),
     )
     credits_per_line: float | None = Field(
         default=None,
         description=(
             "bet_credits divided by line_count -- the stake on each line. Takes no "
-            "part in the award: a paytable value is the award, not a per-line rate "
-            "to be scaled by the stake."
+            "part in the award and is not the bet unit: FortuneOx spreads 88 "
+            "credits over 40 lines, which is 2.2 a line and not a rung of any "
+            "ladder. Reported because a per-line figure is what a player reads off "
+            "the glass."
         ),
     )
     cash: float | None = Field(
         default=None,
         description=(
-            "credits x money_per_credit -- the award in money, and the whole "
-            "conversion. Null only when money_per_credit could not be resolved; it "
-            "needs neither the bet nor the line count."
+            "credits x money_per_credit -- the award in money. Null when "
+            "money_per_credit could not be resolved; it needs neither the bet nor "
+            "the line count, but it does need bet_per_unit, since `credits` is "
+            "already priced by it."
         ),
     )
     unit: SpinMeterUnit = Field(
@@ -857,6 +906,63 @@ class SpinPaylineValidation(BaseModel):
 # --- the run --------------------------------------------------------------
 
 
+class SpinBetPerUnit(BaseModel):
+    """How much was staked on each bet unit, and what the game allows.
+
+    Worked out rather than asked for, in the ordinary case. The player's stake
+    is not written anywhere directly -- the meter's BET cell shows the *total*
+    and the game's log mentions a bet only when one is changed -- but it follows
+    from two things the run already has: ``bet_credits / unit_cost``, the bet the
+    meter drew over what the paytable says one spin costs at one credit a unit.
+    A request may name it instead, which is the override for a cabinet whose BET
+    cell will not OCR.
+    """
+
+    value: int | None = Field(
+        default=None,
+        description=(
+            "Credits on each bet unit, and so the multiplier on every line "
+            "award. Null only when it was neither given nor derivable, which "
+            "leaves the award verdict indeterminate."
+        ),
+    )
+    source: str = Field(
+        default="unset",
+        description=(
+            "Where it came from: 'meter' (derived from the bet, the usual "
+            "case), 'request', 'setting', or 'unset' when it could not be "
+            "worked out at all."
+        ),
+    )
+    ladder: list[int] = Field(
+        default_factory=list,
+        description=(
+            "The rungs this game's paytable offers, from betPerUnitConfig.xml. "
+            "Empty when the paytable was not read -- which is not a reason to "
+            "refuse a value, only a reason not to check it."
+        ),
+    )
+    unit_cost: int | None = Field(
+        default=None,
+        description="Credits one spin costs at one bet per unit, from betUnitConfig.xml.",
+    )
+    total_bet: int | None = Field(
+        default=None,
+        description=(
+            "unit_cost x value -- what this spin should have cost. Compared "
+            "against the meter's own BET cell by `bet-declared-credits`."
+        ),
+    )
+    note: str | None = Field(
+        default=None,
+        description=(
+            "Why the value and the game disagree -- a rung the ladder does not "
+            "offer, or a paytable that could not say. Never fails the run: the "
+            "value was still applied, and this says it is worth doubting."
+        ),
+    )
+
+
 class SpinRun(BaseModel):
     """One spin, driven end to end, and everything it proved."""
 
@@ -906,6 +1012,16 @@ class SpinRun(BaseModel):
     )
     paylines: SpinPaylineValidation | None = Field(
         default=None, description="Null until the payline step has run."
+    )
+    bet_per_unit: SpinBetPerUnit = Field(
+        default_factory=lambda: SpinBetPerUnit(),
+        description=(
+            "What the run was told a bet unit costs, and what the game says it "
+            "may be. Present from the moment the run is created, unlike every "
+            "reading above it: it is an input rather than something measured, and "
+            "a run that died on step one should still say what it would have "
+            "priced by."
+        ),
     )
     errors: list[str] = Field(
         default_factory=list,
