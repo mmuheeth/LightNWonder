@@ -337,31 +337,18 @@ class BetConfigInfo(BaseModel):
     ``unit_cost x bet_per_unit`` credits.
 
     Read as a pair because only these two files separate the factors.
-    ``gameConfig.cfg``'s ``SpecificMaxBets`` and ``math.xml``'s ``AllowedBetsTbl``
-    both carry the *product* (``88 176 264 440 880``), which cannot be divided
-    back into a cost and a ladder without already knowing one of them.
+    ``gameConfig.cfg``'s ``SpecificMaxBets`` carries the *product*
+    (``88 176 264 440 880``), which cannot be divided back into a cost and a
+    ladder without already knowing one of them.
     """
 
-    path: str = Field(description="The betPerUnitConfig.xml it was read from.")
     ladder: list[int] = Field(
         default_factory=list,
         description=(
             "The bets per unit a player can select, in the file's own order -- "
             "1, 2, 3, 5, 10 on FortuneOx. A ladder and never a range: there is "
-            "no 4."
+            "no 4. What a bet read off the meter is checked against."
         ),
-    )
-    minimum: int | None = Field(default=None, description="MinBetPerUnit, as declared.")
-    maximum: int | None = Field(
-        default=None,
-        description=(
-            "MaxBetPerUnit. The file's own comment calls it the highest value "
-            "across all mappings, so it need not be the last rung of any one."
-        ),
-    )
-    units: int | None = Field(
-        default=None,
-        description="numUnits of the block that answered -- the paytable's lines.",
     )
     unit_cost: int | None = Field(
         default=None,
@@ -369,14 +356,6 @@ class BetConfigInfo(BaseModel):
             "Credits one spin costs at one bet per unit. Should equal the "
             "folder's own MinTotalBet, which is a free corroboration of this "
             "read rather than its source."
-        ),
-    )
-    total_bets: list[int] = Field(
-        default_factory=list,
-        description=(
-            "unit_cost x each rung -- what the cabinet can actually be bet at. "
-            "Reproduces SpecificMaxBets exactly, which is what says the pair was "
-            "read correctly."
         ),
     )
     error: str | None = Field(

@@ -2014,7 +2014,7 @@ cash meter and payline validations over the frames it took.
 
 ```
 POST /api/analyze-spin/start          spin once, and validate it
-                                      ?record=, ?architecture=, ?bet_per_unit=
+                                      ?record=, ?architecture=
 GET  /api/analyze-spin/status         the run in progress, or the last one
 POST /api/analyze-spin/cancel         ask the run in progress to stop
 GET  /api/analyze-spin/frames/{file}  one screenshot the run took
@@ -2311,19 +2311,6 @@ There is deliberately **no fallback to cosine similarity** when the reading fail
 a run measured by likeness and then priced as though it had been named is worse
 than a run reported short.
 
-**What the cabinet's bet was set to is the other per-run choice**, and it is a
-different kind of one: the architecture changes how the spin is *measured*, while
-`?bet_per_unit=` changes what it is *worth*. It falls back to
-`ANALYZE_SPIN_BET_PER_UNIT` and then to nothing, and is offered beside the
-classifier dropdown as a select filled from the loaded paytable's own ladder --
-`1, 2, 3, 5, 10` on FortuneOx, `1, 2, 3, 5, 8` on HuffNPuffLink. That list is
-fetched rather than hardcoded, unlike the two architectures, because it is the
-game's and not this repo's; when the game is not installed on this machine the
-control falls back to a plain number input and the backend stays the validator.
-Only the shape is refused here (a 400 for anything not a positive integer) --
-a rung the game does not offer becomes a note on the run at `prepare`, since the
-ladder is in a file only the game's install has.
-
 ### What landed, as its own block
 
 `run.reels` is the reading, beside `run.meter` and `run.paylines` rather than
@@ -2402,22 +2389,18 @@ shows the *total* and the game's log mentions a bet only when one is changed —
 it follows from two figures the run already has:
 
 ```
-bet_per_unit = ?bet_per_unit= → ANALYZE_SPIN_BET_PER_UNIT → bet_credits / unit_cost
+bet_per_unit = bet_credits / unit_cost      # 880 / 88 = 10
 ```
 
-The last one is the ordinary case, so a run needs nothing configured; the first two
-are overrides for a cabinet whose meter will not OCR. Deriving is **not** simply
-rounding: `unit_cost × rungs` has to come back to the bet that was read, since 300
-credits over an 88-credit spin rounds to rung 3 while `88 × 3` is 264 — and the
-rung has to be one the ladder offers. A bet that satisfies neither leaves the
-stake unknown rather than mispricing every line on the run.
+There is no setting and no request parameter for it. Both figures are there
+whenever the meter reads, and a hand-set rung is one more thing to get wrong.
 
-It is never defaulted to 1, which would price a raised-bet spin short while looking
-certain about it. Only when the stake is neither given nor derivable is the award
-verdict `indeterminate`. A non-positive request is a 400; a rung the game does not
-offer is a **note** on the run, because the ladder lives in `betPerUnitConfig.xml`
-inside the game's own install and cannot be consulted until `prepare` has read the
-paytable.
+Deriving is **not** simply rounding: `unit_cost × rungs` has to come back to the
+bet that was read, since 300 credits over an 88-credit spin rounds to rung 3 while
+`88 × 3` is 264 — and the rung has to be one the ladder offers. A bet satisfying
+neither leaves the stake unknown rather than mispricing every line on the run, and
+the award verdict is then `indeterminate`. It is never defaulted to 1, which would
+price a raised-bet spin short while looking certain about it.
 
 **The meter reads before the reels.** Of the three closing steps it is the only one
 that produces an *input* to another — the unit the strip drew and what a bet unit

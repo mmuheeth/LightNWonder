@@ -198,20 +198,8 @@ def paytable(
         # multiplier is the bet per *unit* and never the stake on a line, and a
         # fixture where the two coincided would not tell them apart.
         bet_config=BetConfigInfo(
-            path="C:/game/GameConfig/betPerUnitConfig.xml",
             ladder=[1, 2, 3, 5, 10] if ladder is None else ladder,
-            minimum=1,
-            maximum=10,
-            units=lines,
             unit_cost=unit_cost,
-            total_bets=(
-                []
-                if unit_cost is None
-                else [
-                    unit_cost * rung
-                    for rung in ([1, 2, 3, 5, 10] if ladder is None else ladder)
-                ]
-            ),
         ),
     )
 
@@ -594,7 +582,6 @@ def run_for(
         started_at=started,
         architecture="resnet34",
         bet_per_unit=bet_per_unit,
-        bet_per_unit_source="request" if bet_per_unit is not None else "unset",
         record=False,
         steps={},
         outcome=outcome,
@@ -703,8 +690,8 @@ def test_the_award_is_scaled_by_the_bet_per_unit() -> None:
     4-long run of AA is the paytable's 50, and at 10 credits a unit the spin owes
     500 -- $5.00 at 1c.
 
-    The bet corroborates the rung rather than producing it: $8.80 at 1c is 880
-    credits, which is FortuneOx's 88-credit spin at its top rung of 10.
+    The bet is where the rung comes from: $8.80 at 1c is 880 credits, which is
+    FortuneOx's 88-credit spin at its top rung of 10.
     """
     awards = award(("1", ["AA", "AA", "AA", "AA", "BB"]), bet_per_unit=10)
     run = run_for(meter(bet=8.80, win=5.00), SpinOutcome.WIN, bet_per_unit=10)
@@ -712,7 +699,6 @@ def test_the_award_is_scaled_by_the_bet_per_unit() -> None:
     expected = spin_service._expected(run, paytable(), awards)
 
     assert expected.bet_per_unit == 10
-    assert expected.unit_cost == 88
     assert expected.credits == pytest.approx(500)
     assert expected.cash == pytest.approx(5.00)
     assert expected.verdict is SpinVerdict.PASSED
@@ -933,7 +919,7 @@ def test_a_stake_neither_given_nor_derivable_leaves_the_verdict_indeterminate() 
 
     assert expected.bet_per_unit is None
     assert expected.verdict is SpinVerdict.INDETERMINATE
-    assert "neither given nor readable" in expected.detail
+    assert "could not be read off the BET cell" in expected.detail
     # The award survives as the rate it always was, on the line itself.
     assert awards[0].awarded is True
     assert awards[0].combo_value == 50.0
@@ -1099,146 +1085,3 @@ async def test_an_unknown_network_is_refused_before_the_spin(
 
 
 # --- what a bet unit cost -------------------------------------------------
-
-
-async def test_an_impossible_bet_per_unit_is_refused_before_the_spin(
-    client: AsyncClient,
-) -> None:
-    """Same bargain as an unknown network: refused on the request rather than
-    twelve steps later. Only the shape is checkable here -- a bet of zero or less
-    is not a bet on any machine -- because which rungs *this game* offers lives
-    in a file the paytable step reads off the game's own install."""
-    response = await client.post(f"{API}/start", params={"bet_per_unit": 0})
-
-    assert response.status_code == 400
-    payload = response.json()
-    assert_failure(payload, code="BAD_REQUEST")
-    assert "bet_per_unit" in payload["message"]
-
-    state = assert_success((await client.get(f"{API}/status")).json())
-    assert state["active"] is False
-
-
-def test_the_bet_per_unit_falls_back_to_the_setting_and_then_to_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Three sources, and the last one is a real answer rather than a default.
-
-    Unlike the architecture, there is nothing sensible to fall back *to*: how
-    much a player staked is not written in this repo, and guessing the minimum
-    would price a raised-bet spin short while looking certain about it.
-    """
-    monkeypatch.setattr(settings, "ANALYZE_SPIN_BET_PER_UNIT", 3)
-    assert spin_service._resolve_bet_per_unit(10) == (10, "request")
-    assert spin_service._resolve_bet_per_unit(None) == (3, "setting")
-
-    monkeypatch.setattr(settings, "ANALYZE_SPIN_BET_PER_UNIT", None)
-    assert spin_service._resolve_bet_per_unit(None) == (None, "unset")
-
-
-def test_a_blank_bet_per_unit_setting_reads_as_unset() -> None:
-    """An `int | None` env var cannot parse an empty string, so blank has to be
-    spelled out -- otherwise the line has to be commented out to mean the same
-    thing."""
-    from app.config.analyze_spin import AnalyzeSpinSettings
-
-    assert (
-        AnalyzeSpinSettings(
-            ANALYZE_SPIN_BET_PER_UNIT=""  # type: ignore[arg-type]
-        ).ANALYZE_SPIN_BET_PER_UNIT
-        is None
-    )
-
-
-def test_a_rung_the_game_does_not_offer_is_a_note_and_not_a_failure() -> None:
-    """The ladder can only be checked once the paytable is read, by which point
-    the spin is one step away. A run graded at a rung the cabinet does not offer
-    still read its reels correctly -- what it needs is to say so."""
-    run = run_for(None, SpinOutcome.UNKNOWN, bet_per_unit=4)
-
-    detail = spin_service._check_bet_per_unit(run)
-
-    assert run.bet_per_unit_note is not None
-    assert "1, 2, 3, 5, 10" in run.bet_per_unit_note
-    assert "not 4" in run.bet_per_unit_note
-    assert "does not offer" in detail
-    # Noted, never applied: the value stands and the run is still priced by it.
-    assert run.bet_per_unit == 4
-    assert any("Bet per unit" in message for message in run.errors)
-
-
-def test_a_rung_the_game_offers_says_what_the_spin_cost() -> None:
-    run = run_for(None, SpinOutcome.UNKNOWN, bet_per_unit=10)
-
-    detail = spin_service._check_bet_per_unit(run)
-
-    assert run.bet_per_unit_note is None
-    assert run.errors == []
-    # 88 a spin at ten a unit is FortuneOx's top bet of 880.
-    assert "880" in detail
-
-
-def test_an_unreadable_ladder_is_not_a_disagreement() -> None:
-    """A machine without the game installed has no ladder to check against,
-    which is a different thing from a ladder that says no."""
-    run = run_for(None, SpinOutcome.UNKNOWN, bet_per_unit=4, view=paytable(ladder=[]))
-
-    detail = spin_service._check_bet_per_unit(run)
-
-    assert run.bet_per_unit_note is None
-    assert run.errors == []
-    assert "ladder unknown" in detail
-
-
-def test_the_bet_check_holds_the_meter_up_against_the_rung_it_graded_at() -> None:
-    """The only check here that tests an *input*. Every award was multiplied by a
-    number nobody measured, so this is what catches a spin priced at the wrong
-    rung: 88 a spin at ten a unit is 880, and the BET cell should say so."""
-    run = run_for(
-        meter(bet=8.80, win=5.00, mode=MeterMode.CASH), SpinOutcome.WIN, bet_per_unit=10
-    )
-
-    checks = {
-        check.key: check
-        for check in spin_service._meter_checks(run, run.meter.readings)
-    }
-
-    declared = checks["bet-declared-credits"]
-    assert declared.verdict is SpinVerdict.PASSED
-    assert declared.expected == pytest.approx(880)
-    assert declared.actual == pytest.approx(880)
-
-
-def test_the_bet_check_fails_when_the_rung_and_the_cabinet_disagree() -> None:
-    """A cabinet on its top rung graded as if it were on the third: every award
-    comes out at three tenths of what it should, and the awards themselves cannot
-    show it -- only the bet can."""
-    run = run_for(
-        meter(bet=8.80, win=5.00, mode=MeterMode.CASH), SpinOutcome.WIN, bet_per_unit=3
-    )
-
-    checks = {
-        check.key: check
-        for check in spin_service._meter_checks(run, run.meter.readings)
-    }
-
-    declared = checks["bet-declared-credits"]
-    assert declared.verdict is SpinVerdict.FAILED
-    assert declared.expected == pytest.approx(264)
-    assert declared.actual == pytest.approx(880)
-
-
-def test_the_bet_check_is_absent_when_the_paytable_never_said_what_a_spin_costs() -> (
-    None
-):
-    """Same rule as a unit with no figures: a row that was never going to have an
-    expected value says less than its absence."""
-    run = run_for(
-        meter(bet=8.80, win=5.00, mode=MeterMode.CASH),
-        SpinOutcome.WIN,
-        view=paytable(unit_cost=None),
-    )
-
-    keys = {check.key for check in spin_service._meter_checks(run, run.meter.readings)}
-
-    assert "bet-declared-credits" not in keys

@@ -100,22 +100,6 @@ class AnalyzeSpinSettings(BaseSettings):
     # first and a setting second.
     ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE: str = ""
 
-    # How many credits are staked on each bet unit, when the request does not
-    # say. A paytable combo's value is a rate *per bet unit*, so this is the
-    # number every line award is multiplied by: a line reading "pays 25" awards
-    # 25 at one and 250 at ten. The rungs a game offers are its own
-    # (`betPerUnitConfig.xml`: 1, 2, 3, 5, 10 on FortuneOx), and the spin's total
-    # cost is `unit_cost x` this.
-    #
-    # Unset by default, which means *work it out* rather than *give up*: the
-    # meter already reads the total bet, and the paytable says what one spin
-    # costs at one credit a unit, so the rung is `bet_credits / unit_cost`. Set
-    # this only to override that -- a cabinet whose BET cell does not OCR.
-    # Never defaulted to 1: that would price a raised-bet spin short while
-    # looking perfectly confident, which is the failure this whole setting
-    # exists to prevent.
-    ANALYZE_SPIN_BET_PER_UNIT: int | None = Field(default=None, gt=0)
-
     # The confidence floor a tile has to clear to be named while grading a spin.
     # 0.85 rather than the classifier page's own 0.90: that floor sits far above
     # where the classes separate, so a correct reading is rejected whenever the
@@ -145,21 +129,6 @@ class AnalyzeSpinSettings(BaseSettings):
         commenting the line out to mean "no override" is the kind of thing that
         gets lost -- the setting reads as optional, so blank has to be a way of
         saying so.
-        """
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
-
-    @field_validator("ANALYZE_SPIN_BET_PER_UNIT", mode="before")
-    @classmethod
-    def _blank_bet_per_unit_is_unset(cls, value: object) -> object:
-        """Read ``ANALYZE_SPIN_BET_PER_UNIT=`` as "not selected".
-
-        Without this an empty value in a ``.env`` is an integer parse error, and
-        the line has to be commented out to mean the same thing. Blank and
-        absent agree here, unlike the classifier floor above -- there is no
-        second default to fall back to, because how much a player staked is not
-        something any file in the repo knows.
         """
         if isinstance(value, str) and not value.strip():
             return None

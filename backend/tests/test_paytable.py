@@ -888,22 +888,22 @@ async def test_the_bet_ladder_and_the_unit_cost_are_read_together(
 
     assert bet["ladder"] == [1, 2, 3, 5, 10]
     assert bet["unit_cost"] == 88
-    assert bet["minimum"] == 1
-    assert bet["maximum"] == 10
     assert bet["error"] is None
 
 
-async def test_the_total_bets_reproduce_the_cabinet_declared_ladder(
+async def test_the_pair_multiplies_out_to_the_cabinet_declared_ladder(
     client: AsyncClient, active_game, install: Path
 ) -> None:
-    """`cost x each rung` is the same list `gameConfig.cfg` writes as
-    `SpecificMaxBets` and `math.xml` as `AllowedBetsTbl`. Three statements of
-    one ladder, so agreeing with them is what says this read was right."""
+    """`cost x each rung` is what the cabinet can be bet at, and on the real
+    install it reproduces `gameConfig.cfg`'s own `SpecificMaxBets` exactly --
+    which is what says the two files were read right. The fixture below carries
+    a shortened SpecificMaxBets, so this asserts the product itself."""
     active_game()
 
     bet = assert_success((await client.get(f"{API}/")).json())["bet_config"]
 
-    assert bet["total_bets"] == [88, 176, 264, 440, 880]
+    totals = [bet["unit_cost"] * rung for rung in bet["ladder"]]
+    assert totals == [88, 176, 264, 440, 880]
 
 
 async def test_the_unit_block_is_chosen_by_the_paytable_line_count(
@@ -917,9 +917,7 @@ async def test_the_unit_block_is_chosen_by_the_paytable_line_count(
 
     bet = assert_success((await client.get(f"{API}/")).json())["bet_config"]
 
-    assert bet["units"] == 20
     assert bet["unit_cost"] == 50
-    assert bet["total_bets"] == [50, 100, 150, 250, 500]
 
 
 async def test_an_unreadable_bet_config_does_not_lose_the_rest_of_the_page(

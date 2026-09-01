@@ -359,13 +359,7 @@ export function AwardComparisonCard({ expected, meter }) {
               <Step
                 operator="×"
                 label="Bet per unit"
-                hint={
-                  expected.unit_cost
-                    ? `a spin costs ${expected.unit_cost}, so this bets ${
-                        expected.unit_cost * expected.bet_per_unit
-                      }`
-                    : "what the cabinet's bet button was set to"
-                }
+                hint="from the bet the meter drew"
                 value={count(expected.bet_per_unit)}
               />
             </>

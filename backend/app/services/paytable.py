@@ -68,13 +68,7 @@ from app.schemas.paytable import (
     WinGeometryInfo,
 )
 from app.utils import denomination, game_log
-from app.utils.bet_config import (
-    BetConfigError,
-    BetPerUnitConfig,
-    BetUnitConfig,
-    load_bet_per_unit_config,
-    load_bet_unit_config,
-)
+from app.utils.bet_config import BetConfigError, load_bet_ladder, load_unit_costs
 from app.utils.game_math import (
     GameMath,
     GameMathError,
@@ -608,35 +602,26 @@ def _bet_config(
     paytable's own ``NumberOfLines``, which is what picks the block: the same
     files ship in folders playing 40 lines at 88 and 20 at 50.
     """
-    per_unit_path = directory / BET_PER_UNIT_FILE
-    unit_path = directory / BET_UNIT_FILE
-    if not per_unit_path.is_file() and not unit_path.is_file():
+    ladder_path = directory / BET_PER_UNIT_FILE
+    cost_path = directory / BET_UNIT_FILE
+    if not ladder_path.is_file() and not cost_path.is_file():
         return None
 
-    units = None if identity is None else identity.number_of_lines
     try:
-        per_unit: BetPerUnitConfig = _cached(per_unit_path, load_bet_per_unit_config)
-        unit_config: BetUnitConfig = _cached(unit_path, load_bet_unit_config)
+        ladder = _cached(ladder_path, load_bet_ladder)
+        costs = _cached(cost_path, load_unit_costs)
     except BetConfigError as exc:
-        return BetConfigInfo(path=str(per_unit_path), error=str(exc))
+        return BetConfigInfo(error=str(exc))
 
-    # The tag pairs the two files, and only one of them can offer it -- the
-    # unit block names the scheme, the ladder follows it.
-    configuration = unit_config.configuration(units)
-    selection = None if configuration is None else configuration.selection()
-    tag = None if selection is None else selection.tag
-    ladder = per_unit.ladder(tag)
-    cost = None if selection is None else selection.cost
+    # The paytable's own line count picks the block; a file declaring one block
+    # answers whatever the line count is, since there is nothing else it could
+    # mean.
+    units = None if identity is None else identity.number_of_lines
+    cost = next((c for declared, c in costs if declared == units), None)
+    if cost is None and len(costs) == 1:
+        cost = costs[0][1]
 
-    return BetConfigInfo(
-        path=str(per_unit_path),
-        ladder=list(ladder),
-        minimum=per_unit.minimum,
-        maximum=per_unit.maximum,
-        units=None if configuration is None else configuration.num_units,
-        unit_cost=cost,
-        total_bets=[] if cost is None else [cost * rung for rung in ladder],
-    )
+    return BetConfigInfo(ladder=list(ladder), unit_cost=cost)
 
 
 def _identity_info(identity: PaytableIdentity | None) -> PaytableIdentityInfo | None:

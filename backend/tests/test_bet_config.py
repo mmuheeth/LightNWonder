@@ -1,17 +1,10 @@
 """Reading the two files that say what a spin costs.
 
 Another pair of foreign formats, so the fixtures below are the shipped files
-byte for byte -- including the parts that differ between the two games, which is
-the whole reason this reader is more forgiving than it looks:
-
-* FortuneOx **tags** its mappings (``tag="1"``); HuffNPuffLink leaves them
-  untagged and its own comment calls the untagged entry the default.
-* The two indent the containers differently, and HuffNPuffLink separates every
-  block with blank lines.
-
-What the pair is *for* is one multiplication -- ``cost x bet_per_unit`` is the
-total bet, and ``bet_per_unit`` is what a paytable's line values are priced by.
-``tests/test_paytable.py`` covers what the service does with the result.
+byte for byte -- tags, indentation and all. Only two numbers are read out of
+them, and what they are *for* is one multiplication: ``cost x bet_per_unit`` is
+the total bet, and ``bet_per_unit`` is what a paytable's line values are priced
+by. ``tests/test_paytable.py`` covers what the service does with the result.
 """
 
 from __future__ import annotations
@@ -20,11 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from app.utils.bet_config import (
-    BetConfigError,
-    load_bet_per_unit_config,
-    load_bet_unit_config,
-)
+from app.utils.bet_config import BetConfigError, load_bet_ladder, load_unit_costs
 
 # FortuneOx-1101YX-1c-90/betPerUnitConfig.xml, verbatim -- leading comment,
 # tagged mapping and all.
@@ -109,60 +98,40 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
-# --- betPerUnitConfig.xml -------------------------------------------------
+# --- the ladder -----------------------------------------------------------
 
 
-def test_the_tagged_ladder_is_read_in_file_order(tmp_path: Path) -> None:
+def test_the_ladder_is_read_in_file_order(tmp_path: Path) -> None:
     """The rungs are the ladder a player steps through, so their order is data.
 
     1, 2, 3, 5, 10 -- there is no 4, which is why this can never be a range.
     """
-    config = load_bet_per_unit_config(
-        write(tmp_path / "betPerUnitConfig.xml", FORTUNE_OX_PER_UNIT)
-    )
+    path = write(tmp_path / "betPerUnitConfig.xml", FORTUNE_OX_PER_UNIT)
 
-    assert config.minimum == 1
-    assert config.maximum == 10
-    assert config.ladder("1") == (1, 2, 3, 5, 10)
+    assert load_bet_ladder(path) == (1, 2, 3, 5, 10)
 
 
-def test_an_untagged_mapping_is_the_default(tmp_path: Path) -> None:
-    """HuffNPuffLink's shape, and the file's own comment says so. A caller with
-    no tag to offer still gets the ladder."""
-    config = load_bet_per_unit_config(
-        write(tmp_path / "betPerUnitConfig.xml", HUFF_PER_UNIT)
-    )
+def test_an_untagged_mapping_reads_the_same(tmp_path: Path) -> None:
+    """HuffNPuffLink leaves the tag off and FortuneOx does not, which changes
+    nothing about the rungs -- so neither file has to be asked about its tag."""
+    path = write(tmp_path / "betPerUnitConfig.xml", HUFF_PER_UNIT)
 
-    assert config.maximum == 8
-    assert config.ladder() == (1, 2, 3, 5, 8)
-    # A tag that names nothing falls through to the untagged default rather
-    # than coming back empty.
-    assert config.ladder("1") == (1, 2, 3, 5, 8)
+    assert load_bet_ladder(path) == (1, 2, 3, 5, 8)
 
 
-def test_a_lone_tagged_mapping_answers_a_caller_with_no_tag(tmp_path: Path) -> None:
-    """FortuneOx tags its only mapping, so "the tagged one" and "the only one"
-    are the same ladder -- a reader should not need to know the tag."""
-    config = load_bet_per_unit_config(
-        write(tmp_path / "betPerUnitConfig.xml", FORTUNE_OX_PER_UNIT)
-    )
-
-    assert config.ladder() == (1, 2, 3, 5, 10)
-
-
-def test_a_file_with_no_mappings_is_refused(tmp_path: Path) -> None:
+def test_a_file_with_no_rungs_is_refused(tmp_path: Path) -> None:
     path = write(
         tmp_path / "betPerUnitConfig.xml",
         "<BetPerUnitData><BetPerUnitConfigurationList/></BetPerUnitData>",
     )
 
     with pytest.raises(BetConfigError, match="no <BetPerUnitMappings>"):
-        load_bet_per_unit_config(path)
+        load_bet_ladder(path)
 
 
 def test_a_non_numeric_rung_is_refused(tmp_path: Path) -> None:
-    """Silently dropping it would shorten the ladder, which is the one thing a
-    caller checks a requested bet against."""
+    """Silently dropping it would shorten the ladder, which is what a bet read
+    off the meter is checked against."""
     path = write(
         tmp_path / "betPerUnitConfig.xml",
         "<BetPerUnitData><BetPerUnitConfiguration>"
@@ -171,58 +140,37 @@ def test_a_non_numeric_rung_is_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(BetConfigError, match="not a whole number"):
-        load_bet_per_unit_config(path)
+        load_bet_ladder(path)
 
 
 def test_the_wrong_root_names_what_it_got(tmp_path: Path) -> None:
     path = write(tmp_path / "betPerUnitConfig.xml", "<BetUnitData/>")
 
     with pytest.raises(BetConfigError, match="<BetUnitData>, not a <BetPerUnitData>"):
-        load_bet_per_unit_config(path)
+        load_bet_ladder(path)
 
 
 def test_a_missing_file_is_a_config_error_not_an_oserror(tmp_path: Path) -> None:
     """The service turns this into an `error` on a 200, so it has to be the
     reader's own exception type."""
     with pytest.raises(BetConfigError, match="No bet per unit file"):
-        load_bet_per_unit_config(tmp_path / "absent.xml")
+        load_bet_ladder(tmp_path / "absent.xml")
 
 
-# --- betUnitConfig.xml ----------------------------------------------------
+# --- what a spin costs ----------------------------------------------------
 
 
-def test_the_unit_cost_is_read_for_a_line_count(tmp_path: Path) -> None:
+def test_the_cost_is_read_against_its_line_count(tmp_path: Path) -> None:
     """88 credits for 40 units is the number every FortuneOx line value is
     multiplied against -- and the `MinTotalBet` its gameConfig.cfg declares."""
-    config = load_bet_unit_config(
-        write(tmp_path / "betUnitConfig.xml", FORTUNE_OX_UNITS)
-    )
+    path = write(tmp_path / "betUnitConfig.xml", FORTUNE_OX_UNITS)
 
-    assert config.cost(units=40, tag="1") == 88
-    assert config.configuration(40) is not None
-    assert config.configuration(40).num_units == 40
+    assert load_unit_costs(path) == ((40, 88),)
 
 
-def test_an_untagged_selection_is_the_default(tmp_path: Path) -> None:
-    config = load_bet_unit_config(write(tmp_path / "betUnitConfig.xml", HUFF_UNITS))
-
-    assert config.cost(units=243) == 100
-    assert config.cost() == 100
-
-
-def test_a_lone_configuration_answers_without_a_line_count(tmp_path: Path) -> None:
-    """A paytable whose line count could not be read still prices, because
-    there is only one block it could mean."""
-    config = load_bet_unit_config(
-        write(tmp_path / "betUnitConfig.xml", FORTUNE_OX_UNITS)
-    )
-
-    assert config.cost() == 88
-
-
-def test_a_line_count_no_block_declares_is_not_guessed(tmp_path: Path) -> None:
-    """Two blocks and neither is the one asked for: better no cost than the
-    wrong one, since the cost multiplies every award."""
+def test_every_block_is_kept_so_the_line_count_can_pick_one(tmp_path: Path) -> None:
+    """The same file ships in folders playing different line counts -- 40 lines
+    at 88, 20 at 50 -- and only the paytable knows which it is."""
     path = write(
         tmp_path / "betUnitConfig.xml",
         "<BetUnitData><UnitConfigurationList>"
@@ -232,10 +180,14 @@ def test_a_line_count_no_block_declares_is_not_guessed(tmp_path: Path) -> None:
         '<UnitSelectData units="20" cost="50"/></UnitSelectMappings></UnitConfiguration>'
         "</UnitConfigurationList></BetUnitData>",
     )
-    config = load_bet_unit_config(path)
 
-    assert config.cost(units=20) == 50
-    assert config.cost(units=25) is None
+    assert load_unit_costs(path) == ((40, 88), (20, 50))
+
+
+def test_an_untagged_selection_reads_the_same(tmp_path: Path) -> None:
+    path = write(tmp_path / "betUnitConfig.xml", HUFF_UNITS)
+
+    assert load_unit_costs(path) == ((243, 100),)
 
 
 def test_a_non_numeric_cost_is_refused(tmp_path: Path) -> None:
@@ -247,29 +199,27 @@ def test_a_non_numeric_cost_is_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(BetConfigError, match="non-numeric cost"):
-        load_bet_unit_config(path)
+        load_unit_costs(path)
 
 
-def test_a_file_with_no_configurations_is_refused(tmp_path: Path) -> None:
+def test_a_file_with_no_cost_is_refused(tmp_path: Path) -> None:
     path = write(tmp_path / "betUnitConfig.xml", "<BetUnitData/>")
 
-    with pytest.raises(BetConfigError, match="no <UnitConfiguration>"):
-        load_bet_unit_config(path)
+    with pytest.raises(BetConfigError, match="no unit cost"):
+        load_unit_costs(path)
 
 
 # --- the pair -------------------------------------------------------------
 
 
 def test_the_two_files_multiply_out_to_the_declared_bet_ladder(tmp_path: Path) -> None:
-    """The claim the pair exists to support, checked against the third and
-    fourth statements of it: `gameConfig.cfg`'s `SpecificMaxBets` and
-    `math.xml`'s `AllowedBetsTbl` both read `88 176 264 440 880`."""
-    per_unit = load_bet_per_unit_config(
+    """The claim the pair exists to support, checked against the third statement
+    of it: `gameConfig.cfg`'s own `SpecificMaxBets` reads `88 176 264 440 880`."""
+    ladder = load_bet_ladder(
         write(tmp_path / "betPerUnitConfig.xml", FORTUNE_OX_PER_UNIT)
     )
-    units = load_bet_unit_config(
-        write(tmp_path / "betUnitConfig.xml", FORTUNE_OX_UNITS)
-    )
+    cost = load_unit_costs(write(tmp_path / "betUnitConfig.xml", FORTUNE_OX_UNITS))[0][
+        1
+    ]
 
-    cost = units.cost(units=40, tag="1")
-    assert [cost * rung for rung in per_unit.ladder("1")] == [88, 176, 264, 440, 880]
+    assert [cost * rung for rung in ladder] == [88, 176, 264, 440, 880]

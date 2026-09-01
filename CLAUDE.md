@@ -536,30 +536,26 @@ things it exists to get right:
   On a credit meter no rate takes part at all — the meter is already counting
   credits, and `observed_win` is compared against `credits` directly
   (`expected.unit` says which side was compared).
-- **The bet per unit is worked out, not configured.** No file and no log line
+- **The bet per unit is worked out, never configured.** No file and no log line
   says what the player staked — the meter's BET cell shows the *total* and the
   log mentions a bet only when one is changed — but it follows from two things
   the run already has: `bet_credits / unit_cost`, the bet the meter drew over
   what `betUnitConfig.xml` says a spin costs at one credit a unit (88 on
-  FortuneOx). So the ordinary run needs nothing configured, and
-  `ANALYZE_SPIN_BET_PER_UNIT` / `start(bet_per_unit=...)` are **overrides** for a
-  cabinet whose BET cell will not OCR. Never defaulted to 1: that prices a
-  raised-bet spin short while looking certain, which is the failure the whole
-  thing exists to prevent. Deriving is **not** rounding — `88 × rungs` has to come
-  back to the bet that was read (300 credits rounds to rung 3, but `88 × 3` is
-  264, so it is refused), and the rung has to be on the ladder when the game
-  shipped one. Only when it is neither given nor derivable is the award verdict
-  `indeterminate`.
+  FortuneOx). There is deliberately no setting and no request parameter: the two
+  numbers are always there when the meter reads, and a hand-set rung is one more
+  thing to get wrong. Deriving is **not** rounding — `88 × rungs` has to come back
+  to the bet that was read (300 credits rounds to rung 3, but `88 × 3` is 264, so
+  it is refused), and the rung has to be on the ladder the game shipped. When the
+  BET cell cannot be read the award verdict is `indeterminate` rather than a
+  guess: pricing at the minimum would understate a raised-bet spin while looking
+  certain.
 - **The meter reads before the reels, and that ordering is load-bearing.** It is
   the only one of the three closing steps that produces an *input* to another:
   which unit the strip drew and what a bet unit cost are what turn a line's rate
   into an award. So `_validate_meter` runs first, then `_read_reels`, then
   `_validate_paylines` — which is also why `expected` is built in
   `_check_paylines` where the awards are, rather than patched into the payline
-  validation from the meter step afterwards. A rung the game does not offer is a
-  **note** on the run (`_note_error` plus `step.detail`, never `step.error`, which
-  would fail it), and `bet-declared-credits` catches a spin graded at the wrong
-  rung: `unit_cost × bet_per_unit` against the BET cell.
+  validation from the meter step afterwards.
 - **Which unit the strip drew is settled by the paytable, not just by the
   digits.** `meter.combine()` reads the *shape* of the numbers — a symbol or a
   fractional amount means money, credits is what is left — which is thin enough

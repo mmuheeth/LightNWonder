@@ -98,7 +98,6 @@ function expected({ unit = "cash", ...overrides } = {}) {
     // 88 a spin at one credit a unit, which is the minimum bet -- the case
     // where an award and its paytable row are the same number.
     bet_per_unit: 1,
-    unit_cost: 88,
     cash: 1.0,
     unit,
     observed_win: unit === "credits" ? 50 : 1.0,
@@ -161,8 +160,7 @@ describe("AwardComparisonCard", () => {
     expect(screen.getByText("Bet per unit")).toBeInTheDocument();
     // The rate total is the award over the stake: 250 / 5.
     expect(screen.getByText("50")).toBeInTheDocument();
-    // And the hint says what that stake actually bet: 88 a spin x 5.
-    expect(screen.getByText(/bets 440/)).toBeInTheDocument();
+    expect(screen.getByText(/from the bet the meter drew/)).toBeInTheDocument();
   });
 
   it("says the award needs a stake when none was given", () => {

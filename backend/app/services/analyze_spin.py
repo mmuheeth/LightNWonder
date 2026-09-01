@@ -98,7 +98,6 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
-    BadRequestError,
     GameConfigInvalidError,
     SpinAnalysisAlreadyRunningError,
     SpinAnalysisNotRunningError,
@@ -106,7 +105,6 @@ from app.exceptions.base import (
 )
 from app.schemas.analyze_spin import (
     SpinAnalysisState,
-    SpinBetPerUnit,
     SpinExpectedAward,
     SpinFrame,
     SpinLineAward,
@@ -265,17 +263,6 @@ class _ActiveRun:
     refused request instead of a failure eight steps in -- and so the record says
     which model graded the spin even if the step never got there."""
 
-    bet_per_unit: int | None
-    """Credits staked on each bet unit, which multiplies every line's paytable
-    value into an award. Resolved with the architecture and for the same reason,
-    with one difference: an unknown *architecture* can be refused here because
-    the known set is a constant, while the rungs this game offers live in a file
-    the paytable step reads -- so only the shape is checked here and the ladder
-    at `prepare`."""
-
-    bet_per_unit_source: str
-    """'request', 'setting' or 'unset' -- which of the two named the value."""
-
     record: bool
     """Whether this run also makes a video of itself. When false the two
     recording steps are left out of `steps` entirely, rather than shown and
@@ -297,9 +284,10 @@ class _ActiveRun:
 
     paytable: PaytableView | None = None
     paytable_error: str | None = None
-    bet_per_unit_note: str | None = None
-    """Why the requested rung and the game's own ladder disagree. Written at
-    `prepare`, and never a failure -- the value is applied either way."""
+    bet_per_unit: int | None = None
+    """Credits staked on each bet unit -- the multiplier that turns a line's
+    paytable rate into an award. Worked out at the meter step from the bet the
+    glass drew, which is why it is not known when the run is created."""
 
     meter: SpinMeterValidation | None = None
     reels: SpinReelReading | None = None
@@ -442,27 +430,6 @@ def _lean_paylines(paylines: SpinPaylineValidation) -> SpinPaylineValidation:
     )
 
 
-def _bet_per_unit_detail(run: _ActiveRun) -> SpinBetPerUnit:
-    """What the run was told a bet unit costs, beside what the game allows.
-
-    Assembled here rather than stored, because the two halves arrive at
-    different times: the value comes from the request before anything runs, and
-    the ladder it is checked against comes from the paytable read at `prepare`.
-    A run that never got that far still reports the value it would have used.
-    """
-    bet = None if run.paytable is None else run.paytable.bet_config
-    unit_cost = None if bet is None else bet.unit_cost
-    value = run.bet_per_unit
-    return SpinBetPerUnit(
-        value=value,
-        source=run.bet_per_unit_source,
-        ladder=[] if bet is None else list(bet.ladder),
-        unit_cost=unit_cost,
-        total_bet=None if unit_cost is None or value is None else unit_cost * value,
-        note=run.bet_per_unit_note,
-    )
-
-
 def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
     """The record both the manifest and the API return.
 
@@ -506,7 +473,6 @@ def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
         # is nothing on it that the progress stream would rather not send.
         reels=reels,
         paylines=(paylines if images or paylines is None else _lean_paylines(paylines)),
-        bet_per_unit=_bet_per_unit_detail(run),
         errors=list(run.errors),
     )
 
@@ -696,44 +662,6 @@ async def _wait_for(
 # --- driving the spin -----------------------------------------------------
 
 
-def _check_bet_per_unit(run: _ActiveRun) -> str:
-    """Hold the requested bet per unit up against the game's own ladder.
-
-    Never fails the step, and deliberately never changes the value. Only the
-    game's install knows which rungs exist, so this is the first moment the
-    question can be asked at all -- and by now the spin is one step from
-    happening. A run graded at a rung the cabinet does not offer is still a run
-    whose reels were read correctly; what it needs is to say so, which is what
-    the note and ``_note_error`` do. Snapping to the nearest rung would be
-    worse: it would produce a confident number nobody asked for.
-    """
-    staked = run.bet_per_unit
-    if staked is None:
-        return "no bet per unit"
-
-    bet = None if run.paytable is None else run.paytable.bet_config
-    if bet is None or bet.error is not None or not bet.ladder:
-        # Not a disagreement -- there is nothing to disagree with. Said on the
-        # step rather than as an error, since an uninstalled game already
-        # reports itself above.
-        return f"{staked} a bet unit, ladder unknown"
-
-    if staked not in bet.ladder:
-        offered = ", ".join(str(rung) for rung in bet.ladder)
-        run.bet_per_unit_note = (
-            f"{run.paytable.paytable_id if run.paytable else 'This paytable'} offers "
-            f"{offered} credits a bet unit, not {staked}; the spin is still priced "
-            f"at {staked}"
-        )
-        _note_error(run, f"Bet per unit: {run.bet_per_unit_note}")
-        return f"{staked} a bet unit, which its ladder ({offered}) does not offer"
-
-    cost = bet.unit_cost
-    if cost is None:
-        return f"{staked} a bet unit"
-    return f"{staked} a bet unit, so a bet of {cost * staked}"
-
-
 async def _prepare(run: _ActiveRun) -> None:
     """Get OBS pointed at the game, and read the maths this spin will play by.
 
@@ -762,8 +690,6 @@ async def _prepare(run: _ActiveRun) -> None:
             _note_error(run, f"Paytable: {exc.message}")
             logger.warning("Spin %s has no paytable: %s", run.run_id, exc.message)
 
-        staked = _check_bet_per_unit(run)
-
         loaded = (
             f"paytable {run.paytable.paytable_id}"
             if run.paytable is not None
@@ -771,7 +697,7 @@ async def _prepare(run: _ActiveRun) -> None:
         )
         step.detail = (
             f"OBS connected, i-deck {panel.state.value}, "
-            f"game window {window.state.value}, {loaded}, {staked}"
+            f"game window {window.state.value}, {loaded}"
         )
 
         # Re-pointing a window capture makes OBS render nothing for a moment,
@@ -1385,48 +1311,6 @@ def _derive_bet_per_unit(
     return rungs
 
 
-def _bet_declared(run: _ActiveRun, initial: SpinMeterReading) -> SpinMeterCheck | None:
-    """Whether the bet this run was graded at is the bet the cabinet took.
-
-    The one check that tests an *input* rather than a reading. Every award on the
-    run was multiplied by a bet per unit nobody measured -- it came off the
-    request -- so this is what catches the whole spin being priced at the wrong
-    rung: ``unit_cost x bet_per_unit`` is what the spin should have cost, and the
-    BET cell says what it did.
-
-    Nothing at all in two cases, both following :func:`_unit_checks`'s own rule
-    that a row which was never going to have figures says less than its absence:
-    when the paytable yielded no unit cost, and when the reading has no credits
-    side to compare against (a meter with no denomination to convert by). A
-    missing bet *per unit* does get a row, because that one is actionable --
-    supply it -- as does an unreadable BET cell on a meter that had credits.
-    """
-    cost = None
-    if run.paytable is not None and run.paytable.bet_config is not None:
-        cost = run.paytable.bet_config.unit_cost
-    if cost is None:
-        return None
-    if initial.credits.balance is None and initial.credits.bet is None:
-        return None
-
-    staked = run.bet_per_unit
-    expected = None if staked is None else cost * staked
-    return _relation(
-        "bet-declared-credits",
-        "The bet matches the bet per unit it was graded at",
-        unit=SpinMeterUnit.CREDITS,
-        expected=expected,
-        actual=initial.credits.bet,
-        tolerance=_tolerance(SpinMeterUnit.CREDITS),
-        detail=(
-            f"{cost} a spin x {staked} a bet unit = {_amount(expected)}, and the "
-            f"BET cell reads {_amount(initial.credits.bet)}"
-            if staked is not None
-            else f"a spin costs {cost} x the bet per unit, and none was given"
-        ),
-    )
-
-
 def _meter_checks(
     run: _ActiveRun, readings: list[SpinMeterReading]
 ) -> list[SpinMeterCheck]:
@@ -1439,21 +1323,15 @@ def _meter_checks(
     read at, and one holding in money while being a whole credit out is a
     statement about the OCR.
 
-    Two checks are assembled here rather than in :func:`_unit_checks`, and for
-    the same reason: they need the ``run``. One asks what the game's log said,
-    the other what the run was told to price by -- neither is a relation between
-    two frames, which is all `_unit_checks` can see.
+    ``win-registered`` is assembled here rather than in :func:`_unit_checks`
+    because it needs the ``run``: what the game's *log* said it won is not a
+    relation between two frames, which is all `_unit_checks` can see.
     """
     by_frame = {reading.frame: reading for reading in readings}
     outcome = by_frame.get(FRAME_OUTCOME)
-    initial = by_frame.get(FRAME_INITIAL)
     checks: list[SpinMeterCheck] = []
     if outcome is not None:
         checks.append(_win_registered(run, outcome))
-    if initial is not None:
-        declared = _bet_declared(run, initial)
-        if declared is not None:
-            checks.append(declared)
     for unit in (SpinMeterUnit.CREDITS, SpinMeterUnit.CASH):
         checks.extend(_unit_checks(by_frame, unit))
     return checks
@@ -1522,7 +1400,6 @@ async def _validate_meter(run: _ActiveRun) -> None:
                 derived = _derive_bet_per_unit(run, readings)
                 if derived is not None:
                     run.bet_per_unit = derived
-                    run.bet_per_unit_source = "meter"
 
             checks = _meter_checks(run, readings)
             validation = SpinMeterValidation(
@@ -1897,11 +1774,9 @@ def _expected(
     ruled out was scaling by the stake spread over a *line*, which for FortuneOx
     is 88/40 = 2.2 and is not a rung of any ladder.
 
-    ``bet_credits`` is still reported and is still not an input. What it is for
-    is the other direction: ``unit_cost x bet_per_unit`` is what this spin should
-    have cost, and comparing that against the BET cell is what says the run was
-    graded at the rung the cabinet was actually on. That is the
-    ``bet-declared-credits`` check, not a sentence here.
+    ``bet_per_unit`` is not read off the meter either: it is worked out from
+    the bet, once, at the meter step. ``bet_credits`` is reported beside the
+    award as context and prices nothing.
 
     Two things about the denomination are load-bearing, and both used to be wrong
     here. The game's log reports it as a **count of cents**, so what money divides
@@ -1941,15 +1816,12 @@ def _expected(
     observed_credits = None if outcome is None else outcome.credits.win
     observed_cash = None if outcome is None else outcome.cash.win
 
-    # The bet in credits. Context rather than a step: it takes no part in pricing
-    # the award below. What it is carried for is `bet-declared-credits`, which
-    # holds it up against `unit_cost x bet_per_unit`.
+    # The bet in credits. Context rather than a step: what it prices is the
+    # stake, and that was worked out at the meter step.
     bet_credits = None if initial is None else initial.credits.bet
     per_line = (
         None if bet_credits is None or not line_count else bet_credits / line_count
     )
-    bet = view.bet_config
-    unit_cost = None if bet is None else bet.unit_cost
 
     # Compare in whatever the glass was drawing, since that side was read and the
     # other is derived from it -- and it is the side whose tolerance means
@@ -1973,16 +1845,15 @@ def _expected(
             verdict = SpinVerdict.PASSED
             detail = "No line pays, and the win meter is empty"
         elif staked is None:
-            # Neither given nor derivable: the BET cell did not read, or the
-            # paytable never said what a spin costs. Named before the
-            # denomination below because a paytable value is a rate per bet
-            # unit, so without the number of units there is nothing to compare
-            # however well the rest of the meter read.
+            # The BET cell did not read, or the paytable never said what a
+            # spin costs. Named before the denomination below because a paytable
+            # value is a rate per bet unit, so without the number of units there
+            # is nothing to compare however well the rest of the meter read.
             verdict = SpinVerdict.INDETERMINATE
             detail = (
-                "The bet per unit is neither given nor readable off the BET "
-                "cell, so each line's paytable value is a rate rather than an "
-                "award -- pass bet_per_unit, or set ANALYZE_SPIN_BET_PER_UNIT"
+                "The bet per unit could not be read off the BET cell, so each "
+                "line's paytable value is a rate rather than an "
+                "award"
             )
         elif denomination is not None and rate is None:
             # Reported but not priceable: a different failure from never reported,
@@ -2025,7 +1896,6 @@ def _expected(
         paying_lines=len(paying),
         credits=round(credits, 4),
         bet_per_unit=staked,
-        unit_cost=unit_cost,
         line_count=line_count,
         denomination_label=None if denomination is None else denomination.label,
         money_per_credit=rate,
@@ -2278,39 +2148,8 @@ def _summary(run: _ActiveRun) -> str:
 # --- public API -----------------------------------------------------------
 
 
-def _resolve_bet_per_unit(requested: int | None) -> tuple[int | None, str]:
-    """The bet per unit a request meant, and which of the two named it.
-
-    ``None`` is not a refusal -- it means *work it out from the bet*, which the
-    meter step does once the BET cell has been read. So the common case is
-    naming nothing and having the run price itself; this is the override for a
-    cabinet whose meter cannot be read.
-
-    Only the *shape* is checked here, unlike the architecture beside it: the
-    known architectures are a constant this process holds, while the rungs a
-    game offers live in ``betPerUnitConfig.xml``, which the `prepare` step reads
-    from the game's own install. Checking against the ladder here would mean
-    reading a paytable to refuse a request, and would refuse every request on a
-    machine that has no game installed. So a value that could not be a bet at
-    all is a 400, and a value the game does not offer is a note on the run.
-    """
-    if requested is not None:
-        if requested <= 0:
-            raise BadRequestError(
-                f"bet_per_unit must be a positive number of credits, got {requested}"
-            )
-        return requested, "request"
-    configured = settings.ANALYZE_SPIN_BET_PER_UNIT
-    if configured is not None:
-        return configured, "setting"
-    return None, "unset"
-
-
 async def start(
-    *,
-    record: bool | None = None,
-    architecture: str | None = None,
-    bet_per_unit: int | None = None,
+    *, record: bool | None = None, architecture: str | None = None
 ) -> SpinAnalysisState:
     """Drive one spin, and validate it.
 
@@ -2333,20 +2172,12 @@ async def start(
     classify step so an unknown name is a refused request -- a spin driven to its
     result and then graded by nothing is the worst way to find out about a typo.
 
-    ``bet_per_unit`` is the third, and the only one that changes what the run
-    *concludes* rather than how it measures: a paytable value is a rate per bet
-    unit, so it is what turns a line's "pays 25" into 25 credits or 250. It
-    falls back to ``ANALYZE_SPIN_BET_PER_UNIT`` and then to nothing, and nothing
-    is a real answer -- the run still spins and still reads the reels, and only
-    the award verdict comes back ``indeterminate``. Its *ladder* is not checked
-    here; see :func:`_resolve_bet_per_unit`.
     """
     global _run
     record_enabled = settings.ANALYZE_SPIN_RECORD if record is None else record
     chosen = classifier_service.resolve_architecture(
         architecture or settings.analyze_spin_classifier_architecture
     )
-    staked, staked_from = _resolve_bet_per_unit(bet_per_unit)
     async with _get_lock():
         current = _run
         if current is not None and current.state is SpinRunState.RUNNING:
@@ -2377,8 +2208,6 @@ async def start(
             ),
             started_at=started,
             architecture=chosen,
-            bet_per_unit=staked,
-            bet_per_unit_source=staked_from,
             record=record_enabled,
             steps={
                 key: _StepRecord(key=key, label=label)
@@ -2390,11 +2219,10 @@ async def start(
         run.task = asyncio.create_task(_execute(run), name=f"analyze-spin-{run_id}")
 
     logger.info(
-        "Spin %s started for %s, reading its reels with %s at %s a bet unit",
+        "Spin %s started for %s, reading its reels with %s",
         run.run_id,
         run.game,
         run.architecture,
-        run.bet_per_unit if run.bet_per_unit is not None else "no stated",
     )
     return _snapshot(run, images=False)
 

@@ -36,7 +36,6 @@ from app.schemas.paytable import DenominationInfo
 
 __all__ = [
     "SpinAnalysisState",
-    "SpinBetPerUnit",
     "SpinExpectedAward",
     "SpinFrame",
     "SpinLineAward",
@@ -693,15 +692,6 @@ class SpinExpectedAward(BaseModel):
             "which is what leaves the verdict indeterminate."
         ),
     )
-    unit_cost: int | None = Field(
-        default=None,
-        description=(
-            "Credits one spin costs at one bet per unit, from the paytable's "
-            "betUnitConfig.xml. With bet_per_unit it gives the bet this spin "
-            "should have cost -- which is what `bet-declared-credits` checks the "
-            "meter's BET cell against."
-        ),
-    )
     line_count: int | None = Field(
         default=None, description="Lines the loaded paytable plays."
     )
@@ -906,63 +896,6 @@ class SpinPaylineValidation(BaseModel):
 # --- the run --------------------------------------------------------------
 
 
-class SpinBetPerUnit(BaseModel):
-    """How much was staked on each bet unit, and what the game allows.
-
-    Worked out rather than asked for, in the ordinary case. The player's stake
-    is not written anywhere directly -- the meter's BET cell shows the *total*
-    and the game's log mentions a bet only when one is changed -- but it follows
-    from two things the run already has: ``bet_credits / unit_cost``, the bet the
-    meter drew over what the paytable says one spin costs at one credit a unit.
-    A request may name it instead, which is the override for a cabinet whose BET
-    cell will not OCR.
-    """
-
-    value: int | None = Field(
-        default=None,
-        description=(
-            "Credits on each bet unit, and so the multiplier on every line "
-            "award. Null only when it was neither given nor derivable, which "
-            "leaves the award verdict indeterminate."
-        ),
-    )
-    source: str = Field(
-        default="unset",
-        description=(
-            "Where it came from: 'meter' (derived from the bet, the usual "
-            "case), 'request', 'setting', or 'unset' when it could not be "
-            "worked out at all."
-        ),
-    )
-    ladder: list[int] = Field(
-        default_factory=list,
-        description=(
-            "The rungs this game's paytable offers, from betPerUnitConfig.xml. "
-            "Empty when the paytable was not read -- which is not a reason to "
-            "refuse a value, only a reason not to check it."
-        ),
-    )
-    unit_cost: int | None = Field(
-        default=None,
-        description="Credits one spin costs at one bet per unit, from betUnitConfig.xml.",
-    )
-    total_bet: int | None = Field(
-        default=None,
-        description=(
-            "unit_cost x value -- what this spin should have cost. Compared "
-            "against the meter's own BET cell by `bet-declared-credits`."
-        ),
-    )
-    note: str | None = Field(
-        default=None,
-        description=(
-            "Why the value and the game disagree -- a rung the ladder does not "
-            "offer, or a paytable that could not say. Never fails the run: the "
-            "value was still applied, and this says it is worth doubting."
-        ),
-    )
-
-
 class SpinRun(BaseModel):
     """One spin, driven end to end, and everything it proved."""
 
@@ -1012,16 +945,6 @@ class SpinRun(BaseModel):
     )
     paylines: SpinPaylineValidation | None = Field(
         default=None, description="Null until the payline step has run."
-    )
-    bet_per_unit: SpinBetPerUnit = Field(
-        default_factory=lambda: SpinBetPerUnit(),
-        description=(
-            "What the run was told a bet unit costs, and what the game says it "
-            "may be. Present from the moment the run is created, unlike every "
-            "reading above it: it is an input rather than something measured, and "
-            "a run that died on step one should still say what it would have "
-            "priced by."
-        ),
     )
     errors: list[str] = Field(
         default_factory=list,
