@@ -158,6 +158,14 @@ A third, `symbols`, is the display name per two-letter symbol code. It is the
 one thing about a game's maths that is *declared* rather than read, and only
 because it cannot be read — see below.
 
+A fourth, `wild_card_replacement`, is the codes the wild (`WC`) stands in for.
+Declared rather than read for a different reason: the maths *does* carry it
+(`WildSymbolList`), but `services/paylines.py` checks a screenshot on machines
+with no game installed. The list is **closed on purpose** — the codes left out
+are the scatters and feature symbols the game pays by counting across the grid,
+so a wild beside two orbs is not three orbs. Omitting the block substitutes
+nothing, which is exactly what every config did before it existed.
+
 **Foreign formats get their own `app/utils` module**, deliberately ignorant of
 who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
 log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
@@ -180,7 +188,9 @@ in the tree, called by nothing),
 `letterbox.py` (finds the part of a frame the game fills),
 `reel_grid.py` (reads the `reel_bounds` block into positioned tiles),
 `click_target.py` (reads the `button_targets` block),
-`paylines.py` (reads the `paylines` block into ordered grid positions),
+`paylines.py` (reads the `paylines` block into ordered grid positions, and
+reads one line of symbol codes -- `read_run` -- with the wild substituted for
+whatever the run pays as; `WildRule`/`WILD_SYMBOL` live here),
 `similarity.py` (cosine similarity between two pictures -- still what
 `services/paylines.check`/`check_lines` and the standalone payline panel use, and
 no longer what `analyze_spin` reads a spin by),
@@ -273,13 +283,27 @@ that by inventing a normalisation: every result already reports `matched_min`
 and `rejected_max`, the two numbers a working cut sits between — tune
 `PAYLINE_MATCH_THRESHOLD` (default `0.85`) against a split that does not move.
 
-**A payline is read left to right and stops at the first pair that does not
-match**, so `pays` is the length of the *leading* run — 0 when reels 1 and 2
-differ, otherwise 2 or more — and never a count of matches anywhere on the line.
-Every adjacent pair is scored anyway and each step carries `matched` (are these
-the same symbol) *and* `counted` (did the read get this far). A matched step that
-was never counted is the interesting case; collapsing the two flags into one is
-what makes a payline checker look wrong. Line colours come from
+**A payline is read left to right and stops at the first position that does not
+join the run**, so `pays` is the length of the *leading* run — 0 when reels 1 and
+2 differ, otherwise 2 or more — and never a count of matches anywhere on the
+line. Every adjacent pair is scored anyway and each step carries `matched` (did
+the run continue here) *and* `counted` (did the read get this far). A matched
+step that was never counted is the interesting case; collapsing the two flags
+into one is what makes a payline checker look wrong.
+
+**The wild is why that read is a line and not a bag of pairs, and this is the
+invariant to protect.** A wild stands in for whatever the *run* is paying as, so
+`utils/paylines.read_run()` carries the run's own symbol along the line and
+judges each position against `line_symbol` rather than against the tile to its
+left. `AA WC BB BB BB` is a run of **two** even though every adjacent pair in it
+matches — the wild is already the Ox and cannot also be a Pisces. Folding the
+substitution into the pairwise comparison reads it as three and credits a win the
+cabinet never made. So a *counted* step's `matched` is line-level and an
+*uncounted* one falls back to pairwise (past the break there is no run to
+continue, and the pair is only evidence the break was real); `line_symbol` on the
+step is what makes the difference readable instead of inferred. An all-wild run
+pays as `WC`, which has its own paytable row. A similarity check substitutes
+nothing and cannot — it never names a tile. Line colours come from
 `utils/payline_overlay.py` and travel on the response, so the dashboard's swatch
 and the drawn stroke cannot drift — the frontend never picks one.
 
@@ -593,10 +617,10 @@ This is the invariant to preserve if anything here is refactored:
 - **The picture decides what landed, and the image classifier is what reads it.**
   `_read_reels` (step `classify`) splits the result frame and hands the tiles to
   `image_classifier.classify()`; `pays` is then the leading run of positions named
-  with the *same code*, and both codes of every pair travel on `steps`. Nothing
-  about the win comes out of the log: a checker that read the answer there would
-  agree with the game by construction and could never catch a reel drawing the
-  wrong symbol.
+  with the *same code* — the wild read as whatever the run pays as — and both
+  codes of every pair travel on `steps`. Nothing about the win comes out of the
+  log: a checker that read the answer there would agree with the game by
+  construction and could never catch a reel drawing the wrong symbol.
 - **Two things it replaced, and neither is deleted.** Cosine similarity measured a
   run without naming it, so an award was every paytable row paying at that length;
   `similarity.py` and `paylines.check`/`check_lines` still do that for the
@@ -632,8 +656,20 @@ This is the invariant to preserve if anything here is refactored:
   or more" because what pays what is not its business; `analyze_spin` has the
   paytable, so the call belongs there — including `summary`, which is written
   from the awards rather than reused from the check.
-- **An award is one number, not a range.** Every awarded line names its symbol, so
-  it resolves to one combo and one value: `SpinLineAward.credits` and
+- **A wild-led run is two combos and the paytable picks, which is also why that
+  pricing lives here.** `WC WC WC WC AA` is five Ox (50 a bet unit on FortuneOx)
+  or four wilds (100), and the cabinet pays 100 — so `_award` prices the
+  substituted symbol at `pays` *and* the wild's own combo at `leading_wilds`, via
+  the shared `_priced()`, and takes the greater. `combo_pays` then says how many
+  positions the combo that paid covers: equal to `pays` except where the wild's
+  own combo won. The check reports `symbol`/`leading_wilds` and prices neither —
+  same separation as `awarded`, same reason. Don't move it into
+  `services/paylines.py`, which has no paytable, and don't drop it: the
+  substituted reading alone *understates* a real win while looking certain.
+- **An award is one number, not a range.** Every awarded line names its symbol
+  (`line.symbol`, the run's own code — *not* `symbols[0]`, which is the tile on
+  reel 1 and is the wild whenever one landed there), so it resolves to one combo
+  and one value: `SpinLineAward.credits` and
   `SpinExpectedAward.credits`/`cash` replaced `value_min`/`value_max`/`exact` and
   `credits_min`/`credits_max`/`cash_min`/`cash_max`, and `SpinLineAwardCandidate`
   is gone. Those spans were never a claim about the maths — they were the
@@ -661,13 +697,20 @@ This is the invariant to preserve if anything here is refactored:
 
 **`services/paylines.py` compares tiles two ways, and `method` says which.**
 `PaylineMethod.SIMILARITY` is cosine similarity at a threshold;
-`PaylineMethod.SYMBOL` is equality of classifier codes. Both are `_Comparer`
-subclasses handed to `_evaluate_set` as a factory, so everything below the
-comparison — the grid geometry, the tiles, the drawing, the files under the
-split's own directory — stays one code path. A symbol check reports
-`threshold: null`, `steps[].similarity: null` and null score figures on `stats`
-rather than faking a 1.0, and carries `steps[].left_symbol`/`right_symbol` and
-`lines[].symbols` instead. The pair cache is keyed on the *unordered* pair, so
+`PaylineMethod.SYMBOL` is equality of classifier codes *or* substitution of the
+wild. Both are `_Comparer` subclasses handed to `_evaluate_set` as a factory
+(which takes the split **and** the game config, since the wild's list lives
+there), so everything below the comparison — the grid geometry, the tiles, the
+drawing, the files under the split's own directory — stays one code path. The
+unit they differ over is `_Comparer.read(positions) -> _LineRead`, one whole
+line: the base class is the pairwise loop, and `_SymbolComparer` overrides it
+because a wild makes a line more than its pairs. It still calls `compare()` on
+every pair — that fills the cache `stats.comparisons`/`matches` are counted off,
+and is what an uncounted step reports. A symbol check reports `threshold: null`,
+`steps[].similarity: null` and null score figures on `stats` rather than faking a
+1.0, and carries `steps[].left_symbol`/`right_symbol`/`line_symbol`,
+`lines[].symbols`/`symbol`/`leading_wilds` and `wild_symbol`/`wild_replaces`
+instead. The pair cache is keyed on the *unordered* pair, so
 `_Comparison.flipped()` is what stops a step reporting its two codes transposed.
 
 **Which lines exist still comes from the game's own geometry.**

@@ -111,6 +111,18 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         ({"name": "X", "game_config": ["a"]}, "'game_config' in .* must be a string"),
         ({"name": "X", "symbols": ["WC"]}, "'symbols' in .* must be a JSON object"),
         ({"name": "X", "symbols": {"WC": 1}}, "'symbols.WC' in .* must be a string"),
+        (
+            {"name": "X", "wild_card_replacement": {"WC": ["AA"]}},
+            "'wild_card_replacement' in .* array of symbol codes",
+        ),
+        (
+            {"name": "X", "wild_card_replacement": ["AA", 2]},
+            "'wild_card_replacement' in .* only symbol codes, got 2",
+        ),
+        (
+            {"name": "X", "wild_card_replacement": ["AA", "wc"]},
+            "which is the wild itself",
+        ),
     ],
     ids=[
         "malformed-json",
@@ -122,6 +134,9 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         "game-config-not-a-string",
         "symbols-not-an-object",
         "symbol-name-not-a-string",
+        "wild-replacement-not-an-array",
+        "wild-replacement-entry-not-a-string",
+        "wild-replacement-lists-the-wild",
         "name-not-a-string",
         "roi-not-an-object",
         "button-targets-not-an-object",
@@ -238,6 +253,50 @@ def test_a_symbol_name_is_keyed_by_the_code_the_maths_writes(
 
     assert game.symbols == {"WC": "WILD", "AA": "Ox"}
     assert "BB" not in game.symbols
+
+
+def test_the_wild_replacement_list_is_upper_cased_and_deduplicated(
+    tmp_path: Path,
+) -> None:
+    """Same bargain as `symbols`: the maths writes codes upper-cased, so a config
+    typed in lower case must still match them."""
+    document = dict(FULL, wild_card_replacement=["aa", " bb ", "AA", ""])
+
+    game = load_game_config(write(tmp_path, document))
+
+    assert game.wild_card_replacement == ("AA", "BB")
+
+
+def test_a_config_declaring_no_wild_replacement_substitutes_nothing(
+    tmp_path: Path,
+) -> None:
+    """Every config written before the block existed. An empty list is not the
+    same as "the wild matches anything" -- it means the wild is compared by
+    equality like any other symbol."""
+    game = load_game_config(write(tmp_path, FULL))
+
+    assert game.wild_card_replacement == ()
+
+
+def test_fortuneox_declares_what_its_wild_stands_in_for() -> None:
+    """The nine picture and card symbols, and deliberately not the scatters or
+    feature symbols -- those are paid by counting them across the grid, so a wild
+    beside two of them is not three of them. Byte-identical to the
+    `WildSymbolList` in the game's own `math.xml`."""
+    game = load_game_config(GAMES_DIR / "FortuneOx.json")
+
+    assert game.wild_card_replacement == (
+        "AA",
+        "BB",
+        "CC",
+        "DD",
+        "EE",
+        "FF",
+        "GG",
+        "HH",
+        "JJ",
+    )
+    assert "SC" not in game.wild_card_replacement
 
 
 def test_fortuneox_names_every_symbol_its_maths_declares() -> None:

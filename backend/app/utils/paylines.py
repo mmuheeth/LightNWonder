@@ -1,15 +1,27 @@
-"""Read the ``paylines`` block of a game config: named bet configurations
-(``"5"``, ``"20"``, ``"40"``), each a set of lines of ``[row, column]``
-positions (1-indexed, row first, same numbering as a tile's name). A set is
-looked up by name since line 4 of the five-line set isn't line 4 of the
-forty-line set. Columns must strictly increase along a line -- a payline is
-compared left to right one adjacent pair at a time, and a repeated/backtracked
-reel would otherwise compare a tile against itself and score a perfect match.
+"""Read the ``paylines`` block of a game config, and read one line of symbol
+codes by the rule a game pays it.
+
+The block is named bet configurations (``"5"``, ``"20"``, ``"40"``), each a set
+of lines of ``[row, column]`` positions (1-indexed, row first, same numbering as
+a tile's name). A set is looked up by name since line 4 of the five-line set
+isn't line 4 of the forty-line set. Columns must strictly increase along a line
+-- a payline is compared left to right one adjacent pair at a time, and a
+repeated/backtracked reel would otherwise compare a tile against itself and
+score a perfect match.
+
+:func:`read_run` is the other half: given the codes a classifier read off one
+line's tiles, how far the leading run reaches and what it pays as. **It is not a
+pairwise comparison, and that is the whole point of it being here.** A wild
+stands in for whatever the *run* is paying as, so ``AA WC BB`` is a run of two
+(the wild is an Ox) and never a run of three -- yet every adjacent pair in it
+"matches" when each is judged on its own. A line is therefore read with the run's
+symbol carried along it, which is what :class:`WildRule` and :class:`SymbolRun`
+exist to express.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
@@ -19,10 +31,15 @@ from app.utils.reel_grid import position_name
 __all__ = [
     "COORDINATES",
     "MIN_POSITIONS",
+    "NO_WILDS",
+    "WILD_SYMBOL",
     "Payline",
     "PaylineError",
     "PaylineSet",
     "Position",
+    "SymbolRun",
+    "WildRule",
+    "read_run",
     "read_set",
     "set_names",
 ]
@@ -35,9 +52,177 @@ MIN_POSITIONS = 2
 # How many numbers a position is written with.
 COORDINATES = 2
 
+# The wild's own symbol code. One constant rather than a per-game setting: every
+# cabinet in this family writes its wild as `WC` (FortuneOx's `math.xml` names it
+# in `WildSymbolList`, and the config's `wild_card_replacement` list is the same
+# nine codes). What a game *does* declare is what it stands in for, since that is
+# the half that differs -- see :class:`WildRule`.
+WILD_SYMBOL = "WC"
+
 
 class PaylineError(ValueError):
     """The paylines block is missing, malformed, or describes no usable line."""
+
+
+# --- wilds ----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WildRule:
+    """Which code substitutes for which when a line is read.
+
+    Two things, kept apart because they fail differently: :attr:`code` is the
+    wild itself and :attr:`replaces` is the *closed* list of symbols it stands in
+    for. The list is closed on purpose -- a game's scatters and feature symbols
+    are paid by counting them anywhere on the grid, not along a line, so a wild
+    landing beside two orbs is a wild beside two orbs and not three orbs. Reading
+    the wild as "matches anything" is the mistake this shape prevents.
+
+    An empty :attr:`replaces` is :data:`NO_WILDS`: the game declared no
+    substitution, so the wild is an ordinary symbol compared by equality. That is
+    also the behaviour of every game config written before the block existed,
+    which is why nothing here has to be conditional at the call site.
+    """
+
+    code: str
+    replaces: frozenset[str]
+
+    @classmethod
+    def of(cls, replaces: Iterable[str], *, code: str = WILD_SYMBOL) -> WildRule:
+        """The rule for a wild standing in for these codes, upper-cased."""
+        return cls(
+            code=code.strip().upper(),
+            replaces=frozenset(entry.strip().upper() for entry in replaces if entry),
+        )
+
+    @property
+    def active(self) -> bool:
+        """Whether this game substitutes at all."""
+        return bool(self.replaces)
+
+    def is_wild(self, symbol: str | None) -> bool:
+        """Whether a code read off a tile is the wild.
+
+        False for every code when the game declares no substitution: a wild that
+        stands in for nothing behaves exactly like the symbol it is, and saying
+        otherwise would only make a run stop for a reason nothing measured.
+        """
+        return self.active and symbol == self.code
+
+    def stands_in_for(self, symbol: str | None) -> bool:
+        """Whether the wild may be read as this code."""
+        return symbol is not None and symbol in self.replaces
+
+
+NO_WILDS = WildRule(code=WILD_SYMBOL, replaces=frozenset())
+"""No substitution: every code is compared by equality, wild included."""
+
+
+@dataclass(frozen=True)
+class SymbolRun:
+    """One line's leading run, read left to right with wilds substituted."""
+
+    covered: int
+    """Positions from the left the run reached -- 1 for a line that got nowhere,
+    0 only for a line with no positions at all. Not the pay count: a run of one
+    position pays nothing, which is the caller's floor to apply."""
+
+    symbol: str | None
+    """The code the run pays as: the symbol the wilds stood in for, the wild's
+    own code when every covered position was wild, or ``None`` when the first
+    tile was never named and there was nothing to carry."""
+
+    leading_wilds: int
+    """How many of the run's *leading* positions were the wild itself, which is a
+    second combo the caller's paytable may price -- four wilds then an Ox is five
+    Ox or four wilds, and the two are not the same money."""
+
+    line_symbols: tuple[str | None, ...]
+    """What the run was paying as when it reached each position, ``None`` past
+    where it stopped. A wild-led run reports the wild here until the symbol it
+    stood in for lands, because until then that is genuinely what it is."""
+
+
+def read_run(codes: Sequence[str | None], wilds: WildRule = NO_WILDS) -> SymbolRun:
+    """How far one line's leading run reaches, and what it pays as.
+
+    ``codes`` is the code a classifier read off each tile of the line, left to
+    right, ``None`` for a tile it was not sure enough of to name. The run stops
+    at the first position that cannot join it, and every position after that is
+    ignored -- a line pays its *leading* run, so three alike on reels 3, 4 and 5
+    pay nothing when reels 1 and 2 differ.
+
+    A position joins when:
+
+    * it is the code the run is already paying as; or
+    * it is the wild, and the wild may stand in for that code; or
+    * the run has been wild all the way here and the wild may stand in for this
+      code, which is the position that *names* the run.
+
+    An unnamed tile joins nothing, in either direction: a classifier below its
+    floor said "I could not tell", and twice over that is not a run. So a line
+    whose first tile is unnamed covers exactly that one position and pays
+    nothing, rather than being credited with a run nothing measured.
+
+    The rule is stateful along the line and cannot be decomposed into pairs. With
+    ``AA WC BB`` every adjacent pair is a match on its own -- the wild is an Ox
+    beside the Ox and a Pisces beside the Pisces -- and the line is still a run of
+    two, because a wild is *one* symbol and cannot be both.
+    """
+    if not codes:
+        return SymbolRun(covered=0, symbol=None, leading_wilds=0, line_symbols=())
+
+    line_symbols: list[str | None] = [None] * len(codes)
+    chosen: str | None = None  # the non-wild code the run pays as, once one lands
+    wild_run = 0  # leading positions held by the wild itself
+    covered = 1  # position 0 always starts the read, named or not
+
+    first = codes[0]
+    if first is None:
+        # Nothing to carry, so nothing can join it: the read starts and stops.
+        return SymbolRun(
+            covered=1, symbol=None, leading_wilds=0, line_symbols=tuple(line_symbols)
+        )
+    if wilds.is_wild(first):
+        wild_run = 1
+    else:
+        chosen = first
+
+    def paying_as() -> str | None:
+        """What the run is worth reading as at this point in the line."""
+        return chosen if chosen is not None else (wilds.code if wild_run else None)
+
+    line_symbols[0] = paying_as()
+
+    for index in range(1, len(codes)):
+        code = codes[index]
+        if code is None:
+            break
+        if wilds.is_wild(code):
+            if chosen is None:
+                # Still wild all the way, so this simply extends the wild run.
+                wild_run += 1
+            elif not wilds.stands_in_for(chosen):
+                # A wild does not stand in for a scatter or a feature symbol, so
+                # a line of them stops at one rather than being extended by it.
+                break
+        elif chosen is None:
+            # Wild all the way here, so this code is what the run has been
+            # paying as -- provided the wild is allowed to have been it.
+            if not wilds.stands_in_for(code):
+                break
+            chosen = code
+        elif code != chosen:
+            break
+        covered += 1
+        line_symbols[index] = paying_as()
+
+    return SymbolRun(
+        covered=covered,
+        symbol=paying_as(),
+        leading_wilds=wild_run,
+        line_symbols=tuple(line_symbols),
+    )
 
 
 def _sort_key(name: str) -> tuple[int, int, str]:
@@ -75,9 +260,16 @@ class Payline:
         return f"Line {self.name}"
 
     @property
-    def steps(self) -> tuple[tuple[Position, Position], ...]:
-        """The adjacent pairs, in the order a left-to-right read compares them."""
-        return tuple(pairwise(self.positions))
+    def names(self) -> tuple[str, ...]:
+        """The positions as tile names, which is what a read is given.
+
+        A line's *pairs* are deliberately not offered here. Since the wild, a
+        read is not a sequence of independent pair comparisons -- it carries the
+        run's symbol along the line -- so a property handing out adjacent pairs
+        would invite exactly the pairwise implementation :func:`read_run` exists
+        to replace.
+        """
+        return tuple(position.name for position in self.positions)
 
 
 @dataclass(frozen=True)

@@ -177,6 +177,12 @@ _WIN_COUNTED = frozenset({"win-collected"})
 # The spin the press was meant to cause, in the game's own words.
 _SPIN_STARTED = frozenset({"spin-started"})
 
+# The shortest run a combo can match, so the shortest a wild-led alternative is
+# worth looking up at all. The same floor :mod:`app.services.paylines` reports
+# `paying` by; kept here rather than imported because this module applies it to a
+# *second* length -- the leading wild count -- that the check never priced.
+_MIN_RUN = 2
+
 
 # --- the sequence ---------------------------------------------------------
 
@@ -1591,6 +1597,21 @@ def _row_pay(view: PaytableView, symbol: str, pays: int) -> float | None:
     return None
 
 
+def _priced(
+    view: PaytableView, symbol: str, pays: int
+) -> tuple[PaylineComboInfo | None, float | None]:
+    """The combo a run of ``pays`` of ``symbol`` matches, and what it is worth.
+
+    One lookup with a fallback, in one place, because a wild-led line has to be
+    priced twice -- once as the symbol the wilds stood in for and once as the
+    wild's own shorter combo -- and doing it twice by hand is how the two would
+    come to disagree about what "worth" means.
+    """
+    combo = _combo_for(view, symbol, pays)
+    value = combo.value if combo is not None else _row_pay(view, symbol, pays)
+    return combo, value
+
+
 def _min_pay_length(view: PaytableView, symbol: str) -> int | None:
     """Shortest run this symbol pays at, or ``None`` if it never pays on a line.
 
@@ -1620,10 +1641,10 @@ def _award(
     Three judgements, kept separate on purpose:
 
     * **what landed** -- ``pays``, the leading run of positions the classifier
-      named with one code, with those codes on ``steps``. Read off the picture
-      and nowhere else. Taking it from the game's log would make the check agree
-      with the game by construction, which is the one thing a checker must not
-      do.
+      named with one code (the wild read as whatever the run pays as), with those
+      codes on ``steps``. Read off the picture and nowhere else. Taking it from
+      the game's log would make the check agree with the game by construction,
+      which is the one thing a checker must not do.
     * **whether it pays** -- ``awarded``, the paytable's answer and nobody
       else's. A run of two of a symbol that pays from three is a real run and no
       win, and reporting it as a win because the tiles matched is the mistake
@@ -1642,6 +1663,16 @@ def _award(
     say what that came to -- ``awarded`` stays true, ``credits`` is null, and the
     verdict above says indeterminate.
 
+    **The wild adds a fourth question and it belongs here, not in the check.** A
+    run that leads with wilds is two combos, and which one a cabinet pays is the
+    paytable's business: ``WC WC WC WC AA`` is five Ox at 50 a bet unit or four
+    wilds at 100, and the game pays 100. :mod:`app.services.paylines` deliberately
+    does not know that -- it substitutes, reports what the run resolved to and how
+    many of its leading positions were wild, and stops. This is the module holding
+    the paytable, so this is where the two are priced and the better taken;
+    ``combo_pays`` then says how many positions the combo that *paid* covers,
+    which is shorter than ``pays`` exactly when the wild's own combo won.
+
     What has gone is a judgement in the middle. The run used to be measured by
     cosine similarity, which cannot name a symbol, so an award was every paytable
     row paying at that length until the game's logged reel stops narrowed it --
@@ -1650,28 +1681,54 @@ def _award(
     one number.
     """
     labels = {symbol.code: symbol.name for symbol in view.math.symbols}
+    wild = check.wild_symbol
+
+    def named(code: str) -> str:
+        """A symbol as a reader knows it, falling back to its bare code."""
+        return labels.get(code) or code
+
     awards: list[SpinLineAward] = []
     for line in check.lines:
         symbols = list(line.symbols)
-        # A run only exists where two tiles were named the *same* code, so a
-        # paying line always has one -- there is no "run of unknowns" to price.
-        symbol = symbols[0] if line.paying and symbols else None
+        # What the *run* pays as, which the payline check already settled: the
+        # symbol the wilds stood in for, or the wild itself when every position
+        # of the run was one. Deliberately not `symbols[0]` -- that is the tile
+        # on reel 1, and a line that lands a wild there is not a line of wilds.
+        symbol = line.symbol
 
         note: str | None = None
         combo: PaylineComboInfo | None = None
         combo_value: float | None = None
         shortest: int | None = None
+        combo_pays: int | None = None
         if symbol is not None:
             shortest = _min_pay_length(view, symbol)
-            combo = _combo_for(view, symbol, line.pays)
-            combo_value = (
-                combo.value if combo is not None else _row_pay(view, symbol, line.pays)
-            )
+            combo, combo_value = _priced(view, symbol, line.pays)
+            combo_pays = line.pays if combo_value is not None else None
+
+            # A line that leads with wilds resolves two ways and the game pays
+            # the better of them: as the symbol the wilds stood in for over the
+            # whole run, or as the wild's own combo over just the leading wilds.
+            # On FortuneOx four wilds then an Ox is five Ox (50 a bet unit) or
+            # four wilds (100), so taking the substituted reading on its own
+            # would halve a real win while looking certain about it.
+            if wild is not None and symbol != wild and line.leading_wilds >= _MIN_RUN:
+                other, value = _priced(view, wild, line.leading_wilds)
+                if value is not None and (combo_value is None or value > combo_value):
+                    note = (
+                        f"{line.leading_wilds} x {named(wild)} pays {value:g} a "
+                        f"bet unit, more than {line.pays} x {named(symbol)}"
+                        + ("" if combo_value is None else f" at {combo_value:g}")
+                    )
+                    symbol, combo, combo_value = wild, other, value
+                    combo_pays = line.leading_wilds
+                    shortest = _min_pay_length(view, wild)
+
             if combo_value is None:
                 # Cancelled: the reels really did land this run, and the maths
                 # pays nothing for one this short. Said in the paytable's own
                 # terms so the reason is checkable rather than a bare refusal.
-                name = labels.get(symbol) or symbol
+                name = named(symbol)
                 note = (
                     f"{name} pays from {shortest} on, so this run of {line.pays} "
                     "awards nothing"
@@ -1706,8 +1763,10 @@ def _award(
                 symbols=symbols,
                 symbol=symbol,
                 symbol_name=labels.get(symbol) if symbol is not None else None,
+                leading_wilds=line.leading_wilds,
                 combo_id=combo.combo_id if combo is not None else None,
                 combo_symbols=list(combo.symbols) if combo is not None else [],
+                combo_pays=combo_pays,
                 combo_value=combo_value,
                 credits=credits,
                 min_pay_length=shortest,
@@ -2000,6 +2059,7 @@ async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValid
         resolved_from=geometry.resolved_from,
         line_count=geometry.line_count,
         min_confidence=reels.min_confidence,
+        wild_symbol=check.wild_symbol,
         pay_lengths=list(view.math.pay_lengths),
         split=check.source.split,
         summary=_summarise_awards(awards),

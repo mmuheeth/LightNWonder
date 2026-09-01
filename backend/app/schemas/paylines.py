@@ -38,11 +38,13 @@ class PaylineMethod(StrEnum):
     is only ever narrowed to every paytable row paying at that run length."""
 
     SYMBOL = "symbol"
-    """The symbol codes a classifier read off each tile, compared for equality.
-    Names the symbol as well as the run, so an award is one row and one number.
-    Two *unnamed* tiles are never a match: "I could not tell" twice is not "the
-    same symbol", so a line through a tile below the confidence floor stops
-    there rather than being credited with a run nothing measured."""
+    """The symbol codes a classifier read off each tile, compared for equality or
+    by substituting the wild. Names the symbol as well as the run, so an award is
+    one row and one number. Two *unnamed* tiles are never a match: "I could not
+    tell" twice is not "the same symbol", so a line through a tile below the
+    confidence floor stops there rather than being credited with a run nothing
+    measured. This is also the only method a wild can be read by -- see
+    ``wild_symbol`` on the result."""
 
 
 class PaylineSetOption(BaseModel):
@@ -71,8 +73,17 @@ class PaylineSource(BaseModel):
 
 
 class PaylineStep(BaseModel):
-    """One adjacent pair on a line. ``matched`` is whether the tiles are the
-    same symbol; ``counted`` is whether the leading run got this far."""
+    """One adjacent pair on a line. ``matched`` is whether the run continued
+    across it; ``counted`` is whether the leading run got this far.
+
+    The two flags are not one flag. A *counted* step is judged against what the
+    run is paying as (``line_symbol``), because a wild stands in for the run's
+    symbol and not for the tile beside it -- so ``AA WC BB`` breaks at the second
+    pair even though the wild matches a Pisces perfectly well on its own. An
+    *uncounted* step is past the break, where there is no run left to continue,
+    so it reports the pairwise answer instead: it is evidence the break was real,
+    which is why the pair is compared at all.
+    """
 
     left: str = Field(description="Position name of the left tile, e.g. 'r2c1'.")
     right: str = Field(description="Position name of the right tile, e.g. 'r2c2'.")
@@ -95,10 +106,22 @@ class PaylineStep(BaseModel):
     right_symbol: str | None = Field(
         default=None, description="The same for the right tile."
     )
+    line_symbol: str | None = Field(
+        default=None,
+        description=(
+            "The code the leading run was paying as when it reached this pair, "
+            "which is what the right tile was judged against. The wild appears "
+            "here while a run has been wild all the way, until the symbol it "
+            "stood in for lands. Null on a similarity check, which names no "
+            "tile, and on a step past the break, where there is no run."
+        ),
+    )
     matched: bool = Field(
         description=(
-            "Whether the two are the same symbol: the score reached the "
-            "threshold, or the two codes are equal and both were read."
+            "Whether the leading run continued across this pair. On a counted "
+            "step that is the right tile against 'line_symbol'; on one past the "
+            "break it falls back to the pairwise question -- the score reached "
+            "the threshold, or the two codes are one symbol."
         )
     )
     counted: bool = Field(description="Whether the leading run reached this step.")
@@ -115,8 +138,9 @@ class PaylineLine(BaseModel):
     pays: int = Field(
         ge=0,
         description=(
-            "How many positions from the left are the same symbol: 0 when the "
-            "first two reels differ, otherwise 2 or more."
+            "How many positions from the left are the same symbol, the wild "
+            "read as whatever the run is paying: 0 when the first two reels "
+            "differ, otherwise 2 or more."
         ),
     )
     paying: bool = Field(description="Whether the line paid at all -- pays >= 2.")
@@ -130,6 +154,26 @@ class PaylineLine(BaseModel):
             "compared by code. Empty for a similarity check, which says the tiles "
             "are alike and never which symbol they are; null in a cell no "
             "classifier was sure enough of to name."
+        ),
+    )
+    symbol: str | None = Field(
+        default=None,
+        description=(
+            "The code the leading run pays as -- the symbol its wilds stood in "
+            "for, or the wild's own code when every position of it was wild. "
+            "Not 'symbols[0]': a line that lands a wild on reel 1 is not a line "
+            "of wilds. Null when the line pays nothing, and on a similarity "
+            "check, which names no symbol."
+        ),
+    )
+    leading_wilds: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many of the run's leading positions were the wild itself. A "
+            "caller holding the paytable may price that as its own combo and "
+            "take the better of the two -- four wilds then an Ox is five Ox or "
+            "four wilds, and those are different money."
         ),
     )
     color: str = Field(description="Hex colour this line is drawn in on the overlay.")
@@ -286,6 +330,24 @@ class PaylineCheckResult(BaseModel):
         description=(
             "Similarity cut that was applied. Null when the tiles were compared "
             "by symbol code, which has no threshold to tune."
+        ),
+    )
+    wild_symbol: str | None = Field(
+        default=None,
+        description=(
+            "The symbol code that was substituted along a line, or null when "
+            "none was -- a similarity check, which cannot know a wild when it "
+            "sees one, or a game whose config declares no "
+            "'wild_card_replacement'."
+        ),
+    )
+    wild_replaces: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The codes the wild was allowed to stand in for, sorted. A closed "
+            "list, not 'anything': the scatters and feature symbols left out of "
+            "it are paid by counting them across the grid, so a wild beside two "
+            "of them is not three of them."
         ),
     )
     source: PaylineSource = Field(description="The split it was checked against.")

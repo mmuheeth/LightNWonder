@@ -885,3 +885,204 @@ async def test_a_similarity_check_names_no_symbols(
     assert data["method"] == "similarity"
     assert data["threshold"] == CUT
     assert line(data, "1")["symbols"] == []
+
+
+# --- the wild -------------------------------------------------------------
+#
+# Only the symbol path can substitute: a similarity check never names a tile, so
+# it cannot know a wild when it sees one.
+#
+# The rule under test is that a line is read as a *line*. A wild stands in for
+# whatever the run is paying as, so `AA WC BB` is a run of two even though every
+# adjacent pair in it matches -- and a checker that folded the substitution into
+# its pairwise comparison would call it three and credit a win the cabinet never
+# made. The board strings gain `W` for the wild and `S` for a scatter, which is
+# the code deliberately left *out* of the replacement list.
+
+WILD_REPLACES = ["AA", "BB", "CC"]
+
+# The tiles are irrelevant to every case here -- the codes are passed in by hand
+# and the split exists only so there are tiles of the right shape to read back.
+FLAT = ["AAAAA", "AAAAA", "AAAAA"]
+
+
+@pytest.fixture
+def wild_game(game) -> Path:
+    """The same game, declaring what its wild stands in for."""
+    return game(
+        {
+            "name": "FortuneOx",
+            "process": "FortuneOx.exe",
+            "roi": {"reels": REELS},
+            "reel_bounds": REEL_BOUNDS,
+            "paylines": PAYLINES,
+            "wild_card_replacement": WILD_REPLACES,
+        }
+    )
+
+
+def wild_codes(*rows: str) -> dict[str, str | None]:
+    """A board as one string per row, `W` the wild and `S` a scatter."""
+    named = {"A": "AA", "B": "BB", "C": "CC", "W": "WC", "S": "SC", "-": None}
+    return {
+        f"r{row}c{column}": named[symbol]
+        for row, entries in enumerate(rows, start=1)
+        for column, symbol in enumerate(entries, start=1)
+    }
+
+
+async def test_a_wild_extends_a_run_of_the_symbol_it_stands_in_for(
+    wild_game: Path, captures: Path
+) -> None:
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("BBBBB", "AAWAA", "CCCCC")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 5
+    assert middle["symbol"] == "AA"
+    assert middle["symbols"] == ["AA", "AA", "WC", "AA", "AA"]
+    assert middle["break_position"] is None
+
+
+async def test_a_wild_cannot_be_two_symbols_at_once(
+    wild_game: Path, captures: Path
+) -> None:
+    """The one case a pairwise substitution gets wrong.
+
+    Both joins on this line match on their own -- the wild is an Ox beside the Ox
+    and a Pisces beside the Pisces -- so a checker comparing neighbours reads a
+    run of three. The run is two: the wild is one symbol and it is already the Ox.
+    """
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("CCCCC", "AWBBB", "CCCCC")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 2
+    assert middle["symbol"] == "AA"
+    assert middle["break_position"] == "r2c3"
+    # The step that broke the run is the one whose two tiles are alike.
+    # `counted` is what tells the two apart, `line_symbol` is what says why.
+    second = middle["steps"][1]
+    assert (second["left_symbol"], second["right_symbol"]) == ("WC", "BB")
+    assert second["counted"] is True
+    assert second["matched"] is False
+    assert second["line_symbol"] == "AA"
+
+
+async def test_a_step_past_the_break_still_reports_the_pairwise_answer(
+    wild_game: Path, captures: Path
+) -> None:
+    """Past the break there is no run to continue, so the pair is all there is --
+    and it is the evidence the break was real."""
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("AAAAA", "ABBWB", "AAAAA")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 0
+    third = middle["steps"][2]
+    assert (third["left_symbol"], third["right_symbol"]) == ("BB", "WC")
+    assert third["counted"] is False
+    assert third["matched"] is True
+    assert third["line_symbol"] is None
+
+
+async def test_a_run_of_wilds_pays_as_the_wild(wild_game: Path, captures: Path) -> None:
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("AAAAA", "WWWSS", "AAAAA")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 3
+    assert middle["symbol"] == "WC"
+    assert middle["leading_wilds"] == 3
+
+
+async def test_a_wild_led_run_reports_both_readings(
+    wild_game: Path, captures: Path
+) -> None:
+    """Two wilds then three Ox is five Ox or two wilds, and only a paytable can
+    say which is worth more -- so the check reports both and prices neither."""
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("CCCCC", "WWAAA", "CCCCC")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 5
+    assert middle["symbol"] == "AA"
+    assert middle["leading_wilds"] == 2
+
+
+async def test_a_wild_does_not_stand_in_for_a_symbol_left_off_the_list(
+    wild_game: Path, captures: Path
+) -> None:
+    """A scatter is paid by counting it across the grid, so a wild beside two of
+    them is not three of them."""
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("AAAAA", "SWSSS", "AAAAA")
+    )
+
+    middle = line(result.model_dump(), "1")
+    assert middle["pays"] == 0
+    assert middle["symbol"] is None
+
+
+async def test_the_result_says_what_was_substituted_and_for_what(
+    wild_game: Path, captures: Path
+) -> None:
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes(*FLAT)
+    )
+
+    data = result.model_dump()
+    assert data["wild_symbol"] == "WC"
+    assert data["wild_replaces"] == sorted(WILD_REPLACES)
+
+
+async def test_a_game_declaring_no_replacement_substitutes_nothing(
+    active_game: Path, captures: Path
+) -> None:
+    """Every config written before the block existed, and the reason nothing at
+    the call site is conditional on a game having a wild: the code is compared by
+    equality like any other."""
+    write_split(captures, "screenshot-1", FLAT)
+
+    result = await paylines_service.check_symbols(
+        geometry_set(FIVE_LINES), wild_codes("AAAAA", "AWAAA", "AAAAA")
+    )
+
+    data = result.model_dump()
+    assert data["wild_symbol"] is None
+    assert data["wild_replaces"] == []
+    assert line(data, "1")["pays"] == 0
+
+
+async def test_a_similarity_check_substitutes_nothing_even_with_a_wild_declared(
+    client: AsyncClient, wild_game: Path, captures: Path
+) -> None:
+    """It never names a tile, so it cannot know a wild when it sees one -- which
+    is one more reason an award is only ever priced off a symbol check."""
+    write_split(captures, "screenshot-1", FLAT)
+
+    response = await client.post(f"{API}/check", json={"set": "5"})
+
+    data = assert_success(response.json())
+    assert data["wild_symbol"] is None
+    assert line(data, "1")["symbol"] is None
+    assert line(data, "1")["leading_wilds"] == 0

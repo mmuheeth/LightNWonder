@@ -33,6 +33,7 @@
     "columns": 5,
     "inset": 0.03
   },
+  "wild_card_replacement" : ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "JJ"],
   "meter": {
     "band": [0.213333, 0.600000],
     "windows": {

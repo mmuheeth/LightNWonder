@@ -61,6 +61,7 @@ from app.schemas.paytable import (
 from app.services import analyze_spin as spin_service
 from app.services import image_classifier as classifier_service
 from app.utils import denomination as denomination_util
+from app.utils import paylines as payline_config
 from tests.asserts import assert_failure, assert_success
 
 API = "/api/analyze-spin"
@@ -69,11 +70,16 @@ API = "/api/analyze-spin"
 # declared in and `pay_table` rows are indexed by.
 PAY_LENGTHS = [5, 4, 3, 2]
 
-# Two symbols with different shapes of row, because the interesting cases are
-# about the shape: AA pays from two, BB only from three. A run of two BB is
-# therefore a real run the maths does not pay, which is the case a "count the
-# matches" implementation gets wrong.
+# Symbols with different shapes of row, because the interesting cases are about
+# the shape: AA pays from two, BB only from three. A run of two BB is therefore a
+# real run the maths does not pay, which is the case a "count the matches"
+# implementation gets wrong.
+#
+# WC is the wild and pays from three, above AA at every length -- which is what
+# makes a wild-led line two combos worth comparing. Four wilds (150) beats five
+# AA (100); two wilds (nothing) does not. FortuneOx's own maths has this shape.
 PAY_TABLE = [
+    PaylinePayRow(codes=["WC"], names=["WILD"], values=[250.0, 150.0, 50.0, None]),
     PaylinePayRow(codes=["AA"], names=["ACE"], values=[100.0, 50.0, 20.0, 5.0]),
     PaylinePayRow(codes=["BB"], names=["BELL"], values=[80.0, 40.0, 10.0, None]),
 ]
@@ -135,6 +141,9 @@ def paytable(
         )
         for index, (code, length, value) in enumerate(
             [
+                ("WC", 5, 250.0),
+                ("WC", 4, 150.0),
+                ("WC", 3, 50.0),
                 ("AA", 5, 100.0),
                 ("AA", 4, 50.0),
                 ("AA", 3, 20.0),
@@ -160,6 +169,14 @@ def paytable(
             path="C:/game/.../math.xml",
             defaults=MathDefaultsInfo(),
             symbols=[
+                SymbolInfo(
+                    code="WC",
+                    name="WILD",
+                    role="Wild",
+                    reel_stops=5,
+                    total_stops=5,
+                    strips=5,
+                ),
                 SymbolInfo(
                     code="AA",
                     name="ACE",
@@ -204,41 +221,36 @@ def paytable(
     )
 
 
-def check(*lines: tuple[str, list[str | None]]):
+def check(
+    *lines: tuple[str, list[str | None]],
+    wilds: payline_config.WildRule = payline_config.NO_WILDS,
+):
     """A finished payline check over symbol codes, built from ``(name, codes)``.
 
     ``codes`` is the code at each of five positions, so a line is written the way
-    it reads on the reels. The run is derived here the way
-    :mod:`app.services.paylines` derives it -- leading, stopping at the first
-    unequal or unnamed pair -- rather than asserted, so these tests are about the
-    *pricing* of a run and not about the counting of one.
+    it reads on the reels. The run is derived by the same
+    :func:`app.utils.paylines.read_run` :mod:`app.services.paylines` reads a line
+    with, rather than re-implemented or asserted, so these tests stay about the
+    *pricing* of a run and not the counting of one -- and a wild-led fixture here
+    cannot come out longer or shorter than the service would make it.
     """
     built = []
     for index, (name, codes) in enumerate(lines):
         positions = [f"r2c{column}" for column in range(1, len(codes) + 1)]
-        steps = []
-        running = True
-        run = 0
-        break_position = None
-        for left in range(len(codes) - 1):
-            matched = codes[left] is not None and codes[left] == codes[left + 1]
-            steps.append(
-                PaylineStep(
-                    left=positions[left],
-                    right=positions[left + 1],
-                    left_symbol=codes[left],
-                    right_symbol=codes[left + 1],
-                    matched=matched,
-                    counted=running,
-                )
+        run = payline_config.read_run(codes, wilds)
+        pays = run.covered if run.covered >= 2 else 0
+        steps = [
+            PaylineStep(
+                left=positions[left],
+                right=positions[left + 1],
+                left_symbol=codes[left],
+                right_symbol=codes[left + 1],
+                line_symbol=(run.line_symbols[left] if left < run.covered else None),
+                matched=(left + 1) < run.covered,
+                counted=left < run.covered,
             )
-            if running:
-                if matched:
-                    run += 1
-                else:
-                    running = False
-                    break_position = positions[left + 1]
-        pays = run + 1 if run else 0
+            for left in range(len(codes) - 1)
+        ]
         built.append(
             PaylineLine(
                 name=name,
@@ -248,9 +260,13 @@ def check(*lines: tuple[str, list[str | None]]):
                 paying=pays >= 2,
                 matched_positions=positions[:pays],
                 symbols=list(codes),
+                symbol=run.symbol if pays else None,
+                leading_wilds=run.leading_wilds,
                 color=f"#{index:06x}",
                 steps=steps,
-                break_position=break_position,
+                break_position=(
+                    positions[run.covered] if run.covered < len(positions) else None
+                ),
             )
         )
     return PaylineCheckResult(
@@ -258,6 +274,8 @@ def check(*lines: tuple[str, list[str | None]]):
         set="geometry-5",
         method=PaylineMethod.SYMBOL,
         threshold=None,
+        wild_symbol=wilds.code if wilds.active else None,
+        wild_replaces=sorted(wilds.replaces),
         source=PaylineSource(
             split="screenshot-1",
             written_at=datetime(2026, 8, 28, 12, 0, 0),
@@ -282,20 +300,29 @@ def check(*lines: tuple[str, list[str | None]]):
     )
 
 
-def award(*lines: tuple[str, list[str | None]], bet_per_unit: int | None = 1):
+def award(
+    *lines: tuple[str, list[str | None]],
+    bet_per_unit: int | None = 1,
+    wilds: payline_config.WildRule = payline_config.NO_WILDS,
+):
     """Every line of one check, priced at ``bet_per_unit`` credits a unit.
 
     Defaults to 1, where an award and the paytable row behind it are the same
     number -- which is what makes the cases below about the *pricing* of a run
     rather than about the multiplier. The rung is varied where that is the
-    point.
+    point. ``wilds`` defaults to no substitution for the same reason: most of
+    these cases are about a run of plain symbols.
     """
-    return spin_service._award(paytable(), check(*lines), {}, bet_per_unit)
+    return spin_service._award(paytable(), check(*lines, wilds=wilds), {}, bet_per_unit)
 
 
-def one(*codes: str | None, bet_per_unit: int | None = 1):
+def one(
+    *codes: str | None,
+    bet_per_unit: int | None = 1,
+    wilds: payline_config.WildRule = payline_config.NO_WILDS,
+):
     """The single award of a one-line check reading ``codes``."""
-    return award(("1", list(codes)), bet_per_unit=bet_per_unit)[0]
+    return award(("1", list(codes)), bet_per_unit=bet_per_unit, wilds=wilds)[0]
 
 
 def validation_for(awards) -> SpinPaylineValidation:
@@ -311,6 +338,138 @@ def validation_for(awards) -> SpinPaylineValidation:
 
 
 # --- pricing a run --------------------------------------------------------
+
+
+# --- pricing a run that landed a wild -------------------------------------
+#
+# The check has already substituted, so `pays` and `symbol` arrive settled. What
+# is under test here is the judgement only a paytable can make: a run that leads
+# with wilds is *two* combos -- the symbol they stood in for over the whole run,
+# and the wild's own combo over just the leading wilds -- and the cabinet pays the
+# better of them. The fixture's WC row is above AA at every length for exactly
+# that reason, which is also the shape of FortuneOx's real maths.
+
+# What FortuneOx declares: the nine picture and card symbols, no scatter.
+WILDS = payline_config.WildRule.of(["AA", "BB", "CC"])
+
+
+def wild(*codes: str | None, bet_per_unit: int | None = 1):
+    """The single award of a one-line check read with the wild substituted."""
+    return one(*codes, bet_per_unit=bet_per_unit, wilds=WILDS)
+
+
+def test_a_substituted_run_is_priced_as_the_symbol_the_wild_stood_in_for() -> None:
+    result = wild("AA", "AA", "WC", "AA", "AA")
+
+    assert result.pays == 5
+    assert result.symbol == "AA"
+    assert result.symbol_name == "ACE"
+    assert result.credits == 100.0
+    assert result.combo_pays == 5
+    assert result.leading_wilds == 0
+    assert result.note is None
+
+
+def test_a_run_of_wilds_is_priced_as_the_wild() -> None:
+    """`SC` is left off the replacement list, so it is what actually ends a run
+    of wilds -- a symbol the wild stands in for would simply have named it."""
+    result = wild("WC", "WC", "WC", "SC", "SC")
+
+    assert result.pays == 3
+    assert result.symbol == "WC"
+    assert result.symbol_name == "WILD"
+    assert result.credits == 50.0
+    assert result.combo_pays == 3
+
+
+def test_a_wild_led_run_takes_the_wilds_own_combo_when_it_pays_more() -> None:
+    """The judgement the payline check deliberately does not make.
+
+    Four wilds then an Ace is five Ace (100) or four wilds (150). Pricing only
+    the substituted reading would understate a real win by a third while looking
+    certain about it -- so both are priced and the better is taken.
+    """
+    result = wild("WC", "WC", "WC", "WC", "AA")
+
+    assert result.pays == 5
+    assert result.leading_wilds == 4
+    assert result.symbol == "WC"
+    assert result.credits == 150.0
+    # Shorter than `pays`, which is what says the wild's own combo is the one
+    # that paid rather than the five-long substituted reading.
+    assert result.combo_pays == 4
+    assert result.combo_symbols == ["WC"] * 4 + ["ANY"]
+    assert result.note is not None
+    assert "4 x WILD pays 150" in result.note
+
+
+def test_a_wild_led_run_keeps_the_substituted_reading_when_that_pays_more() -> None:
+    """Two wilds is below WC's own row, so there is nothing to compare against
+    and the five-long reading stands."""
+    result = wild("WC", "WC", "AA", "AA", "AA")
+
+    assert result.pays == 5
+    assert result.leading_wilds == 2
+    assert result.symbol == "AA"
+    assert result.credits == 100.0
+    assert result.combo_pays == 5
+    assert result.note is None
+
+
+def test_a_lone_leading_wild_is_never_a_combo_of_its_own() -> None:
+    """One position is not a run, so there is no second reading to price."""
+    result = wild("WC", "AA", "AA", "AA", "AA")
+
+    assert result.leading_wilds == 1
+    assert result.symbol == "AA"
+    assert result.credits == 100.0
+    assert result.combo_pays == 5
+
+
+def test_a_wild_cannot_be_two_symbols_at_once_when_priced() -> None:
+    """`AA WC BB` is a run of two Ace, worth 5 -- not a run of three of anything.
+    Every adjacent pair in it matches, which is what makes this the case worth
+    pricing end to end rather than only counting."""
+    result = wild("AA", "WC", "BB", "BB", "BB")
+
+    assert result.pays == 2
+    assert result.symbol == "AA"
+    assert result.credits == 5.0
+
+
+def test_a_cancelled_wild_run_names_the_wild_in_its_note() -> None:
+    """Two wilds is a real run WC's row does not pay, so it cancels like any
+    other short run -- and says so in the wild's own name."""
+    result = wild("WC", "WC", "SC", "SC", "SC")
+
+    assert result.pays == 2
+    assert result.paying is True
+    assert result.awarded is False
+    assert result.credits is None
+    assert result.combo_pays is None
+    assert result.min_pay_length == 3
+    assert result.note is not None
+    assert "WILD pays from 3" in result.note
+
+
+def test_a_wild_led_award_is_still_scaled_by_the_bet_per_unit() -> None:
+    """The wild's combo value is a rate per bet unit like every other."""
+    result = wild("WC", "WC", "WC", "WC", "AA", bet_per_unit=10)
+
+    assert result.combo_value == 150.0
+    assert result.credits == 1500.0
+
+
+def test_a_game_declaring_no_replacement_prices_the_wild_as_an_ordinary_symbol() -> (
+    None
+):
+    """Which is every game config written before the block existed."""
+    result = one("WC", "WC", "WC", "AA", "AA")
+
+    assert result.pays == 3
+    assert result.symbol == "WC"
+    assert result.credits == 50.0
+    assert result.leading_wilds == 0
 
 
 def test_five_of_one_symbol_is_priced_from_its_combo() -> None:

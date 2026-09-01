@@ -78,7 +78,8 @@ backend/
     │                         and torch's thread cap
     │   └── game_config/     active selection plus per-game process, logs,
     │                         ROIs, reel bounds, paylines, targets, the game's
-    │                         installed GameConfig directory and symbol names
+    │                         installed GameConfig directory, symbol names and
+    │                         what the wild stands in for
     ├── utils/
     │   ├── win32.py         the only ctypes: posts messages to another window
     │   ├── panel_xml.py     reads the i-deck layout the panel service renders from
@@ -104,7 +105,8 @@ backend/
     │                         tiles of the matrix, by fractions of the crop,
     │                         border trim included
     │   ├── paylines.py     reads a config's winning patterns, per bet
-    │                         configuration, as 1-indexed grid positions
+    │                         configuration, as 1-indexed grid positions -- and
+    │                         reads one line of codes, wild substituted
     │   ├── similarity.py    cosine similarity between two pictures, which is
     │                         how a glowing symbol still matches itself
     │   ├── symbol_dataset.py turns a folder of symbol artwork into training
@@ -961,13 +963,21 @@ invariance wanted: a uniformly brighter copy of a symbol scores 1.0.
 > between. Tune `PAYLINE_MATCH_THRESHOLD` against a split that does not move
 > rather than by intuition.
 
-**A line is read from the left, one adjacent pair at a time, and stops at the
-first pair that does not match.** That is how a slot pays: three pots on reels
-1-3 pay what a pot pays for three, and a fourth pot on reel 5 behind something
-else on reel 4 pays nothing extra. So `pays` is the length of the **leading** run
-— 0 when reels 1 and 2 differ, otherwise 2 or more — and never a count of
-matches anywhere on the line. The comparison chains tile to tile rather than
-every tile back to the first, so `A~B` and `B~C` is taken as `A~B~C`.
+**A line is read from the left and stops at the first position that does not
+join the run.** That is how a slot pays: three pots on reels 1-3 pay what a pot
+pays for three, and a fourth pot on reel 5 behind something else on reel 4 pays
+nothing extra. So `pays` is the length of the **leading** run — 0 when reels 1
+and 2 differ, otherwise 2 or more — and never a count of matches anywhere on the
+line. Compared by similarity the read chains tile to tile rather than every tile
+back to the first, so `A~B` and `B~C` is taken as `A~B~C`.
+
+> **A wild is invisible to this comparison, and cannot be otherwise.** Cosine
+> similarity says two pictures are alike and never which symbol either one is, so
+> it cannot recognise a wild to substitute it: two wilds still score alike, and a
+> wild beside the symbol it stands in for scores as two different symbols. The
+> substitution belongs to the symbol path — see
+> [the wild](#the-wild-substitutes-along-a-line-not-across-a-pair) — which is one
+> more reason an award is only ever priced off a symbol check.
 
 **Every adjacent pair is scored anyway, including the ones after the run broke.**
 They cost nothing — a pair is compared once and cached across the lines that
@@ -1832,15 +1842,21 @@ game installed, while this file only exists on one that does.
 ### Configuration
 
 ```
-game_config     the game's installed GameConfig directory
-win_geometry    its winGeometry.xml (defaults to <game_config>/winGeometry.xml)
-symbols         display name per symbol code; blank means "not named yet"
+game_config              the game's installed GameConfig directory
+win_geometry             its winGeometry.xml (defaults to <game_config>/winGeometry.xml)
+symbols                  display name per symbol code; blank means "not named yet"
+wild_card_replacement    the codes the wild stands in for; omit to substitute nothing
 ```
 
 Neither path is checked at config-load time: the game's install is not part of
 this repo, and a config that names it stays valid on a machine without it. The
-service reading the file is where a missing one becomes an error. `symbols` keys
-are upper-cased on load, since that is how the maths writes them.
+service reading the file is where a missing one becomes an error. `symbols` and
+`wild_card_replacement` codes are upper-cased on load, since that is how the
+maths writes them; listing the wild's own code in the replacement list is
+**refused** rather than ignored, because a wild standing in for itself reads as a
+rule and is none. See
+[the wild](#the-wild-substitutes-along-a-line-not-across-a-pair) for what the
+list does and why it is closed.
 
 ## Game selection
 
@@ -2227,6 +2243,62 @@ Two earlier readings were replaced by that one, and why matters more than what:
   longer read here, as is `ANALYZE_SPIN_REEL_STOP_ANCHOR` — the whole
   top/middle/bottom question disappears when the tile itself is what gets named.
 
+#### The wild substitutes along a line, not across a pair
+
+**A wild stands in for whatever the *run* is paying as, which makes a line more
+than the sum of its pairs.** The codes it may be read as are declared per game:
+
+```json
+"wild_card_replacement": ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "JJ"]
+```
+
+The list is **closed on purpose**. FortuneOx declares eighteen symbol codes and
+its wild stands in for nine of them; the ones left out are the scatters and
+feature symbols the game pays by counting anywhere on the grid rather than along
+a line, so a wild landing beside two orbs is a wild beside two orbs and not three
+orbs. Reading the wild as "matches anything" is the mistake the shape of this
+block prevents. A game declaring no block substitutes nothing and its wild is
+compared by equality like any other symbol — which is what every config written
+before the block did, so nothing behaves differently until one opts in.
+
+`WC` itself is a constant in `app/utils/paylines.py`, not a per-game key: every
+cabinet in this family writes its wild that way, and the game's own `math.xml`
+names it in `WildSymbolList` beside the same nine codes. What differs between
+games is what it stands in for, which is the half that is declared. (Declared and
+not read, for the same reason the `paylines` block is: `services/paylines.py`
+checks a screenshot on machines with no game installed.)
+
+**The rule cannot be decomposed into pairs, and that is the whole point.**
+`app/utils/paylines.read_run()` carries the run's own symbol along the line and
+judges each position against *that*, not against the tile to its left:
+
+| line | run | pays as | why |
+| --- | --- | --- | --- |
+| `AA AA WC AA AA` | 5 | `AA` | the wild is an Ox, like the rest |
+| `AA WC BB BB BB` | **2** | `AA` | the wild is already the Ox and cannot also be a Pisces |
+| `WC WC WC SC SC` | 3 | `WC` | all wild, so it pays as the wild's own row |
+| `WC WC AA AA AA` | 5 | `AA` | wild all the way until the Ox names it |
+| `SC WC SC SC SC` | **1** → 0 | — | the wild does not stand in for a scatter |
+
+Row two is the case a pairwise substitution gets wrong: *every adjacent pair on
+that line matches* — the wild is an Ox beside the Ox and a Pisces beside the
+Pisces — so comparing neighbours reads a run of three and credits a win the
+cabinet never made.
+
+Which is why `matched` on a step means **"the run continued here"** rather than
+"these two tiles are alike". A *counted* step is judged against `line_symbol`,
+the code the run was paying as when it reached that pair; an *uncounted* one is
+past the break, where there is no run to continue, so it falls back to the
+pairwise question — it is evidence the break was real, which is the only reason
+the pair is compared at all. So on `AA WC BB BB BB` the second step reports
+`left_symbol: "WC"`, `right_symbol: "BB"`, `line_symbol: "AA"`, `matched: false`,
+`counted: true`, and the three fields together say exactly why.
+
+The check reports what it substituted (`wild_symbol`, `wild_replaces` on the
+result) and, per line, what the run resolved to (`symbol`) and how many of its
+leading positions were the wild itself (`leading_wilds`). It deliberately does
+**not** price the second reading — see below.
+
 **The paytable decides whether it pays, and nothing else does.** A run of two of
 a symbol whose row starts at three is a *real run and no win* — so it comes back
 `awarded: false` with a `note` saying what it would have needed ("Jack pays from
@@ -2236,6 +2308,14 @@ award, and is flagged rather than shown as a paying line.
 what is not its business; this is the module that has the paytable, so this is
 where that call belongs.
 
+**A wild-led run is two combos and only the paytable can choose between them.**
+`WC WC WC WC AA` is five Ox *or* four wilds, and on FortuneOx those are 50 and
+100 a bet unit — the cabinet pays 100. So `_award` prices both, takes the greater,
+and says so in the line's `note`; `combo_pays` is then how many positions the
+combo that actually paid covers, which is shorter than `pays` exactly when the
+wild's own combo won. This is the same separation as above and for the same
+reason: the check substitutes and reports, the paytable decides.
+
 So per line the response carries both readings, never collapsed:
 
 | field | from | meaning |
@@ -2244,10 +2324,12 @@ So per line the response carries both readings, never collapsed:
 | `symbols` | the picture | the code at every position of the line, null where none was read |
 | `steps` | the picture | every adjacent pair with both codes, `matched` and `counted` |
 | `paying` | the picture | whether that run is two or more — **evidence, not a win** |
-| `symbol` / `symbol_name` | the picture | the code the run is made of |
+| `symbol` / `symbol_name` | the picture | the code the run is **priced as** — what its wilds stood in for, not what sits on reel 1 |
+| `leading_wilds` | the picture | how many of the run's leading positions were the wild itself |
 | `min_pay_length` | the paytable | shortest run that symbol pays at |
 | `awarded` | the paytable | **whether this line earns anything** |
 | `combo_id` / `combo_symbols` | `math.xml` | the combo the run matched |
+| `combo_pays` | the paytable | how many positions the combo that *paid* covers |
 | `credits` | `math.xml` | what that combo pays, per line at one credit |
 
 `steps[].similarity` is `null` and the result's `threshold` is `null`, because

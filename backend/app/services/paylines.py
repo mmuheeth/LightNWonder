@@ -22,11 +22,27 @@ travels on the answer** (``method``, :class:`app.schemas.paylines.PaylineMethod`
   ``matched_min``/``rejected_max`` beside the threshold. It says the tiles are
   alike and never which symbol they are.
 * :data:`PaylineMethod.SYMBOL` — the codes a classifier read off each tile
-  (:mod:`app.services.image_classifier`), compared for equality. No threshold,
-  no scores, and the symbol is *named*, which is what lets a caller holding the
-  paytable price a run exactly instead of narrowing it to every row that pays at
-  that length. Two unnamed tiles never match: "I could not tell" twice is not
-  "the same symbol".
+  (:mod:`app.services.image_classifier`), compared for equality **or by
+  substitution**. No threshold, no scores, and the symbol is *named*, which is
+  what lets a caller holding the paytable price a run exactly instead of
+  narrowing it to every row that pays at that length. Two unnamed tiles never
+  match: "I could not tell" twice is not "the same symbol".
+
+**The wild is why a line is read as a line and not as a bag of pairs.** A game
+declares what its wild stands in for in the config's ``wild_card_replacement``
+block; :func:`app.utils.paylines.read_run` carries the run's own symbol along the
+line and decides each position against *that*, not against the tile to its left.
+``AA WC BB`` is a run of two even though every adjacent pair in it matches on its
+own, because the wild is one symbol and cannot be an Ox and a Pisces at once. So
+a counted step's ``matched`` is "the run continued here", and only an *uncounted*
+one — past the break, where there is no run to continue — falls back to the
+pairwise question. ``line_symbol`` on each step is what the run was paying as, so
+the difference is readable rather than inferred.
+
+A similarity check substitutes nothing, and cannot: it never names a tile, so it
+cannot know a wild when it sees one. Two wilds still score alike, and a wild
+beside the symbol it stands in for scores as two different symbols — which is
+one more reason an award is only ever priced off a symbol check.
 
 Everything below the comparison — the grid geometry, the tiles, the drawing, the
 files written — is identical either way, which is the whole reason both go
@@ -44,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from collections.abc import Callable, Collection, Mapping, Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal
 
@@ -184,6 +201,33 @@ class _Comparison:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class _LineRead:
+    """One line, read left to right by whichever comparer holds the split.
+
+    The unit the two methods actually differ over. A pairwise comparer answers a
+    line one pair at a time and has nothing else to say about it; a symbol
+    comparer carries the run's own code along the line so a wild can stand in for
+    it, and reports what it settled on. Everything past this -- the pay count,
+    the drawing, the row on the response -- is written once against this shape.
+    """
+
+    steps: list[PaylineStep]
+
+    covered: int
+    """Positions from the left the run reached. 1 means it got nowhere; the pay
+    floor is the caller's to apply."""
+
+    break_position: str | None
+    """Where the run stopped, or ``None`` when it reached the end of the line."""
+
+    symbol: str | None = None
+    """The code the run pays as, for a comparer that names tiles."""
+
+    leading_wilds: int = 0
+    """How many of the run's leading positions were the wild itself."""
+
+
 class _Comparer:
     """Decides whether two tiles of one split are the same symbol.
 
@@ -198,6 +242,41 @@ class _Comparer:
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, str], _Comparison] = {}
+
+    def read(self, positions: Sequence[str]) -> _LineRead:
+        """One line's steps, how far its leading run reached, and where it broke.
+
+        The pairwise read, which is right for any comparison whose verdict rests
+        on the two tiles alone -- and that is every comparison that cannot *name*
+        a tile, since a substitution rule needs to know what it is looking at.
+        ``counted`` marks the steps the read actually reached; the run ends at
+        the first counted step that does not match, and the pairs after it are
+        compared anyway because they are the evidence the break was real.
+        """
+        steps: list[PaylineStep] = []
+        running = True
+        covered = 1 if positions else 0
+        break_position: str | None = None
+        for left, right in pairwise(positions):
+            found = self.compare(left, right)
+            steps.append(
+                PaylineStep(
+                    left=left,
+                    right=right,
+                    similarity=found.similarity,
+                    left_symbol=found.left_symbol,
+                    right_symbol=found.right_symbol,
+                    matched=found.matched,
+                    counted=running,
+                )
+            )
+            if running:
+                if found.matched:
+                    covered += 1
+                else:
+                    running = False
+                    break_position = right
+        return _LineRead(steps=steps, covered=covered, break_position=break_position)
 
     def compare(self, left: str, right: str) -> _Comparison:
         """How the two named tiles compare, in the order they were asked about."""
@@ -215,6 +294,11 @@ class _Comparer:
 
     def symbol(self, name: str) -> str | None:  # noqa: ARG002 - base answers for all
         """The code read off one tile, or ``None`` when this comparer names none."""
+        return None
+
+    @property
+    def wilds(self) -> payline_config.WildRule | None:
+        """The substitution that was applied, or ``None`` when none was."""
         return None
 
     @property
@@ -260,85 +344,130 @@ class _SimilarityComparer(_Comparer):
 
 
 class _SymbolComparer(_Comparer):
-    """Two tiles are the same symbol when a classifier read the same code off both.
+    """Two tiles are the same symbol when a classifier read the same code off
+    both -- or when one of them is the wild, standing in for the other.
 
-    No threshold and no scores -- two codes are equal or they are not. **Two
-    unnamed tiles are not a match**: a classifier below its confidence floor said
-    "I could not tell", and twice over that is not evidence of a run. A line
-    through such a tile stops there, which is the honest answer and the reason
-    the tile's own confidence has to travel back to the caller.
+    No threshold and no scores: two codes are equal or they are not, and the
+    substitution is a rule rather than a measurement. **Two unnamed tiles are not
+    a match**: a classifier below its confidence floor said "I could not tell",
+    and twice over that is not evidence of a run. A line through such a tile
+    stops there, which is the honest answer and the reason the tile's own
+    confidence has to travel back to the caller.
+
+    :meth:`read` is overridden rather than only :meth:`_decide`, because the wild
+    makes a line more than its pairs. A wild stands in for whatever the *run* is
+    paying as, so which symbol it is depends on positions further left -- and
+    ``AA WC BB`` is a run of two whose every adjacent pair matches. The pairwise
+    answer :meth:`_decide` still gives is what an uncounted step reports (past
+    the break there is no run to continue) and what the run's own ``comparisons``
+    and ``matches`` figures are counted off, which is why every pair is still
+    compared even after the line has stopped.
     """
 
     method = PaylineMethod.SYMBOL
 
-    def __init__(self, symbols: Mapping[str, str | None]) -> None:
+    def __init__(
+        self,
+        symbols: Mapping[str, str | None],
+        wilds: payline_config.WildRule = payline_config.NO_WILDS,
+    ) -> None:
         super().__init__()
         # Lower-cased because a split's tiles are keyed by their file stem while a
         # line's positions come from `reel_grid.position_name`. The two agree
         # today, and this is the one place that would notice if they stopped.
         self._symbols = {name.lower(): code for name, code in symbols.items()}
+        self._wilds = wilds
 
     def symbol(self, name: str) -> str | None:
         return self._symbols.get(name.lower())
 
+    @property
+    def wilds(self) -> payline_config.WildRule | None:
+        return self._wilds if self._wilds.active else None
+
+    def read(self, positions: Sequence[str]) -> _LineRead:
+        codes = [self.symbol(name) for name in positions]
+        run = payline_config.read_run(codes, self._wilds)
+        steps: list[PaylineStep] = []
+        for index, (left, right) in enumerate(pairwise(positions)):
+            # Compared even past the break: the cache this fills is what the
+            # run's distinct-pair figures are counted off, and it is the only
+            # thing an uncounted step can be said to have decided.
+            pair = self.compare(left, right)
+            counted = index < run.covered
+            steps.append(
+                PaylineStep(
+                    left=left,
+                    right=right,
+                    similarity=None,
+                    left_symbol=codes[index],
+                    right_symbol=codes[index + 1],
+                    line_symbol=run.line_symbols[index] if counted else None,
+                    # For a counted step this is "the run continued here", which
+                    # the line as a whole settles; for one past the break it is
+                    # the pairwise question, the only one still meaningful.
+                    matched=(index + 1) < run.covered if counted else pair.matched,
+                    counted=counted,
+                )
+            )
+        return _LineRead(
+            steps=steps,
+            covered=run.covered,
+            break_position=(
+                positions[run.covered] if run.covered < len(positions) else None
+            ),
+            symbol=run.symbol,
+            leading_wilds=run.leading_wilds,
+        )
+
     def _decide(self, left: str, right: str) -> _Comparison:
         first, second = self.symbol(left), self.symbol(right)
         return _Comparison(
-            matched=first is not None and first == second,
+            matched=self._alike(first, second),
             left_symbol=first,
             right_symbol=second,
         )
 
+    def _alike(self, first: str | None, second: str | None) -> bool:
+        """Whether two codes are one symbol *pairwise* -- all a lone pair can say.
 
-_ComparerFor = Callable[[grid_service.SplitOnDisk], _Comparer]
+        Never a substitute for :meth:`read`: a wild stands in for what the run is
+        paying as, and a pair on its own does not know what that is.
+        """
+        if first is None or second is None:
+            return False
+        if first == second:
+            return True
+        return (self._wilds.is_wild(first) and self._wilds.stands_in_for(second)) or (
+            self._wilds.is_wild(second) and self._wilds.stands_in_for(first)
+        )
+
+
+_ComparerFor = Callable[[grid_service.SplitOnDisk, GameConfig], _Comparer]
 """Builds the comparer for one split. A factory rather than a comparer because
 the split is read inside :func:`_evaluate_set`, which is also where its shape is
-checked -- one built before that would be built against an unvetted split."""
+checked -- one built before that would be built against an unvetted split. It is
+handed the active game's config too, since the wild's substitution list lives
+there and :func:`check_symbols` is called from a caller that has not loaded it."""
 
 
 def _by_similarity(threshold: float | None) -> _ComparerFor:
     """Compare tiles by cosine similarity, at ``threshold`` or the configured cut."""
     cut = threshold if threshold is not None else settings.PAYLINE_MATCH_THRESHOLD
-    return lambda split: _SimilarityComparer(split, cut)
+    return lambda split, _config: _SimilarityComparer(split, cut)
 
 
 def _by_symbol(symbols: Mapping[str, str | None]) -> _ComparerFor:
-    """Compare tiles by the symbol codes a classifier read off them."""
-    return lambda _split: _SymbolComparer(symbols)
+    """Compare tiles by the symbol codes a classifier read off them, substituting
+    the wild for whatever the active game declares it stands in for."""
+    return lambda _split, config: _SymbolComparer(symbols, _wilds(config))
 
 
-def _evaluate(
-    line: payline_config.Payline, comparer: _Comparer
-) -> tuple[list[PaylineStep], int, str | None]:
-    """One line's steps, how many positions it pays on, and where it broke.
-    ``counted`` marks the steps the left-to-right read actually reached; the run
-    ends at the first counted step that doesn't match."""
-    steps: list[PaylineStep] = []
-    running = True
-    run = 0
-    break_position: str | None = None
-    for left, right in line.steps:
-        found = comparer.compare(left.name, right.name)
-        steps.append(
-            PaylineStep(
-                left=left.name,
-                right=right.name,
-                similarity=found.similarity,
-                left_symbol=found.left_symbol,
-                right_symbol=found.right_symbol,
-                matched=found.matched,
-                counted=running,
-            )
-        )
-        if running:
-            if found.matched:
-                run += 1
-            else:
-                running = False
-                break_position = right.name
-    # A run of N matched pairs covers N+1 positions; zero matched pairs covers none.
-    pays = run + 1 if run else 0
-    return steps, pays, break_position
+def _wilds(config: GameConfig) -> payline_config.WildRule:
+    """The active game's substitution rule. A game declaring none comes back as
+    :data:`app.utils.paylines.NO_WILDS`, which compares every code by equality --
+    so nothing at the call site is conditional on a game having a wild."""
+    return payline_config.WildRule.of(config.wild_card_replacement)
 
 
 # --- drawing and writing --------------------------------------------------
@@ -575,7 +704,7 @@ def _evaluate_set(
     except payline_config.PaylineError as exc:
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
 
-    comparer = comparer_for(split)
+    comparer = comparer_for(split, config)
     tiles = _placed_tiles(grid, split)
     scale = payline_overlay.scale_for(
         split.crop.width, settings.PAYLINE_OVERLAY_MIN_WIDTH
@@ -584,14 +713,15 @@ def _evaluate_set(
     lines: list[PaylineLine] = []
     paying_drawings: list[payline_overlay.DrawnLine] = []
     for index, line in enumerate(line_set.lines):
-        steps, pays, break_position = _evaluate(line, comparer)
-        drawing = _line_drawing(
-            index,
-            [position.name for position in line.positions],
-            pays,
-            break_position,
-            tiles,
-        )
+        names = list(line.names)
+        read = comparer.read(names)
+        # A read that got only one position in covers no adjacent pair, so it
+        # pays nothing -- the length is reported as 0 rather than 1 so `pays` is
+        # never a number no combo could match.
+        pays = read.covered if read.covered >= _MIN_PAYING else 0
+        steps = read.steps
+        break_position = read.break_position
+        drawing = _line_drawing(index, names, pays, break_position, tiles)
         paying = pays >= _MIN_PAYING
         if paying:
             # Just the path on the combined picture -- several lines share it.
@@ -609,10 +739,17 @@ def _evaluate_set(
                 positions=[position.name for position in line.positions],
                 pays=pays,
                 paying=paying,
-                matched_positions=[position.name for position in line.positions[:pays]],
-                symbols=[comparer.symbol(position.name) for position in line.positions]
+                matched_positions=names[:pays],
+                symbols=[comparer.symbol(name) for name in names]
                 if comparer.method is PaylineMethod.SYMBOL
                 else [],
+                # What the run pays as, which is not `symbols[0]` once a wild is
+                # in play -- a line landing a wild on reel 1 is not a line of
+                # wilds. Only set for a run that pays: a line that got nowhere
+                # has nothing to price, and `symbols` already says what its
+                # first tile was.
+                symbol=read.symbol if paying else None,
+                leading_wilds=read.leading_wilds,
                 color=payline_overlay.colour(index),
                 steps=steps,
                 break_position=break_position,
@@ -626,8 +763,9 @@ def _evaluate_set(
     _write(overlay, directory, file_name)
 
     stats = _stats(lines, comparer)
+    wilds = comparer.wilds
     logger.info(
-        "Checked the %s payline set of %s against %s by %s (%s): %s "
+        "Checked the %s payline set of %s against %s by %s (%s, %s): %s "
         "(%d of %d pairs matched)",
         line_set.name,
         game,
@@ -636,6 +774,9 @@ def _evaluate_set(
         "no threshold"
         if comparer.threshold is None
         else f"threshold {comparer.threshold:.4f}",
+        "no wild"
+        if wilds is None
+        else f"{wilds.code} stands in for {len(wilds.replaces)} symbol(s)",
         _summarise(lines),
         stats.matches,
         stats.comparisons,
@@ -645,6 +786,8 @@ def _evaluate_set(
         set=line_set.name,
         method=comparer.method,
         threshold=comparer.threshold,
+        wild_symbol=None if wilds is None else wilds.code,
+        wild_replaces=[] if wilds is None else sorted(wilds.replaces),
         source=_describe(split),
         summary=_summarise(lines),
         lines=lines,
@@ -736,6 +879,15 @@ async def check_symbols(
     their codes are equal, so a run is *named* as well as counted -- which is what
     lets the caller price it against one paytable row instead of every row that
     pays at that length.
+
+    **The wild is applied here and nowhere else in the two paths.** The active
+    game's ``wild_card_replacement`` block says what it stands in for, and a line
+    is read with its own symbol carried along it -- so a wild counts as whatever
+    the run is paying as, and ``AA WC BB`` is still a run of two. The result says
+    which code was substituted and for what (``wild_symbol``/``wild_replaces``),
+    and each line says what its run resolved to (``symbol``) and how many of its
+    leading positions were the wild itself (``leading_wilds``), which is the
+    second combo a caller holding the paytable may want to price.
 
     Nothing here reads a threshold, and the result's ``threshold`` comes back
     null: two codes are equal or they are not. Everything else about the answer

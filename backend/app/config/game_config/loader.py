@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config.game_config.models import GameConfig, GameConfigError, freeze_mapping
+from app.utils import paylines as payline_config
 from app.utils.game_log import EventRule, LogRuleError, compile_rules
 from app.utils.ocr import OcrOptionsError
 from app.utils.ocr import parse_overrides as parse_ocr_overrides
@@ -119,6 +120,41 @@ def _symbols(raw: Any, *, path: Path) -> dict[str, str]:
     return names
 
 
+def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
+    """Read the optional ``wild_card_replacement`` block: the symbol codes the
+    wild stands in for.
+
+    A flat list rather than a mapping because a game in this family has one wild
+    and it is always :data:`app.utils.paylines.WILD_SYMBOL`; what differs between
+    games is which symbols it may be read as. Codes are upper-cased on the way in
+    for the same reason ``symbols`` are, and the wild's own code is *rejected*
+    rather than dropped: a wild standing in for itself reads as a rule and is
+    none, and a config carrying it would look correct.
+    """
+    if raw is None:
+        return ()
+    where = f"'wild_card_replacement' in {path}"
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+        raise GameConfigError(f"{where} must be an array of symbol codes")
+    codes: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            raise GameConfigError(
+                f"{where} must contain only symbol codes, got {entry!r}"
+            )
+        code = entry.strip().upper()
+        if not code:
+            continue
+        if code == payline_config.WILD_SYMBOL:
+            raise GameConfigError(
+                f"{where} lists {code!r}, which is the wild itself -- the block "
+                "is what the wild stands in for, not what stands in for it"
+            )
+        if code not in codes:
+            codes.append(code)
+    return tuple(codes)
+
+
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
     """Read the optional ``events`` block: extra rules, and defaults to drop.
 
@@ -192,6 +228,9 @@ def load_game_config(path: Path) -> GameConfig:
             document.get("win_geometry"), where=f"'win_geometry' in {path}"
         ),
         symbols=freeze_mapping(_symbols(document.get("symbols"), path=path)),
+        wild_card_replacement=_wild_card_replacement(
+            document.get("wild_card_replacement"), path=path
+        ),
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
         reel_bounds=freeze_mapping(
             _object(document.get("reel_bounds"), where=f"'reel_bounds' in {path}")

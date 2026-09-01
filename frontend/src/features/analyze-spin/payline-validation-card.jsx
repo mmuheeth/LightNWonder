@@ -32,6 +32,25 @@ function code(value) {
   return value ?? "—";
 }
 
+/**
+ * One code in the strip, the wild marked.
+ *
+ * Worth its own colour because a wild is the one tile whose code does not say
+ * what it counted as: `AA AA WC AA AA` is five Ox, and a reader checking a run
+ * of five against three visible Ox codes needs to see which tile stood in.
+ */
+function Code({ value, wild }) {
+  const substituted = wild !== null && value === wild;
+  return (
+    <span
+      className={cn(substituted && "text-amber-600 dark:text-amber-400")}
+      title={substituted ? "the wild, read as whatever the run pays as" : undefined}
+    >
+      {code(value)}
+    </span>
+  );
+}
+
 /** The line's own colour, tying its row to its stroke on the overlay. */
 function Swatch({ color }) {
   return (
@@ -58,13 +77,13 @@ function Swatch({ color }) {
  * per-tile confidence lives on the reel-reading card, where the floor it is
  * judged against is also shown.
  */
-function Codes({ line }) {
+function Codes({ line, wild }) {
   if (line.steps.length === 0) return null;
 
   return (
     <p className="flex flex-wrap items-center gap-x-1.5 font-mono text-[0.65rem]">
       <span className={cn(line.pays > 0 && "font-medium")}>
-        {code(line.steps[0].left_symbol)}
+        <Code value={line.steps[0].left_symbol} wild={wild} />
       </span>
       {line.steps.map((step) => (
         <span
@@ -79,7 +98,7 @@ function Codes({ line }) {
             )}
             title={`${step.left} vs ${step.right}${
               step.counted ? "" : " (after the run broke)"
-            }`}
+            }${step.line_symbol ? ` — the run was paying as ${step.line_symbol}` : ""}`}
           >
             {step.matched ? "=" : "≠"}
           </span>
@@ -87,7 +106,7 @@ function Codes({ line }) {
             className={cn(step.matched && step.counted && "font-medium")}
             title={step.right}
           >
-            {code(step.right_symbol)}
+            <Code value={step.right_symbol} wild={wild} />
           </span>
         </span>
       ))}
@@ -95,8 +114,16 @@ function Codes({ line }) {
   );
 }
 
-/** The same joins with the tiles they belong to, for the dropdown. */
-function StepList({ steps }) {
+/**
+ * The same joins with the tiles they belong to, for the dropdown.
+ *
+ * A counted join is judged against what the *run* is paying as, not against the
+ * tile to its left, and a wild is where the two come apart: `AA WC BB` breaks at
+ * the second join even though a wild sits happily beside a Pisces. Both codes
+ * still show, since they are what was read — the run's own symbol is appended
+ * where it differs, because without it a break beside a wild reads as a bug.
+ */
+function StepList({ steps, wild }) {
   if (steps.length === 0) return null;
 
   return (
@@ -119,9 +146,12 @@ function StepList({ steps }) {
             {step.left} · {step.right}
           </span>
           <span>
-            {code(step.left_symbol)} {step.matched ? "=" : "≠"}{" "}
-            {code(step.right_symbol)}
+            <Code value={step.left_symbol} wild={wild} /> {step.matched ? "=" : "≠"}{" "}
+            <Code value={step.right_symbol} wild={wild} />
           </span>
+          {step.line_symbol && step.line_symbol !== step.left_symbol ? (
+            <span className="text-muted-foreground/80">as {step.line_symbol}</span>
+          ) : null}
         </li>
       ))}
     </ul>
@@ -135,6 +165,11 @@ function StepList({ steps }) {
  * symbol on every tile, so a run resolves to one paytable row and one number.
  * Only rendered for a line that is actually awarded — a cancelled run gets its
  * `note` instead, which is the more useful sentence.
+ *
+ * The length here is `combo_pays`, not `pays`: a run that leads with wilds is two
+ * combos and the paytable pays the better of them, so four wilds then an Ox is
+ * priced as four wilds even though the run covers five. The two differ only
+ * there, and the `note` says so when they do.
  */
 function Award({ line }) {
   return (
@@ -145,7 +180,7 @@ function Award({ line }) {
           Game Config page shows, and the two are equal only at one credit a
           unit. "Pays" is left for the credits alone. */}
       <p className="text-xs">
-        <span className="text-muted-foreground">{line.pays} × </span>
+        <span className="text-muted-foreground">{line.combo_pays ?? line.pays} × </span>
         <span className="font-medium">{line.symbol_name ?? line.symbol}</span>
         <span className="text-muted-foreground"> → </span>
         <span className="font-mono font-medium tabular-nums">
@@ -183,7 +218,7 @@ function Award({ line }) {
  * layout exists to prevent — so the match count sits with the label and "pays"
  * is left for the credits alone.
  */
-function AwardedLine({ line }) {
+function AwardedLine({ line, wild }) {
   return (
     <div
       className="border-border/60 bg-card space-y-1.5 rounded-lg border-l-4 px-3 py-2 shadow-xs"
@@ -208,14 +243,14 @@ function AwardedLine({ line }) {
           ) : null}
         </span>
       </div>
-      <Codes line={line} />
+      <Codes line={line} wild={wild} />
       <Award line={line} />
     </div>
   );
 }
 
 /** One line's dropdown: the verdict on the summary, the evidence inside. */
-function LineRow({ line, image }) {
+function LineRow({ line, image, wild }) {
   return (
     <details className="group border-border/60 hover:border-border overflow-hidden rounded-lg border transition-colors">
       <summary className="hover:bg-accent/40 flex cursor-pointer list-none items-center gap-3 px-3 py-2 text-sm [&::-webkit-details-marker]:hidden">
@@ -257,7 +292,7 @@ function LineRow({ line, image }) {
         ) : null}
         {line.awarded ? <Award line={line} /> : null}
         {/* The comparison itself, pair by pair. */}
-        <StepList steps={line.steps} />
+        <StepList steps={line.steps} wild={wild} />
         {/* The tiles the line runs through and the code read off each -- the
             position and its answer side by side. */}
         <p className="text-muted-foreground font-mono text-[0.65rem] break-all">
@@ -323,6 +358,10 @@ export function PaylineValidationCard({ paylines, detailed }) {
   const awarded = paylines.lines.filter((line) => line.awarded);
   const cancelled = paylines.lines.filter((line) => line.paying && !line.awarded);
   const unnamed = paylines.unnamed_positions ?? [];
+  // Null on a game whose config declares no `wild_card_replacement`, which is
+  // when nothing was substituted and there is nothing to mark.
+  const wild = paylines.wild_symbol ?? null;
+  const substituted = paylines.lines.filter((line) => line.leading_wilds > 0);
 
   return (
     <Card>
@@ -382,7 +421,7 @@ export function PaylineValidationCard({ paylines, detailed }) {
                 </h3>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {awarded.map((line) => (
-                    <AwardedLine key={line.line} line={line} />
+                    <AwardedLine key={line.line} line={line} wild={wild} />
                   ))}
                 </div>
                 {/* The sum, taken off the response rather than added up here, so
@@ -432,6 +471,20 @@ export function PaylineValidationCard({ paylines, detailed }) {
               </p>
             ) : null}
 
+            {/* The counterpart to the unnamed-tile note: a run *longer* than the
+                codes read off it, because a wild counted as something else. Named
+                once here for the same reason cancelled runs are — a five-long run
+                over four visible Ox codes is the other thing that looks like a
+                bug. */}
+            {wild !== null && substituted.length > 0 ? (
+              <p className="text-xs text-amber-600 dark:text-amber-500">
+                <span className="font-mono">{wild}</span> stood in on{" "}
+                {substituted.length} line{substituted.length === 1 ? "" : "s"} (
+                {substituted.map((line) => line.label).join(", ")}), each read as
+                whatever its run pays as.
+              </p>
+            ) : null}
+
             {/* Every line, paying or not, behind one dropdown: forty rows is a
                 reference to open, not something to scroll past on the way to
                 the two validations. */}
@@ -447,6 +500,7 @@ export function PaylineValidationCard({ paylines, detailed }) {
                     key={line.line}
                     line={line}
                     image={images.get(line.line) ?? null}
+                    wild={wild}
                   />
                 ))}
               </div>

@@ -517,10 +517,16 @@ class SpinLineAward(BaseModel):
     """One payline of the live geometry, evaluated and priced.
 
     Two judgements, kept apart. **What landed** is ``pays`` -- the leading run of
-    positions the classifier named with the same code, with the codes themselves
-    on ``steps``. **Whether it pays** is ``awarded``, which is the paytable's
-    answer and nobody else's: a run of two of a symbol that pays from three is a
-    real run and no win.
+    positions the classifier named with the same code, the wild read as whatever
+    the run pays as, with the codes themselves on ``steps``. **Whether it pays**
+    is ``awarded``, which is the paytable's answer and nobody else's: a run of two
+    of a symbol that pays from three is a real run and no win.
+
+    A wild-led line carries a third number. ``symbol`` is what the run resolved
+    to, ``leading_wilds`` how many of its leading positions were the wild itself,
+    and ``combo_pays`` how many positions the combo that actually paid covers --
+    shorter than ``pays`` exactly when the wild's own combo was worth more than
+    the substituted reading.
     """
 
     line: str = Field(description="Line number as the geometry counts it, e.g. '3'.")
@@ -565,10 +571,11 @@ class SpinLineAward(BaseModel):
         default_factory=list,
         description=(
             "Every adjacent pair on the line, left to right, with the code read "
-            "off each tile. 'matched' is whether the two codes are equal and both "
-            "were read; 'counted' whether the left-to-right run got that far. "
-            "'similarity' is null -- these tiles were compared by name, not by "
-            "how alike their pixels are."
+            "off each tile. 'matched' is whether the run continued across the "
+            "pair -- judged against 'line_symbol', so a wild counts as whatever "
+            "the run pays as; 'counted' whether the left-to-right run got that "
+            "far. 'similarity' is null -- these tiles were compared by name, not "
+            "by how alike their pixels are."
         ),
     )
     color: str = Field(description="Hex colour the line is drawn in.")
@@ -586,12 +593,23 @@ class SpinLineAward(BaseModel):
     symbol: str | None = Field(
         default=None,
         description=(
-            "The code the leading run is made of. Present whenever there is a "
-            "run, since a run only exists when two tiles were named the same."
+            "The code this line is priced as. The symbol the run resolved to -- "
+            "which is what its wilds stood in for, not necessarily what sits on "
+            "reel 1 -- or the wild's own code when the wild's shorter combo was "
+            "the better of the two. Present whenever there is a run."
         ),
     )
     symbol_name: str | None = Field(
         default=None, description="That code's display name, when the config names it."
+    )
+    leading_wilds: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many of the run's leading positions were the wild itself. Above "
+            "one it is a combo in its own right, which is why this line was "
+            "priced twice -- see 'combo_pays'."
+        ),
     )
     combo_id: int | None = Field(
         default=None,
@@ -600,6 +618,16 @@ class SpinLineAward(BaseModel):
     combo_symbols: list[str] = Field(
         default_factory=list,
         description="That combo's pattern as the file writes it, 'ANY' tail included.",
+    )
+    combo_pays: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "How many positions the combo that paid covers. Equal to 'pays', "
+            "except on a wild-led line whose own wild combo paid more than the "
+            "substituted reading, where it is 'leading_wilds' instead. Null when "
+            "nothing was awarded."
+        ),
     )
     combo_value: float | None = Field(
         default=None,
@@ -631,8 +659,9 @@ class SpinLineAward(BaseModel):
     note: str | None = Field(
         default=None,
         description=(
-            "Why this line has no award despite a run -- most often that the "
-            "symbol's shortest paying run is longer than what landed."
+            "Why this line was priced the way it was: most often that the "
+            "symbol's shortest paying run is longer than what landed, or that a "
+            "run of wilds was worth more than the symbol they stood in for."
         ),
     )
     image_data: str | None = Field(
@@ -823,6 +852,15 @@ class SpinPaylineValidation(BaseModel):
             "The confidence floor the tiles were named at -- the one tunable this "
             "reading has, in place of the similarity threshold it replaced. Null "
             "when the reels were never read."
+        ),
+    )
+    wild_symbol: str | None = Field(
+        default=None,
+        description=(
+            "The code that was read as whatever the run it landed on was paying "
+            "as, so a reader can tell a substituted tile from a matched one. Null "
+            "when the game's config declares no 'wild_card_replacement', which is "
+            "when nothing was substituted."
         ),
     )
     summary: str = Field(
