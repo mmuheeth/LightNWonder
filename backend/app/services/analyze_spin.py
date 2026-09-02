@@ -102,6 +102,7 @@ from app.exceptions.base import (
     SpinAnalysisAlreadyRunningError,
     SpinAnalysisNotRunningError,
     SpinAnalysisUnavailableError,
+    SpinClipNotFoundError,
 )
 from app.schemas.analyze_spin import (
     SpinAnalysisState,
@@ -132,6 +133,7 @@ from app.schemas.obs import ScreenshotRequest
 from app.schemas.paylines import PaylineCheckResult
 from app.schemas.paytable import DenominationInfo, PaylineComboInfo, PaytableView
 from app.schemas.roi import RoiExtractRequest
+from app.schemas.tile_clips import TileClipSet
 from app.services import game_input as game_input_service
 from app.services import grid as grid_service
 from app.services import ideck as ideck_service
@@ -141,11 +143,12 @@ from app.services import obs as obs_service
 from app.services import paylines as paylines_service
 from app.services import paytable as paytable_service
 from app.services import roi as roi_service
+from app.services import tile_clips as tile_clips_service
 from app.utils import game_log
 from app.utils import paylines as payline_config
 from app.utils.game_math import ANY_SYMBOL
 from app.utils.log_tail import LogTail
-from app.utils.paths import resolve_subdirectory
+from app.utils.paths import UnsafeNameError, resolve_subdirectory, resolve_within
 
 logger = get_logger("analyze_spin")
 
@@ -287,6 +290,11 @@ class _ActiveRun:
 
     recording: SpinRecording | None = None
     recording_started: bool = False
+
+    tile_clips: TileClipSet | None = None
+    """One short video per reel position, from the seconds after a win landed.
+    Only ever on a run that was recording and only when the spin paid, so
+    ``None`` is the ordinary case rather than a failure."""
 
     paytable: PaytableView | None = None
     paytable_error: str | None = None
@@ -474,6 +482,10 @@ def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
         frames=list(run.frames),
         events=list(run.events),
         recording=run.recording,
+        # Carried on the progress stream too: the set holds file names and
+        # figures, never the videos themselves, so there is nothing on it a
+        # snapshot would rather not send.
+        tile_clips=run.tile_clips,
         meter=(meter if images or meter is None else _lean_meter(meter)),
         # Carried whole either way: the reading holds no pictures, so there
         # is nothing on it that the progress stream would rather not send.
@@ -901,6 +913,54 @@ async def _detect_win(run: _ActiveRun, reader: _LogReader) -> None:
         run.outcome = SpinOutcome.WIN
         await _sleep(run, settings.ANALYZE_SPIN_WIN_SETTLE_SECONDS)
         step.detail = detected.summary
+
+
+async def _record_tile_clips(run: _ActiveRun) -> None:
+    """Film each reel position on its own for a few seconds after a win lands.
+
+    **Deliberately not a step**, and this is the one thing to preserve about it.
+    Every entry in ``_SEQUENCE`` is either something the spin needed to happen or
+    a reading the run is graded by; this is neither. It produces no number, no
+    verdict and no input to anything below it -- it is a record of what the
+    presentation looked like, tile by tile, which is the one question a single
+    result screenshot cannot answer. So it reports through ``run.errors`` when it
+    goes wrong and leaves the thirteen-row sequence exactly as long as it was.
+
+    Two conditions, both narrow on purpose. It runs only on a run that is
+    **already recording** -- the video of the spin is what these clips are a
+    close-up of, and a caller who did not ask for one did not ask for fifteen --
+    and only on a spin that **won**, because a losing spin's reels do nothing
+    worth fifteen files.
+
+    It sits after the result screenshot rather than before it so that nothing
+    the validations read moves: the outcome frame is still taken at the moment it
+    always was, and the clips start about a second later, while the win
+    presentation is still running. They also finish before take-win is clicked,
+    which is the point -- collecting clears the presentation these are of.
+    """
+    if not run.record or not settings.ANALYZE_SPIN_TILE_CLIPS:
+        return
+    _check_cancelled(run)
+    directory = run.directory / settings.ANALYZE_SPIN_TILE_CLIP_DIR_NAME
+    try:
+        run.tile_clips = await tile_clips_service.record(
+            directory,
+            seconds=settings.ANALYZE_SPIN_TILE_CLIP_SECONDS,
+            fps=settings.ANALYZE_SPIN_TILE_CLIP_FPS,
+            # Cooperative, like every wait here: the capture ends at its next
+            # frame rather than being waited out, and writes what it has.
+            should_stop=lambda: run.cancel_requested,
+        )
+    except Exception as exc:
+        # Broad on purpose: `record` documents that it never raises, and the
+        # cost of that being wrong must not be a spin lost after it was driven.
+        logger.exception("Spin %s could not film its tiles", run.run_id)
+        run.tile_clips = TileClipSet(error=f"{type(exc).__name__}: {exc}")
+
+    if run.tile_clips.error is not None:
+        _note_error(run, f"Tile clips: {run.tile_clips.error}")
+    _publish(run)
+    _check_cancelled(run)
 
 
 async def _take_win(run: _ActiveRun) -> None:
@@ -2147,6 +2207,10 @@ async def _execute(run: _ActiveRun) -> None:
 
         if run.outcome is SpinOutcome.WIN:
             await _capture(run, FRAME_OUTCOME, STEP_FRAME_OUTCOME)
+            # Between the result screenshot and collecting it: the presentation
+            # these are a close-up of is on screen for exactly that window, and
+            # take-win ends it. Not a step -- see `_record_tile_clips`.
+            await _record_tile_clips(run)
             await _take_win(run)
             await _capture(run, FRAME_COLLECTED, STEP_FRAME_COLLECTED)
         else:
@@ -2316,6 +2380,31 @@ def frame_path(file_name: str) -> Path:
     escapes it and the 404 for one that is not there.
     """
     return roi_service.resolve_frame(file_name)
+
+
+def clip_path(run_id: str, file_name: str) -> Path:
+    """One run's per-tile clip, resolved for serving.
+
+    Not delegated the way :func:`frame_path` is: a clip lives in the run's own
+    directory rather than in the shared screenshot one, because it is a record
+    of that spin and nothing else reads it by name. Both halves come off the
+    wire, so both go through the path guards.
+    """
+    try:
+        root = resolve_subdirectory(
+            settings.obs_capture_dir, settings.ANALYZE_SPIN_DIR_NAME
+        )
+        directory = (
+            resolve_within(root, run_id) / settings.ANALYZE_SPIN_TILE_CLIP_DIR_NAME
+        )
+        target = resolve_within(directory, file_name)
+    except UnsafeNameError as exc:
+        raise SpinClipNotFoundError(f"Invalid tile clip name: {exc.reason}") from exc
+    if not target.is_file():
+        raise SpinClipNotFoundError(
+            f"Spin {run_id!r} has no tile clip named {file_name!r}"
+        )
+    return target
 
 
 def state(*, images: bool = False) -> SpinAnalysisState:

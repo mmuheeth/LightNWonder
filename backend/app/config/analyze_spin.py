@@ -73,6 +73,44 @@ class AnalyzeSpinSettings(BaseSettings):
     # click is proven by the log, the balance moving is an animation.
     ANALYZE_SPIN_COLLECT_SETTLE_SECONDS: float = Field(default=1.5, ge=0)
 
+    # --- per-tile clips of a winning spin ---------------------------------
+    # Only ever made on a run that is *also* recording a video, and only when
+    # the spin won. Not a step of the sequence and deliberately not shown as
+    # one: it produces no reading, nothing is graded by it, and a failure to
+    # make it is reported on `errors` rather than as a failed stage.
+    ANALYZE_SPIN_TILE_CLIPS: bool = True
+
+    # How long a clip covers, from just after the result screenshot -- which is
+    # to say from the win presentation's first moments, since it starts as soon
+    # as the reels stop and the win meter has counted up.
+    ANALYZE_SPIN_TILE_CLIP_SECONDS: float = Field(default=5.0, gt=0, le=30)
+
+    # Frames a second to aim for. A ceiling, not a promise: obs-websocket has no
+    # video stream, so each frame is a screenshot request and the loop goes as
+    # fast as OBS answers. What was achieved is reported as `fps` on the set.
+    ANALYZE_SPIN_TILE_CLIP_FPS: float = Field(default=10.0, gt=0, le=30)
+
+    # The image format the clip's frames are grabbed in. JPEG on purpose: these
+    # are video frames rather than evidence, and PNG-encoding a 1080p canvas ten
+    # times a second is the slowest part of the loop by a distance. Settable
+    # because the list of formats is Qt's, so it belongs to the OBS build.
+    ANALYZE_SPIN_TILE_CLIP_IMAGE_FORMAT: str = Field(default="jpg", min_length=1)
+    ANALYZE_SPIN_TILE_CLIP_QUALITY: int = Field(default=90, ge=-1, le=100)
+
+    # Preferred encoder, as a four-character code: VP80, avc1, mp4v or MJPG.
+    # Blank takes the first that works. Only ever a preference -- OpenCV reports
+    # a writer as open for an encoder that then fails to initialise, so
+    # `app/utils/tile_video.py` probes each candidate by writing a frame and
+    # falls through to the next either way. VP8 in WebM leads that order because
+    # it is the only one of the four a browser plays without a plugin -- at the
+    # cost of one unsuppressable "tag ... is not supported" line on stderr per
+    # file, which `app/utils/tile_video.py` explains. `mp4v` is the quiet
+    # alternative, and the dashboard cannot play what it writes.
+    ANALYZE_SPIN_TILE_CLIP_CODEC: str = ""
+
+    # The run directory's subdirectory holding them, one file per tile.
+    ANALYZE_SPIN_TILE_CLIP_DIR_NAME: str = "tile-clips"
+
     # Screenshot width, or null for the OBS canvas's own. Left native by
     # default: the same frames are cropped for OCR and split into tiles, and
     # both lose more to a downscale than the file size is worth.

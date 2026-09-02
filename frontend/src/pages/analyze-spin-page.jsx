@@ -6,6 +6,7 @@ import { PaylineValidationCard } from "@/features/analyze-spin/payline-validatio
 import { ReelReadingCard } from "@/features/analyze-spin/reel-reading-card";
 import { SpinControlCard } from "@/features/analyze-spin/spin-control-card";
 import { SpinTimeline } from "@/features/analyze-spin/spin-timeline";
+import { TileClipsCard } from "@/features/analyze-spin/tile-clips-card";
 import {
   useCancelSpin,
   useSpinView,
@@ -80,6 +81,13 @@ export function AnalyzeSpinPage() {
 
           {run ? <SpinTimeline run={run} /> : null}
           {run?.reels ? <ReelReadingCard reels={run.reels} /> : null}
+          {/* Below the reading it belongs beside: the codes say what the model
+              thought landed, and these say what the cabinet did about it.
+              Rendered only when a run that was recording won something, so it
+              is absent rather than empty on every other spin. */}
+          {run?.tile_clips?.clips?.length ? (
+            <TileClipsCard runId={run.run_id} clips={run.tile_clips} />
+          ) : null}
           {run?.paylines ? (
             <PaylineValidationCard
               paylines={run.paylines}

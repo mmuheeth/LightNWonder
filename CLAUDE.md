@@ -197,7 +197,11 @@ no longer what `analyze_spin` reads a spin by),
 `symbol_dataset.py` (a folder of symbol artwork read back as training pictures,
 with the reel background the cut-outs ship without put back — torch-free on
 purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
-its transforms, the training loop and a checkpoint), `symbol_overlay.py` (draws
+its transforms, the training loop and a checkpoint),
+`tile_video.py` (the only module that imports cv2: buffers tile crops and writes
+one short video per reel position, probing its codec by writing a frame because
+OpenCV reports a writer as open for an encoder that then fails to initialise),
+`symbol_overlay.py` (draws
 rings the cells that were named, over the reels -- no
 text on it, because the codes and confidences are a table beside it and drawing
 them over the artwork duplicates them at their least readable size),
@@ -254,7 +258,7 @@ same crop extracted twice is the same picture, and **`roi.py` owns that question
 for everyone**: its `resolve_frame`/`open_frame`/`content_box`/`resolve_box`/
 `describe`/`describe_path`/`encode_png` are public and `grid.py` and `ocr.py`
 call them rather than re-deriving "the latest screenshot" or re-reading a
-letterboxed frame. ROI, grid and paylines are also the three services
+letterboxed frame. ROI, grid, paylines and `tile_clips` are the four services
 holding no state, so none has a `reset()` nor anything in `conftest.py`.
 
 **Every tile is the same pixel size, deliberately.** `ReelGrid.place()` rounds
@@ -401,6 +405,20 @@ its own record too. Stale tiles from a differently-shaped grid are cleared,
 and only names matching a tile's own pattern are touched. ROI's own
 `_SAVED_REGION` writes `cash-meter/<frame>.png` and every other region comes back
 as a data URI only.
+
+**`services/tile_clips.py` films what a screenshot cannot say.** The grid cuts a
+still into tiles and the classifier names them; this cuts *frames* into tiles so
+a reader can see which cells the cabinet animated. Four things: obs-websocket has
+no video stream, so a clip is screenshots taken as fast as OBS answers (JPEG, not
+PNG -- these are video frames, and PNG-encoding a 1080p canvas ten times a second
+is the slowest part of the loop); the geometry comes from
+`grid.place_on()` **once, off the first frame**, because letterbox detection
+scans the whole picture and the window does not move mid-spin; the frame rate is
+**measured, never assumed**, so `utils/tile_video.py` buffers the tile crops and
+writes at the rate achieved rather than the one requested; and the codec is
+probed by writing a throwaway frame per candidate, VP8/WebM first because it is
+the only one of the four a browser plays inline. It never raises -- a clip is a
+record, never a reading, so losing OBS halfway costs the clips and nothing else.
 
 **`services/image_classifier.py` is the only reading that can disagree with the
 game, and it is now what `analyze_spin` grades a spin by.** `similarity.py` asks

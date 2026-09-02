@@ -538,6 +538,21 @@ fail another:
   symbols by agreeing with the game, which is exactly what a checker must not do.
   Both are still in the tree and neither takes part here.
 
+And on a run that was **recording** and that **won**, one more thing, filmed
+rather than read: each reel position on its own, for five seconds of exactly the
+window the win presentation is on screen -- between the result screenshot and the
+take-win click. They are laid out on the page the way the reels are, playing
+themselves, because *which cells the game animated* is the question, and it is
+only legible when they sit where they sat on the glass.
+
+They are deliberately **not a step of the sequence**. Nothing is graded by them,
+so a failure to film shows up in the run's errors rather than as a fourteenth row
+that can go red -- the spin did not fail because OBS would not answer a
+screenshot. They are also the one thing here built out of screenshots rather than
+video: obs-websocket offers no stream, so a clip is frames taken as fast as OBS
+answers and written back at the rate that was actually achieved, which is why the
+card reports the measured rate beside the one that was asked for.
+
 Which of the two trained networks reads the reels is a **per-run choice**, offered
 as a dropdown between the spin button and the record toggle: ResNet34 by default,
 EfficientNet-B0 the alternative. Both stay trained at once and they do not read

@@ -328,6 +328,71 @@ def read_split(directory: Path) -> SplitOnDisk:
     )
 
 
+# --- placing the grid on a frame that was never written -------------------
+# The split above is the written record of one screenshot. This is the same
+# geometry answered for a frame that is only ever in memory -- the frames of a
+# per-tile clip, which arrive from OBS several times a second and are cut up and
+# thrown away. It lives here rather than in the caller because *where a tile is*
+# is this module's question, and answering it twice is how the clips and the
+# split would come to disagree about which pixels are r1c1.
+
+
+@dataclass(frozen=True)
+class FramePlacement:
+    """Where the reels and their tiles land on one frame, in that frame's pixels.
+
+    ``box`` is the reels crop and every tile's own box is relative to *it*, which
+    is the same relationship :class:`app.utils.reel_grid.PlacedTile` has to the
+    crop in :func:`_split`. Kept that way on purpose: a caller crops once and
+    then cuts tiles out of the crop, rather than cutting fifteen rectangles out
+    of a 1080p frame.
+    """
+
+    game: str
+    box: tuple[int, int, int, int]
+    letterboxed: bool
+    rows: int
+    columns: int
+    tile_width: int
+    tile_height: int
+    tiles: list[reel_grid.PlacedTile]
+
+
+def place_on(image: Image.Image) -> FramePlacement:
+    """Resolve the active game's reel grid onto one open frame.
+
+    Resolved once and reused by a caller taking many frames of the same thing:
+    detecting the content box means scanning the whole picture, and the game
+    window does not move or change shape between two frames of one spin.
+    """
+    name, config = _active_config()
+    region = _reels_region(config)
+    grid = _grid(config)
+    try:
+        box, content = roi_service.resolve_box(region, image)
+    except image_roi.RoiError as exc:
+        raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
+
+    width, height = box[2] - box[0], box[3] - box[1]
+    try:
+        tiles = grid.place(width, height)
+    except reel_grid.ReelGridError as exc:
+        raise GridSplitFailedError(
+            f"a {image.width}x{image.height} frame left no room to place tiles: {exc}"
+        ) from exc
+    tile_width, tile_height = grid.tile_size(width, height)
+    return FramePlacement(
+        game=name,
+        box=box,
+        letterboxed=content.letterboxed,
+        rows=grid.row_count,
+        columns=grid.column_count,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        tiles=tiles,
+    )
+
+
 # --- public API -----------------------------------------------------------
 
 

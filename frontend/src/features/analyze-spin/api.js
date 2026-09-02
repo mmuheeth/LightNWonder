@@ -48,6 +48,21 @@ export function spinFrameUrl(fileName) {
 }
 
 /**
+ * URL of one reel position's clip, for a `<video>` src.
+ *
+ * Keyed by run as well as by name, unlike a frame: a clip belongs to the spin it
+ * was filmed during and lives in that run's own directory, so `r1c1.webm` on its
+ * own would name one video per spin ever analysed.
+ *
+ * @param {string} runId `run.run_id`
+ * @param {string} fileName one of `run.tile_clips.clips[].file_name`
+ * @returns {string}
+ */
+export function spinClipUrl(runId, fileName) {
+  return `${env.apiBaseUrl}${ANALYZE_SPIN_URL}/runs/${encodeURIComponent(runId)}/clips/${encodeURIComponent(fileName)}`;
+}
+
+/**
  * Fetch the run in progress, or the last one that finished.
  *
  * Always resolves — `active` is what to branch on, and `run` outlives its own
@@ -118,6 +133,17 @@ export function cancelSpin() {
  * @property {Array<{event: string, summary: string, at: string|null,
  *   log_line: string}>} events
  * @property {{output_path: string|null, duration_ms: number}|null} recording
+ * @property {{directory: string|null, rows: number, columns: number,
+ *   frames: number, fps: number, requested_fps: number, duration_ms: number,
+ *   codec: string|null, content_type: string|null,
+ *   clips: Array<{name: string, row: number, column: number,
+ *     file_name: string, width: number, height: number, frames: number,
+ *     bytes_written: number}>,
+ *   error: string|null}|null} tile_clips one short video per reel position,
+ *   filmed while the win presentation played. Only on a run that was recording,
+ *   and only on a spin that won — so null is the ordinary case. Not a step of
+ *   the sequence: nothing is graded by it, so a failure to film shows on
+ *   `errors` rather than as a fourteenth row of the timeline.
  * @property {{mode: "cash"|"credits"|"unknown", currency: string|null,
  *   denomination: {value: number, unit: "cent"|"unknown", label: string,
  *     money_per_credit: number|null, declared_multiplier: number|null,

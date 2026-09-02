@@ -72,7 +72,9 @@ src/
 │   │                   confidence floor
 │   └── analyze-spin/       drives one spin and grades it: live progress over a
 │                       WebSocket, then the meter, the symbols the classifier
-│                       read off the reels, and the lines those symbols paid
+│                       read off the reels, the lines those symbols paid, and
+│                       -- on a recorded spin that won -- one looping clip per
+│                       reel position, laid out the way the reels are
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -217,12 +219,17 @@ beside this spin's verdict would be worse than showing none.
 
 Everything else in the slice follows the conventions above -- native `<details>`
 for the per-line evidence and the log events, line colours taken from the server,
-`spinFrameUrl()` as the one fetch outside `apiRequest` (a screenshot cannot unwrap
-the envelope). Two rendering decisions are worth naming: the whole thirteen-step
-sequence renders from the first frame, `pending` rows included, so a run that dies
-on the press shows the nine things that never happened; and `pending`, `skipped`,
-`completed` and `failed` are four visually distinct states, because a *skipped*
-take-win on a losing spin and a *broken* one are different facts.
+`spinFrameUrl()` and `spinClipUrl()` as the two fetches outside `apiRequest`
+(neither an `<img>` nor a `<video>` src can unwrap the envelope). Three rendering
+decisions are worth naming: the whole thirteen-step sequence renders from the
+first frame, `pending` rows included, so a run that dies on the press shows the
+nine things that never happened; `pending`, `skipped`, `completed` and `failed`
+are four visually distinct states, because a *skipped* take-win on a losing spin
+and a *broken* one are different facts; and `tile-clips-card.jsx` lays its clips
+out as a grid rather than a list, because *which cells the game animated* is only
+legible when they sit where they sat on the glass. That card is also the one
+thing on the page that is **not** a step of the sequence and must not become one
+-- nothing is graded by it, so its failures arrive on `run.errors`.
 
 `spin-control-card` asks for the two per-run choices in the order they matter,
 between the button and the run's own report: **Classifier** (which trained network

@@ -369,6 +369,16 @@ class SpinAnalysisUnavailableError(AppException):
     message = "The active game cannot be analysed on this machine"
 
 
+class SpinClipNotFoundError(AppException):
+    """A per-tile clip that was asked for by name is not there. Its own 404
+    rather than the run's, because a run that made none -- a losing spin, or one
+    that did not record -- is a perfectly normal run and not a missing one."""
+
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "SPIN_CLIP_NOT_FOUND"
+    message = "No such tile clip"
+
+
 # --- Image classifier -----------------------------------------------------
 # Training is one process-wide run, like a spin analysis, so its failures split
 # the same way: 409 when the machine or the run is not in the state the caller

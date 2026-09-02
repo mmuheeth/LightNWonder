@@ -157,6 +157,28 @@ async def get_frame(file_name: str) -> FileResponse:
     return FileResponse(analyze_spin_service.frame_path(file_name))
 
 
+@router.get(
+    "/runs/{run_id}/clips/{file_name}",
+    response_class=FileResponse,
+    # Raw video, and the same exception the frames above make: a <video> src
+    # cannot unwrap the response envelope either.
+    response_model=None,
+    summary="One reel position's clip from a run",
+    responses={
+        404: {"description": "No clip of that name in that run"},
+        200: {"content": {"video/webm": {}}, "description": "The clip"},
+    },
+)
+async def get_clip(run_id: str, file_name: str) -> FileResponse:
+    """Serve one of the clips named in ``run.tile_clips.clips``.
+
+    Keyed by run rather than by name alone, unlike the frames: a clip belongs to
+    the spin it was filmed during and lives in that run's own directory, so
+    ``r1c1.webm`` on its own would name fifteen different videos.
+    """
+    return FileResponse(analyze_spin_service.clip_path(run_id, file_name))
+
+
 async def _push(websocket: WebSocket, queue: asyncio.Queue[SpinAnalysisState]) -> None:
     """Forward every snapshot the service publishes."""
     while True:

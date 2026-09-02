@@ -2034,6 +2034,8 @@ POST /api/analyze-spin/start          spin once, and validate it
 GET  /api/analyze-spin/status         the run in progress, or the last one
 POST /api/analyze-spin/cancel         ask the run in progress to stop
 GET  /api/analyze-spin/frames/{file}  one screenshot the run took
+GET  /api/analyze-spin/runs/{id}/clips/{file}
+                                      one reel position's clip from that run
 WS   /api/analyze-spin/stream         progress, one snapshot per change
 ```
 
@@ -2069,6 +2071,47 @@ they go in:
 So a losing spin takes two screenshots and a winning one takes three, and
 `take-win`/`frame-collected` come back `skipped` rather than absent — a different
 fact from never having got there.
+
+### One short video per reel position, on a winning recorded spin
+
+A screenshot says what landed; it cannot say what the cabinet then *did* about
+it. So a run that is recording (`?record=true`) and that wins also films each
+reel position on its own, between the result screenshot and take-win --
+`ANALYZE_SPIN_TILE_CLIP_SECONDS` of exactly the window the win presentation is on
+screen for. The clips land in the run's own directory under
+`obs-captured-files/analyze-spin/<run>/tile-clips/`, one file per tile named the
+way the split names it (`r1c1.webm`), and travel on the run as `tile_clips`.
+
+Five things about them:
+
+- **It is not a step, on purpose.** Every row of the table above is either
+  something the spin needed to happen or a reading the run is graded by. This is
+  neither -- it produces no number, no verdict and no input to anything -- so it
+  reports through `run.errors` and leaves the sequence thirteen rows long.
+  Don't add it: a red fourteenth row would claim a spin failed when nothing
+  about the spin did.
+- **There is no video stream to subscribe to.** obs-websocket offers screenshots
+  and a recording and nothing in between, so a clip is screenshots taken as fast
+  as OBS answers, cut up and encoded. They are JPEG
+  (`ANALYZE_SPIN_TILE_CLIP_IMAGE_FORMAT`) because these are video frames rather
+  than evidence, and PNG-encoding a 1080p canvas ten times a second is the
+  slowest part of the loop by a distance.
+- **The frame rate is measured, never assumed.** `ANALYZE_SPIN_TILE_CLIP_FPS` is
+  a ceiling; the clip is written at the rate that was *achieved*, so a machine
+  that could not keep up gets a slower clip covering the same wall clock rather
+  than a fast one covering less. `tile_clips.fps` against
+  `tile_clips.requested_fps` is the gap.
+- **The codec is probed, not asked.** OpenCV's wheels bundle their own ffmpeg and
+  `VideoWriter.isOpened()` is true for an encoder that then fails to initialise,
+  so `app/utils/tile_video.py` writes one throwaway frame per candidate and keeps
+  the first that leaves a non-empty file. VP8 in WebM leads the order because it
+  is the only one of the four the dashboard can play inline; the cost is one
+  unsuppressable `tag ... is not supported` line on stderr per file, and
+  `ANALYZE_SPIN_TILE_CLIP_CODEC=mp4v` is the quiet alternative that the dashboard
+  cannot play.
+- **Failing to film cannot fail a spin.** `services/tile_clips.py` never raises:
+  an OBS drop halfway through keeps the frames it had, writes them, and puts the
+  reason on `tile_clips.error` and on `run.errors`.
 
 ### Six things worth knowing
 
@@ -2566,7 +2609,8 @@ reasoning. `ANALYZE_SPIN_SPIN_BUTTON` (default `Rebet`) and
 per-cabinet and per-game; `ANALYZE_SPIN_WIN_WAIT_SECONDS` is the one to tune
 first, and `ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE` the one to reach for when
 lines read short. Each run's record is written to
-`obs-captured-files/analyze-spin/<run>/run.json`, and its video under the
+`obs-captured-files/analyze-spin/<run>/run.json`, its per-tile clips under
+`tile-clips/` beside it, and its video under the
 recording root beside it.
 
 ## Logging

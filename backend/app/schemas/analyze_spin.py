@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from app.schemas.meter import MeterMode, MeterValues
 from app.schemas.paylines import PaylineStats, PaylineStep
 from app.schemas.paytable import DenominationInfo
+from app.schemas.tile_clips import TileClipSet
 
 __all__ = [
     "SpinAnalysisState",
@@ -968,6 +969,16 @@ class SpinRun(BaseModel):
     )
     recording: SpinRecording | None = Field(
         default=None, description="The video, once the recording has stopped."
+    )
+    tile_clips: TileClipSet | None = Field(
+        default=None,
+        description=(
+            "One short video per reel position, filmed while the win "
+            "presentation played. Only on a run that was recording, and only "
+            "on a spin that won -- so null is the ordinary case. Not a step of "
+            "the sequence: nothing is graded by it, and a failure to film shows "
+            "on `errors` rather than as a failed stage."
+        ),
     )
     meter: SpinMeterValidation | None = Field(
         default=None, description="Null until the cash meter step has run."
