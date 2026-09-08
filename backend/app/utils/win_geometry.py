@@ -1,22 +1,4 @@
-"""Reader for ``winGeometry.xml``: where each payline runs across the reels.
-
-This is the game's own statement of the same thing a game config's ``paylines``
-block holds, and it is the authority -- the JSON is a hand-copy kept because
-:mod:`app.services.paylines` checks a screenshot without needing the game's
-install to be present, while this file only exists on a machine that has it.
-
-The two disagree in shape, not in content. Here a line is a list of
-``PaylineElement reelIndex="0..4" position="0..2"`` -- column first, both
-0-indexed. The JSON is ``[row, column]``, both 1-indexed. :meth:`Payline.grid`
-converts, which is what makes the two comparable at all.
-
-The file sits at the ``GameConfig`` root rather than inside a paytable folder,
-so every paytable of a game shares it; which of its sets is in play is the
-paytable's own ``NumberOfLines`` (see :mod:`app.utils.game_math`).
-
-Unlike ``math.xml`` this one carries no namespace, but it is read by local name
-anyway so both readers behave the same way.
-"""
+"""Reader for ``winGeometry.xml``: where each payline runs across the reels."""
 
 from __future__ import annotations
 
@@ -93,12 +75,7 @@ class PaylineSet:
 
     @property
     def line_count(self) -> int:
-        """How many lines the set actually declares.
-
-        Worth reading rather than trusting :attr:`payline_set_id` to be a
-        number: a set that names itself 40 and holds 39 lines is exactly the
-        kind of thing this page exists to show.
-        """
+        """How many lines the set actually declares."""
         return len(self.paylines)
 
 

@@ -1,6 +1,5 @@
-"""Application runtime settings, composed from each integration's settings
-mixin. Access via :func:`get_settings`, cached so ``.env`` parses once per process.
-"""
+"""Application runtime settings, composed from each integration's settings mixin. Access
+via :func:`get_settings`, cached so ``.env`` parses once per process."""
 
 from __future__ import annotations
 

@@ -1,19 +1,4 @@
-/**
- * Hooks for Analyze Spin. Unlike every other slice here, the live half is not
- * react-query: a run publishes a snapshot on every step transition, and polling
- * an endpoint fast enough to catch thirteen of them in twenty seconds is worse in
- * every way than the socket the backend already offers.
- *
- * So the two halves are split by what they are for:
- *
- * - `useSpinStream` is the run as it happens, straight off the WebSocket. Each
- *   frame is a whole state, never a delta, so a dropped frame or a late
- *   subscriber is still correct — and the socket sends the current state on
- *   connect, so there is no gap to fill on mount.
- * - `useSpinReport` is the pictures. They only exist once a run has finished
- *   and the stream deliberately leaves them out, so they are fetched once, when
- *   the stream says the run is over.
- */
+/** Hooks for Analyze Spin. */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -31,13 +16,7 @@ const RECONNECT_MS = 2_000;
 
 /**
  * The run as it happens.
- *
- * Reconnects on its own, because the backend restarting under a dev server is
- * routine and a page that silently stopped updating is the worst way to find
- * out. `connected` is surfaced rather than hidden for the same reason.
- *
- * @returns {{state: {active: boolean, run: object|null}|null,
- *   connected: boolean}}
+ * @returns {{state: {active: boolean, run: object|null}|null, connected: boolean}}
  */
 export function useSpinStream() {
   const [state, setState] = useState(null);
@@ -128,14 +107,7 @@ export function useCancelSpin() {
   return useSpinMutation(cancelSpin);
 }
 
-/**
- * The run to render, and the one to take pictures from.
- *
- * The two can disagree for a moment — the stream is already on the new run
- * while the report still holds the last one — so the pictures are only used
- * when both name the same run id. Showing the previous spin's reels beside this
- * spin's verdict would be worse than showing none.
- */
+/** The run to render, and the one to take pictures from. */
 export function useSpinView() {
   const { state, connected } = useSpinStream();
   const report = useSpinReport();

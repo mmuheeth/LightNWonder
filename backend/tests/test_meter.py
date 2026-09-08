@@ -30,7 +30,7 @@ from PIL import Image, ImageDraw
 
 from app.config.game_config import GameConfigError, load_game_config
 from app.config.ocr import EXECUTABLE_NAME, discover_executable
-from app.core.config import settings
+from app.config.runtime import settings
 from app.schemas.meter import MeterMode, MeterValues
 from app.services import meter as meter_service
 from app.services import roi as roi_service

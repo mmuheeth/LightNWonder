@@ -1,17 +1,7 @@
-"""Analyze Spin runtime settings: which keys drive one spin, how long each
-stage is allowed to take, and where a run's record is kept.
-
-Every timeout here bounds a wait on the *game's own log*, not on a network
-call, so they are generous: a spin that never lands should end as a named
-failure on one step rather than a request that hangs. The one worth knowing is
-``ANALYZE_SPIN_WIN_WAIT_SECONDS`` -- a losing spin is proven only by the win
-count-up *not* arriving, so a no-win run pays that wait in full before its
-final screenshot.
-"""
+"""Analyze Spin runtime settings: which keys drive one spin, how long each stage is
+allowed to take, and where a run's record is kept."""
 
 from __future__ import annotations
-
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -97,15 +87,12 @@ class AnalyzeSpinSettings(BaseSettings):
     ANALYZE_SPIN_TILE_CLIP_IMAGE_FORMAT: str = Field(default="jpg", min_length=1)
     ANALYZE_SPIN_TILE_CLIP_QUALITY: int = Field(default=90, ge=-1, le=100)
 
-    # Preferred encoder, as a four-character code: VP80, avc1, mp4v or MJPG.
-    # Blank takes the first that works. Only ever a preference -- OpenCV reports
-    # a writer as open for an encoder that then fails to initialise, so
-    # `app/utils/tile_video.py` probes each candidate by writing a frame and
-    # falls through to the next either way. VP8 in WebM leads that order because
-    # it is the only one of the four a browser plays without a plugin -- at the
-    # cost of one unsuppressable "tag ... is not supported" line on stderr per
-    # file, which `app/utils/tile_video.py` explains. `mp4v` is the quiet
-    # alternative, and the dashboard cannot play what it writes.
+    # Preferred encoder, as a four-character code: VP80, avc1, mp4v or MJPG. Blank
+    # takes the first that works. Only ever a preference -- OpenCV reports a writer
+    # as open for an encoder that then fails to initialise, so
+    # `app/utils/tile_video.py` probes each candidate by writing a frame. VP8 in
+    # WebM leads because it is the only one of the four a browser plays inline, at
+    # the cost of one unsuppressable stderr line per file.
     ANALYZE_SPIN_TILE_CLIP_CODEC: str = ""
 
     # The run directory's subdirectory holding them, one file per tile.
@@ -140,34 +127,18 @@ class AnalyzeSpinSettings(BaseSettings):
 
     # The confidence floor a tile has to clear to be named while grading a spin.
     # 0.85 rather than the classifier page's own 0.90: that floor sits far above
-    # where the classes separate, so a correct reading is rejected whenever the
-    # model is only fairly sure. Safe on a page that shows the ranked candidates
-    # beside every tile, costly here -- a payline through an unnamed tile stops
-    # there, so the run comes back short and the spin looks like it paid less than
-    # it did. Blank opts back into CLASSIFIER_MIN_CONFIDENCE. Read
-    # `unnamed_positions` on the validation before concluding a spin paid nothing.
+    # where the classes separate, which is safe on a page that shows the ranked
+    # candidates beside every tile but costly here -- a payline through an unnamed
+    # tile stops there, so the spin looks like it paid less than it did. Blank opts
+    # back into CLASSIFIER_MIN_CONFIDENCE.
     ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE: float | None = Field(
         default=0.85, ge=0.0, le=1.0
     )
 
-    # Dormant. Which visible row the game's logged reel stop refers to: `auto`
-    # built all three and kept whichever agreed best with the cosine similarity
-    # measured off the picture. Nothing reads it now -- a spin's symbols come from
-    # the image classifier, which needs no anchor because it names the tile it was
-    # shown. Kept beside `app/utils/reel_stops.py`, which is likewise still here
-    # and likewise unused, for whoever wants the log as a second opinion.
-    ANALYZE_SPIN_REEL_STOP_ANCHOR: Literal["auto", "top", "middle", "bottom"] = "auto"
-
     @field_validator("ANALYZE_SPIN_SCREENSHOT_WIDTH", mode="before")
     @classmethod
     def _blank_width_is_native(cls, value: object) -> object:
-        """Read ``ANALYZE_SPIN_SCREENSHOT_WIDTH=`` as "the canvas's own".
-
-        Without this an empty value in a ``.env`` is an integer parse error, and
-        commenting the line out to mean "no override" is the kind of thing that
-        gets lost -- the setting reads as optional, so blank has to be a way of
-        saying so.
-        """
+        """Read ``ANALYZE_SPIN_SCREENSHOT_WIDTH=`` as "the canvas's own"."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -175,14 +146,8 @@ class AnalyzeSpinSettings(BaseSettings):
     @field_validator("ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE", mode="before")
     @classmethod
     def _blank_floor_is_configured(cls, value: object) -> object:
-        """Read ``ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE=`` as "the classifier's own".
-
-        Blank is the way back to ``CLASSIFIER_MIN_CONFIDENCE``, which is *not* the
-        same as leaving the line out: absent means the 0.85 default above. The
-        distinction earns its keep because the two floors exist for different
-        readers -- 0.90 is right for a page that shows what it rejected, and this
-        one grades a spin.
-        """
+        """Read a blank ``ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE`` as the classifier's
+        own floor, which absent (the default above) does not mean."""
         if isinstance(value, str) and not value.strip():
             return None
         return value

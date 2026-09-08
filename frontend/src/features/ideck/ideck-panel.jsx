@@ -33,11 +33,7 @@ const STATE_VARIANTS = {
 /** Only `ready` and `minimized` can be pressed; minimized restores on demand. */
 const PRESSABLE = new Set(["ready", "minimized"]);
 
-/**
- * Why a state blocks pressing, in the user's terms. `access_denied` is the one
- * worth spelling out: nothing about the window looks wrong, and no amount of
- * retrying will help.
- */
+/** Why a state blocks pressing, in the user's terms. */
 const STATE_HINTS = {
   not_found: "OledPanelSvc is not running, so there is no panel to drive.",
   unsupported: "i-deck control needs the Windows API, which this host lacks.",
@@ -51,13 +47,7 @@ function keyLabel({ xml_id }) {
   return xml_id.replace(/_/g, " ").toUpperCase();
 }
 
-/**
- * Live control panel for the Virtual OLED i-deck, backed by `/api/ideck/*`.
- *
- * The keys are laid out from the panel's own layout file rather than hardcoded,
- * so the grid on screen matches the deck being driven, including differently
- * sized keys whose flex weight is their real pixel width.
- */
+/** Live control panel for the Virtual OLED i-deck, backed by `/api/ideck/*`. */
 export function IDeckPanel() {
   const { data, error, isPending, isFetching, refetch } = useIDeckStatus();
   const { data: buttons } = useIDeckButtons();

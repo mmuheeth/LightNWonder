@@ -1,7 +1,4 @@
-"""Payline check endpoints, thin wrappers over
-:mod:`app.services.paylines`. Checks a split the reel grid already wrote
-against one of the active game's bet configurations; the request only names
-which split, which set, and how strict to be."""
+"""Payline check endpoints, thin wrappers over :mod:`app.services.paylines`."""
 
 from __future__ import annotations
 
@@ -40,9 +37,7 @@ BAD_CONFIG: ResponseSpec = {500: {"description": "The game config is unreadable"
     responses={**BAD_CONFIG},
 )
 async def get_layout() -> ApiResponse[PaylineLayout]:
-    """The active game's bet configurations and the split to check them
-    against. A game with no ``paylines``/``reel_bounds``, or nothing split
-    yet, comes back with ``error`` set on a 200."""
+    """The active game's bet configurations and the split to check them against."""
     layout = await paylines_service.layout()
     message = (
         f"{len(layout.sets)} payline sets in {layout.game}"
@@ -65,9 +60,8 @@ async def get_layout() -> ApiResponse[PaylineLayout]:
     },
 )
 async def check(payload: PaylineCheckRequest) -> ApiResponse[PaylineCheckResult]:
-    """Evaluate every line of one set against one split (newest if
-    ``split`` omitted). ``pays`` is the length of the leading matching run;
-    tune ``threshold`` against ``stats.matched_min``/``rejected_max``."""
+    """Evaluate every line of one set against one split (newest if ``split`` omitted).
+    ``pays`` is the length of the leading matching run."""
     result = await paylines_service.check(payload)
     return ApiResponse[PaylineCheckResult].ok(
         data=result,

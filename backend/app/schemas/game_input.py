@@ -1,7 +1,4 @@
-"""Game-window input payloads. *Fractional* coordinates come from the game
-config and never change; *client* coordinates shift with the live window and
-are what clicks are addressed in. ``confirmed_by`` says how strong the proof
-of a landed click is."""
+"""Game-window input payloads."""
 
 from __future__ import annotations
 

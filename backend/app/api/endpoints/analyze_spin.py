@@ -1,17 +1,4 @@
-"""Analyze Spin endpoints, thin wrappers over :mod:`app.services.analyze_spin`.
-
-One run exists process-wide, like event capture, so two browsers pointed at the
-same backend watch the same spin.
-
-``/start`` returns as soon as the run is under way rather than when it finishes:
-a spin takes tens of seconds and the point of the feature is watching it happen.
-Progress arrives on ``/stream``, which is the one place in this API that does
-*not* speak the response envelope -- a WebSocket frame is not a response, has no
-request id, and cannot carry a status code. Each frame is a whole
-:class:`~app.schemas.analyze_spin.SpinAnalysisState`, not a delta, so a client
-that joins late or drops a frame is still correct. Images are left out of every
-frame; ``GET /status?include_images=true`` is the report.
-"""
+"""Analyze Spin endpoints, thin wrappers over :mod:`app.services.analyze_spin`."""
 
 from __future__ import annotations
 
@@ -105,14 +92,8 @@ async def start(
         ),
     ),
 ) -> ApiResponse[SpinAnalysisState]:
-    """Press spin on the active game, follow it to its result, and run the cash
-    meter and payline validations over the screenshots it took.
-
-    Returns immediately with the run's opening state; follow ``/stream`` (or
-    poll ``/status``) for the rest. Only the preconditions this process can
-    check without touching the machine -- the game config parsing, its log
-    existing -- refuse the request; everything else fails on its own step, with
-    the error the equivalent direct request would have given."""
+    """Press spin on the active game, follow it to its result, and run the cash meter
+    and payline validations over the screenshots it took."""
     state = await analyze_spin_service.start(record=record, architecture=architecture)
     run = state.run
     return ApiResponse[SpinAnalysisState].ok(
@@ -128,9 +109,8 @@ async def start(
     responses=RUN_CONFLICT,
 )
 async def cancel() -> ApiResponse[SpinAnalysisState]:
-    """Cooperative: the run stops itself at its next check, tidying up its
-    recording and sealing its record on the way, so this returns before the run
-    has actually ended. Watch ``state`` for ``cancelled``."""
+    """Cooperative: the run stops itself at its next check, tidying up its recording and
+    sealing its record on the way, so this returns before the run has actually ended."""
     return ApiResponse[SpinAnalysisState].ok(
         data=await analyze_spin_service.cancel(),
         message="The spin analysis was asked to stop",
@@ -151,9 +131,7 @@ async def cancel() -> ApiResponse[SpinAnalysisState]:
     },
 )
 async def get_frame(file_name: str) -> FileResponse:
-    """Serve one of the frames named in ``run.frames``. They live in the
-    dashboard's screenshot directory rather than a per-run one, because that is
-    where the ROI and reel-grid services read a frame by name."""
+    """Serve one of the frames named in ``run.frames``."""
     return FileResponse(analyze_spin_service.frame_path(file_name))
 
 
@@ -170,12 +148,7 @@ async def get_frame(file_name: str) -> FileResponse:
     },
 )
 async def get_clip(run_id: str, file_name: str) -> FileResponse:
-    """Serve one of the clips named in ``run.tile_clips.clips``.
-
-    Keyed by run rather than by name alone, unlike the frames: a clip belongs to
-    the spin it was filmed during and lives in that run's own directory, so
-    ``r1c1.webm`` on its own would name fifteen different videos.
-    """
+    """Serve one of the clips named in ``run.tile_clips.clips``."""
     return FileResponse(analyze_spin_service.clip_path(run_id, file_name))
 
 
@@ -186,12 +159,7 @@ async def _push(websocket: WebSocket, queue: asyncio.Queue[SpinAnalysisState]) -
 
 
 async def _watch(websocket: WebSocket) -> None:
-    """Consume whatever the client sends, and return when it goes away.
-
-    Reading is not optional even though this stream is one-way: without it a
-    closed browser tab is only noticed on the next send, which for an idle
-    service may be never.
-    """
+    """Consume whatever the client sends, and return when it goes away."""
     while True:
         message = await websocket.receive()
         if message["type"] == "websocket.disconnect":
@@ -200,12 +168,7 @@ async def _watch(websocket: WebSocket) -> None:
 
 @router.websocket("/stream")
 async def stream(websocket: WebSocket) -> None:
-    """Follow a run as it happens.
-
-    Sends the current state on connect -- so a client that opens the socket
-    mid-spin, or after one finished, renders immediately without also having to
-    fetch ``/status`` -- and then one frame per change.
-    """
+    """Follow a run as it happens."""
     await websocket.accept()
     with analyze_spin_service.subscribe() as queue:
         pusher = asyncio.create_task(_push(websocket, queue), name="spin-stream-push")

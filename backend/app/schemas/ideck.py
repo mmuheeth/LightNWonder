@@ -1,6 +1,4 @@
-"""Virtual OLED i-deck payloads. *Panel* coordinates come from the layout
-file and never change; *client* coordinates are where a key sits in the live
-window and shift on resize -- presses are addressed in client coordinates."""
+"""Virtual OLED i-deck payloads."""
 
 from __future__ import annotations
 

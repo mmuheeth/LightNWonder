@@ -1,8 +1,5 @@
-"""Tesseract OCR runtime settings: where the external engine binary is, the
-command-line knobs it takes, and the preprocessing applied to a crop before OCR.
-The executable is discovered (not required) since Windows installers don't add
-it to PATH; a missing engine makes OCR report unavailable rather than fail to start.
-"""
+"""Tesseract OCR runtime settings: where the external engine binary is, the command-line
+knobs it takes, and the preprocessing applied to a crop before OCR."""
 
 from __future__ import annotations
 

@@ -1,9 +1,5 @@
-"""Reader for the button-panel layout XML that ``OledPanelSvc`` itself renders
-from, so button geometry has one source of truth and a panel re-layout needs
-no matching edit here. A button's outer size comes from its ``ButtonTemplate``
-(the ``TextBox`` extent grown by the bezel), unless the template states
-``width``/``height`` outright.
-"""
+"""Reader for the button-panel layout XML ``OledPanelSvc`` renders from, so a panel re-
+layout needs no matching edit here."""
 
 from __future__ import annotations
 
@@ -54,9 +50,8 @@ class PanelLayout:
     def to_client(
         self, button: PanelButton, *, client_width: int, client_height: int
     ) -> tuple[int, int]:
-        """Where a key's centre sits in a window showing this panel at a
-        possibly different scale, clamped inside the window (a rounded edge
-        case could land one pixel outside)."""
+        """A key's centre in a window showing this panel at a possibly different scale,
+        clamped inside the window."""
         x, y = button.center
         if self.width > 0 and self.height > 0:
             x = round(x * client_width / self.width)
@@ -110,12 +105,7 @@ def _template_sizes(root: ElementTree.Element) -> dict[str, tuple[int, int]]:
 
 
 def parse_panel(path: Path) -> PanelLayout:
-    """Read a panel layout file.
-
-    Raises:
-        PanelXmlError: if the file is absent, is not well-formed XML, declares no
-            ``<Panel>``, or references a ``template_id`` it never defines.
-    """
+    """Read a panel layout file."""
     try:
         tree = ElementTree.parse(path)
     except FileNotFoundError as exc:

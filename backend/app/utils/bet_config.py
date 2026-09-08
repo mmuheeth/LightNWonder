@@ -1,26 +1,5 @@
-"""Readers for ``betPerUnitConfig.xml`` and ``betUnitConfig.xml``: what a spin
-costs, and what multiplies a paytable's line values.
-
-These two files sit beside ``math.xml`` in every paytable folder and answer the
-question neither ``math.xml`` nor ``gameConfig.cfg`` answers directly: a payline
-combo's ``<Value>`` is a rate *per bet unit*, not an award in credits, so a line
-reading "pays 25" pays 25 at one credit a unit and 250 at ten.
-
-Between them::
-
-    total_bet_credits = UnitSelectData/@cost  x  BetPerUnit
-
-For FortuneOx's 40-line paytables that is ``88 x {1, 2, 3, 5, 10}``, which is
-exactly the ``88 176 264 440 880`` that ``gameConfig.cfg`` lists as
-``SpecificMaxBets`` -- two statements of one ladder, of which this is the only
-one that separates the two factors. The 20-line paytables are ``50 x`` the same
-rungs.
-
-Only those two numbers are read. The files also carry ``tag`` attributes pairing
-one file's mapping with the other's, and min/max bounds; both shipped games
-declare exactly one mapping and one unit block, so the first of each is the
-answer and the tags never have to be matched up.
-"""
+"""Readers for ``betPerUnitConfig.xml`` and ``betUnitConfig.xml``: what a spin costs,
+and what multiplies a paytable's line values."""
 
 from __future__ import annotations
 
@@ -40,12 +19,7 @@ def _local(tag: object) -> str:
 
 
 def _find(root: ElementTree.Element, name: str) -> list[ElementTree.Element]:
-    """Every element with this local name, at any depth.
-
-    At any depth because the two games wrap these blocks differently and the
-    nesting carries no meaning -- matching on the leaf keeps a cosmetic
-    difference from reading as a missing block.
-    """
+    """Every element with this local name, at any depth."""
     return [element for element in root.iter() if _local(element.tag) == name]
 
 
@@ -75,10 +49,7 @@ def _parse(path: Path, *, what: str, root_tag: str) -> ElementTree.Element:
 
 
 def load_bet_ladder(path: Path) -> tuple[int, ...]:
-    """The rungs a player may stake on each bet unit, in the file's own order.
-
-    An order and not a range: FortuneOx offers 1, 2, 3, 5, 10 and there is no 4.
-    """
+    """The rungs a player may stake on each bet unit, in the file's own order."""
     root = _parse(path, what="bet per unit", root_tag="BetPerUnitData")
     mapping = next(iter(_find(root, "BetPerUnitMappings")), None)
     if mapping is None:
@@ -104,12 +75,7 @@ def load_bet_ladder(path: Path) -> tuple[int, ...]:
 
 
 def load_unit_costs(path: Path) -> tuple[tuple[int | None, int], ...]:
-    """``(units, cost)`` for each block: what a spin costs at one credit a unit.
-
-    Keyed by ``numUnits`` because the same file ships in folders playing
-    different line counts -- 40 lines at 88, 20 at 50 -- and the paytable's own
-    line count picks the block.
-    """
+    """``(units, cost)`` for each block: what a spin costs at one credit a unit."""
     root = _parse(path, what="bet unit", root_tag="BetUnitData")
 
     costs: list[tuple[int | None, int]] = []

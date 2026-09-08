@@ -1,7 +1,4 @@
-"""Provider-neutral building blocks for LangChain agents and LangGraph flows.
-
-Nothing here constructs a model or opens a database at import time; callers compose explicitly.
-"""
+"""Provider-neutral building blocks for LangChain agents and LangGraph flows."""
 
 from app.agents.checkpoint import async_checkpoint_context, checkpoint_context
 from app.agents.errors import AgentConfigurationError, AgentDisabledError

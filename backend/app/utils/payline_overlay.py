@@ -1,14 +1,5 @@
-"""Draw evaluated paylines over the reels they were read from, so a line that
-paid because two symbols really matched and one that paid because the
-threshold is too low don't look identical as a bare number. This module owns
-the palette (:func:`colour`, keyed by a line's position in its set) since the
-panel's swatch and the drawn stroke must agree; it avoids purple/deep red
-since the games are drawn in those. ``DrawnLine.detailed=False`` draws only
-the plain path (for the busy combined overlay of every paying line);
-``detailed=True`` adds green/red tile borders for the confirmed run and the
-break, drawn on a single line's own picture where there's room. The crop is
-enlarged before drawing so a stroke stays legible.
-"""
+"""Draw evaluated paylines over the reels they were read from, and own their palette so
+a swatch and a stroke cannot drift."""
 
 from __future__ import annotations
 
@@ -96,9 +87,8 @@ def colour(index: int) -> str:
 
 
 def _dim(hex_colour: str, weight: float) -> tuple[int, int, int]:
-    """One palette colour mixed towards the outline, for the unmatched tail --
-    so it reads as *this line, not paying* rather than a neutral grey shared
-    by every line."""
+    """One palette colour mixed towards the outline, for the unmatched tail -- so it
+    reads as *this line, not paying* rather than a neutral grey shared by every line."""
     value = hex_colour.lstrip("#")
     channels = (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
     return tuple(  # type: ignore[return-value]
@@ -123,9 +113,8 @@ def _bordered(
     outline: tuple[int, int, int],
     width: int,
 ) -> None:
-    """A rectangle traced exactly around one tile, at this picture's scale --
-    no offset needed since a border only ever appears on a single-line picture.
-    """
+    """A rectangle traced exactly around one tile, at this picture's scale -- no offset
+    needed since a border only ever appears on a single-line picture."""
     left, top, right, bottom = box
     pen.rectangle(
         (left * scale, top * scale, right * scale, bottom * scale),
@@ -140,11 +129,7 @@ def draw(
     *,
     scale: int = 1,
 ) -> Image.Image:
-    """The reels crop, enlarged, with every line drawn over it. Lines sharing a
-    row are offset from each other by a few pixels so two coincident strokes
-    don't collapse into one. An empty ``lines`` gives back the plain enlarged
-    crop -- the picture for "nothing paid".
-    """
+    """The reels crop, enlarged, with every line drawn over it."""
     canvas = reels.convert("RGB")
     if scale > 1:
         canvas = canvas.resize(

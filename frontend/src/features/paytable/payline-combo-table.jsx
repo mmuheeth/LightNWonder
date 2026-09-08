@@ -14,18 +14,8 @@ function roleMap(symbols) {
 }
 
 /**
- * The line pays, laid out the way a paytable poster is: a row per symbol and a
- * column per run length.
- *
- * A combo is one symbol repeated with an `ANY` tail, so every pay is really a
- * (symbol, run, value) triple — and listing the combos in their declared order
- * instead makes that three unordered rows per symbol. Symbols paying alike
- * share a row (a game gives its card ranks one profile), and a blank cell means
- * that run does not pay for them, not that it pays nothing.
- *
- * The backend does the pivot; `math.payline_combos` is still the faithful
- * reading of the file, and any combo mixing two symbols stays there and is
- * listed below, since it has no row to sit in.
+ * The line pays, laid out the way a paytable poster is: a row per symbol and a column
+ * per run length.
  */
 export function PaylineComboTable({ math }) {
   const roles = roleMap(math.symbols);

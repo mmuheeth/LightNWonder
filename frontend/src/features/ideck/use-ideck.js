@@ -1,11 +1,4 @@
-/**
- * react-query hooks for the Virtual OLED i-deck.
- *
- * Panel state is server state, so it lives here rather than in the Zustand
- * store. Every mutation invalidates the whole `ideck` subtree, which refreshes
- * both the status and the button list straight after an action — a press
- * can restore the window, which changes the client coordinates of every key.
- */
+/** react-query hooks for the Virtual OLED i-deck. */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -20,11 +13,6 @@ import { queryKeys } from "@/lib/query-keys";
 
 /**
  * Fetch the panel status.
- *
- * Background polling is opt-in so the dashboard does not continuously hit the
- * status endpoint. The panel's Refresh button and mutations still refresh it
- * immediately when the user needs current state.
- *
  * @param {{refetchInterval?: number|false}} [options]
  */
 export function useIDeckStatus({ refetchInterval = false } = {}) {
@@ -36,12 +24,7 @@ export function useIDeckStatus({ refetchInterval = false } = {}) {
   });
 }
 
-/**
- * Fetch the deck layout.
- *
- * The geometry is static, but the client coordinates move with the window, so
- * this is refreshed by the same invalidation as everything else.
- */
+/** Fetch the deck layout. */
 export function useIDeckButtons() {
   return useQuery({
     queryKey: queryKeys.ideck.buttons(),
@@ -70,12 +53,7 @@ export function usePressIDeckSequence() {
   return useIDeckMutation(pressIDeckSequence);
 }
 
-/**
- * Run the side-effect-free capability check.
- *
- * Deliberately invalidates nothing: the outcome is read from `mutation.data`,
- * so the panel needs no extra state to show the result.
- */
+/** Run the side-effect-free capability check. */
 export function useProbeIDeck() {
   return useMutation({ mutationFn: probeIDeck });
 }

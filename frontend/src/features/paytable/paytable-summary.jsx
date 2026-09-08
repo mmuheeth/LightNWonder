@@ -22,19 +22,7 @@ function percent(value) {
   return typeof value === "number" ? `${value.toFixed(2)}%` : "—";
 }
 
-/**
- * Which paytable the running game has loaded.
- *
- * The id is the whole join — the game's log writes it, and it is byte-identical
- * to the folder its maths lives in — so it leads the page at full size. The
- * evidence *for* it (the log line, its timestamp, the directory it resolved to)
- * is one click away rather than on screen: it is what you want when the page
- * looks wrong, and noise the rest of the time.
- *
- * A native `<details>` rather than a Collapsible component — there is no shadcn
- * one vendored here, and this needs nothing that `<details>` does not already
- * do, keyboard and screen reader included.
- */
+/** Which paytable the running game has loaded. */
 export function PaytableSummary({ data, selected, onSelect, onRefresh, isFetching }) {
   const { source, identity, math, denomination } = data;
   const loggedAt = formatLoggedAt(source.logged_at);

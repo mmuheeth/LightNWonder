@@ -35,20 +35,7 @@ const ERROR_HINTS = {
   SPIN_ANALYSIS_ALREADY_RUNNING: "Wait for the run to finish, or cancel it.",
 };
 
-/**
- * The networks a spin can be graded by, and the order they are offered in.
- *
- * Hardcoded rather than fetched. The backend's own architecture type is this same
- * closed pair, `/start` refuses an unknown name with a 400, and reaching into the
- * image-classifier slice for two strings would mean this slice no longer deletes
- * in one directory. A third network is a line here and a line there.
- *
- * ResNet34 leads because it is the one that reads a real split better — on the
- * reference fifteen tiles it names every one correctly — and because the first
- * entry is both what the dropdown opens on and what the backend would choose for
- * a request naming none (`CLASSIFIER_ARCHITECTURE`), so the visible default and
- * the configured one cannot drift apart.
- */
+/** The networks a spin can be graded by, and the order they are offered in. */
 const ARCHITECTURES = [
   { name: "resnet34", label: "ResNet34" },
   { name: "efficientnet_b0", label: "EfficientNet-B0" },
@@ -110,15 +97,7 @@ function Frames({ frames }) {
   );
 }
 
-/**
- * The button, and the run it started.
- *
- * One press drives the whole sequence, so there is one button — everything else
- * on this card is the answer to "what is it doing now". `connected` is shown
- * because progress arrives on a socket: a page that quietly stopped updating
- * looks exactly like a spin that quietly stalled, and only this tells them
- * apart.
- */
+/** The button, and the run it started. */
 export function SpinControlCard({ run, active, connected, start, cancel }) {
   // Off by default: a spin is not recorded unless this run's own toggle says
   // so, and that choice is only asked for at the moment of pressing spin.

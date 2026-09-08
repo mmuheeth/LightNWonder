@@ -11,13 +11,7 @@ const ROLE_CLASSES = {
   any: "border-dashed border-border bg-transparent text-muted-foreground",
 };
 
-/**
- * One symbol code, sized to sit in a table cell or a run of five.
- *
- * `name` only ever decorates the chip: the code is what every maths file
- * writes, so it stays the label and the name is the title — a chip that showed
- * "Ox" alone could not be matched against a reel strip.
- */
+/** One symbol code, sized to sit in a table cell or a run of five. */
 export function SymbolChip({ code, name, role = "regular", className }) {
   const kind = code === "ANY" ? "any" : role;
 
@@ -37,9 +31,8 @@ export function SymbolChip({ code, name, role = "regular", className }) {
 
 /**
  * A combo's symbol list, left to right — which is the order it pays in.
- *
- * @param {{symbols: string[], names?: Array<string|null>,
- *   roles?: Record<string, string>}} props
+ * @param {{symbols: string[], names?: Array<string|null>, roles?: Record<string,
+ *   string>}} props
  */
 export function SymbolRun({ symbols, names = [], roles = {} }) {
   return (

@@ -1,8 +1,4 @@
-"""Logging configuration.
-
-Development gets human-readable lines; set ``LOG_JSON=true`` for structured
-output that a log shipper can parse. Every record carries the request id.
-"""
+"""Logging configuration."""
 
 from __future__ import annotations
 
@@ -13,7 +9,7 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.config import Settings
+from app.config.runtime import Settings
 from app.core.context import get_request_id
 
 # Attributes present on every LogRecord; anything else was supplied by the

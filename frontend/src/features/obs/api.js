@@ -10,15 +10,12 @@ const OBS_URL = `${routes.API}/obs`;
 
 /**
  * Fetch the OBS connection status.
- *
- * Resolves even while OBS is closed — check `state` rather than catching.
- *
  * @param {{signal?: AbortSignal}} [options]
- * @returns {Promise<{state: "connected"|"disconnected", url: string,
- *   obs_version: string|null, obs_websocket_version: string|null,
- *   platform: string|null, current_scene: string|null,
- *   recording: {active: boolean, paused: boolean, timecode: string|null,
- *     duration_ms: number, bytes_written: number, output_path: string|null}|null}>}
+ * @returns {Promise<{state: "connected"|"disconnected", url: string, obs_version:
+ *   string|null, obs_websocket_version: string|null, platform: string|null,
+ *   current_scene: string|null, recording: {active: boolean, paused: boolean, timecode:
+ *   string|null, duration_ms: number, bytes_written: number, output_path:
+ *   string|null}|null}>}
  */
 export function getObsStatus({ signal } = {}) {
   return apiRequest({ method: "GET", url: `${OBS_URL}/status`, signal });
@@ -36,12 +33,8 @@ export function disconnectObs() {
 
 /**
  * Point the active OBS window-capture source at the process in the active game config.
- *
- * Fails with 502 when OBS lists no window for that process, which is what a game
- * that is not running looks like.
- *
- * @returns {Promise<{game: string, process: string, scene: string,
- *   source_name: string, window_title: string|null}>}
+ * @returns {Promise<{game: string, process: string, scene: string, source_name: string,
+ *   window_title: string|null}>}
  */
 export function selectGameWindow() {
   return apiRequest({ method: "POST", url: `${OBS_URL}/select-game-window` });
@@ -49,17 +42,10 @@ export function selectGameWindow() {
 
 /**
  * Capture a screenshot.
- *
- * Always returns `image_data` as a base64 data URI, ready for an `<img>` src.
- * Pass a bare filename to also have OBS write it into the configured
- * screenshot directory and return `file_path` alongside it. `output_dir` can
- * select a relative use-case subdirectory below that root.
- *
- * @param {{source_name?: string, image_format?: string, width?: number,
- *   height?: number, quality?: number, file_name?: string,
- *   output_dir?: string}} [payload]
- * @returns {Promise<{source_name: string, image_format: string,
- *   image_data: string|null, file_path: string|null}>}
+ * @param {{source_name?: string, image_format?: string, width?: number, height?:
+ *   number, quality?: number, file_name?: string, output_dir?: string}} [payload]
+ * @returns {Promise<{source_name: string, image_format: string, image_data:
+ *   string|null, file_path: string|null}>}
  */
 export function takeScreenshot(payload = {}) {
   return apiRequest({
@@ -76,7 +62,6 @@ export function getRecordStatus({ signal } = {}) {
 
 /**
  * Start recording. Resolves once OBS reports the output actually running.
- *
  * @param {{output_dir?: string}} [payload] relative use-case subdirectory
  */
 export function startRecording(payload) {

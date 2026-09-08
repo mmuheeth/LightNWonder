@@ -19,19 +19,7 @@ function size(bytes) {
     : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * The clips laid out the way the reels are, one cell per position.
- *
- * Laid out rather than listed because the layout *is* the reading: a winning
- * spin lights the positions that paid and leaves the rest alone, so which cells
- * are moving is the answer, and it is only legible when they sit where they sat
- * on the glass. A list of fifteen file names says nothing.
- *
- * Every clip plays itself — muted, looping, inline — because pressing play
- * fifteen times to compare them defeats the point, and because a five-second
- * loop of a 100px tile is cheaper than the screenshot beside it. `preload` is
- * left to the browser: they are already on this machine.
- */
+/** The clips laid out the way the reels are, one cell per position. */
 function Grid({ runId, columns, clips }) {
   return (
     <div
@@ -61,24 +49,7 @@ function Grid({ runId, columns, clips }) {
   );
 }
 
-/**
- * Each reel position, filmed on its own for the seconds after the win landed.
- *
- * Its own card, and deliberately *not* a step of the timeline. Everything else
- * on this page is a reading the spin is graded by — the symbols, the lines that
- * paid them, the meter. This is graded by nothing: it is a record of what the
- * cabinet showed, tile by tile, which is the one question a single result
- * screenshot cannot answer. So a failure to film shows up in the run's errors
- * and never as a red row in the sequence.
- *
- * Only rendered when there are clips, which means: a run that was recording, and
- * a spin that won. There is no empty state, because nothing is missing.
- *
- * `fps` is worth reading beside the count. obs-websocket offers no video stream,
- * so a clip is built from screenshots taken as fast as OBS answers — the rate is
- * measured after the fact and the clip plays back over the wall clock it
- * actually covered, rather than over the one that was asked for.
- */
+/** Each reel position, filmed on its own for the seconds after the win landed. */
 export function TileClipsCard({ runId, clips }) {
   const measured = clips.fps ? clips.fps.toFixed(1) : "—";
   const requested = clips.requested_fps ? clips.requested_fps.toFixed(0) : "—";

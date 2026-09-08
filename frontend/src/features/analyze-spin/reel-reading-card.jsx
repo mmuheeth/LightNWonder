@@ -15,16 +15,7 @@ function percent(value) {
   return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "—";
 }
 
-/**
- * The reels as a matrix, laid out the way they sit on screen.
- *
- * Rendered twice -- once in codes, once in display names -- because the codes are
- * what the rest of the system speaks (the maths files, the paylines block, the
- * awards below) and the names are what a person reads. Both matrices come off the
- * response rather than being derived here, so the two cannot end up disagreeing
- * about which cell is which. A dash is a tile nothing cleared the confidence floor
- * for, which is an answer, not a hole.
- */
+/** The reels as a matrix, laid out the way they sit on screen. */
 function Grid({ grid, title }) {
   if (!grid?.length) return null;
 
@@ -60,15 +51,7 @@ function Grid({ grid, title }) {
   );
 }
 
-/**
- * The tiles that came back unnamed, and what the model leaned towards anyway.
- *
- * The most useful thing on this card when a spin that plainly paid reports no
- * run. The floor is set above where the classes separate, so a correct reading is
- * rejected whenever the model is only fairly sure — and a line through a rejected
- * tile stops there. Showing the leading candidate with its figure in amber is
- * what makes that a tunable rather than a mystery.
- */
+/** The tiles that came back unnamed, and what the model leaned towards anyway. */
 function Rejected({ tiles, floor }) {
   const rejected = tiles.filter((tile) => !tile.known);
   if (rejected.length === 0) return null;
@@ -96,10 +79,8 @@ function Rejected({ tiles, floor }) {
 }
 
 /**
- * Every tile's confidence, not only the rejected ones -- collapsed by default
- * since fifteen figures is more than this card needs to lead with, but the
- * full picture for whoever wants to see how close a *passing* tile actually
- * was to the floor.
+ * Every tile's confidence, not only the rejected ones -- collapsed by default since
+ * fifteen figures is more than this card needs to lead with, but the full picture for
  */
 function AllConfidences({ tiles }) {
   if (tiles.length === 0) return null;
@@ -134,30 +115,7 @@ function AllConfidences({ tiles }) {
   );
 }
 
-/**
- * What landed, read off the picture by the image classifier.
- *
- * Its own card rather than a block inside the payline one because it is one
- * reading of one picture and is worth having even when the lines could not be
- * checked — a grid of codes beside the reels is readable evidence on a run whose
- * paytable never loaded.
- *
- * It replaced two earlier readings, and the difference is the point of the card:
- *
- * - **cosine similarity between tiles** said which tiles were alike and never
- *   which symbol they were, so an award could only be narrowed to every paytable
- *   row paying at that run length.
- * - **the reel stops in the game's own log** named the symbols by agreeing with
- *   the game, so a reel drawing the wrong symbol could never be caught.
- *
- * Two grids and a list, and deliberately no picture. The ringed reels are still
- * written beside the tiles (`reels.overlay_file`) because a ring over a cell is
- * the cheapest way to check the split was named the way it looks — but the rings
- * only ever meant "the model was sure", which the grids already say in codes, and
- * the reels themselves are on the Analyze Spin card above as a screenshot. What is
- * worth the space here is every *rejected* tile with the candidate it leaned
- * towards, since that is the number a short payline run is explained by.
- */
+/** What landed, read off the picture by the image classifier. */
 export function ReelReadingCard({ reels }) {
   return (
     <Card>

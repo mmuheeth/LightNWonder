@@ -1,7 +1,4 @@
-"""Domain exception hierarchy. Business code raises these; only
-:mod:`app.exceptions.handlers` turns them into the response envelope. Add a new
-error by subclassing :class:`AppException` and setting its three class attributes.
-"""
+"""Domain exception hierarchy."""
 
 from __future__ import annotations
 
@@ -370,9 +367,7 @@ class SpinAnalysisUnavailableError(AppException):
 
 
 class SpinClipNotFoundError(AppException):
-    """A per-tile clip that was asked for by name is not there. Its own 404
-    rather than the run's, because a run that made none -- a losing spin, or one
-    that did not record -- is a perfectly normal run and not a missing one."""
+    """A per-tile clip that was asked for by name is not there."""
 
     status_code = HTTPStatus.NOT_FOUND
     error_code = "SPIN_CLIP_NOT_FOUND"

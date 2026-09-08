@@ -55,11 +55,7 @@ export function useCancelTraining() {
   return useClassifierMutation(cancelTraining);
 }
 
-/**
- * Classify a split. Invalidates nothing — the result is read straight off
- * `mutation.data`, so the page needs no extra state to hold it, and re-running at
- * a different threshold replaces its own answer.
- */
+/** Classify a split. */
 export function useClassifyTiles() {
   return useMutation({ mutationFn: classifyTiles });
 }

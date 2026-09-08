@@ -32,13 +32,7 @@ function code(value) {
   return value ?? "—";
 }
 
-/**
- * One code in the strip, the wild marked.
- *
- * Worth its own colour because a wild is the one tile whose code does not say
- * what it counted as: `AA AA WC AA AA` is five Ox, and a reader checking a run
- * of five against three visible Ox codes needs to see which tile stood in.
- */
+/** One code in the strip, the wild marked. */
 function Code({ value, wild }) {
   const substituted = wild !== null && value === wild;
   return (
@@ -62,21 +56,7 @@ function Swatch({ color }) {
   );
 }
 
-/**
- * The codes along one line, with the joins that decided the run.
- *
- * On the card rather than only in the dropdown, because this is the measurement
- * the whole verdict rests on: a line that matches two is a claim about two codes,
- * and reading them beside it is the only way to tell a real pair from a
- * misclassified tile. `=` is a counted match, `≠` is where the run broke, and the
- * joins after the break are dimmed — they were compared and decided nothing.
- *
- * This replaced a strip of cosine similarity scores. There is deliberately no
- * number here in their place: two codes are equal or they are not, and printing
- * a 1.00 for "equal" would read as a measurement that was never taken. The
- * per-tile confidence lives on the reel-reading card, where the floor it is
- * judged against is also shown.
- */
+/** The codes along one line, with the joins that decided the run. */
 function Codes({ line, wild }) {
   if (line.steps.length === 0) return null;
 
@@ -114,15 +94,7 @@ function Codes({ line, wild }) {
   );
 }
 
-/**
- * The same joins with the tiles they belong to, for the dropdown.
- *
- * A counted join is judged against what the *run* is paying as, not against the
- * tile to its left, and a wild is where the two come apart: `AA WC BB` breaks at
- * the second join even though a wild sits happily beside a Pisces. Both codes
- * still show, since they are what was read — the run's own symbol is appended
- * where it differs, because without it a break beside a wild reads as a bug.
- */
+/** The same joins with the tiles they belong to, for the dropdown. */
 function StepList({ steps, wild }) {
   if (steps.length === 0) return null;
 
@@ -158,19 +130,7 @@ function StepList({ steps, wild }) {
   );
 }
 
-/**
- * What this line earns, and on whose authority.
- *
- * One derivation now, not two states of knowledge: the classifier named the
- * symbol on every tile, so a run resolves to one paytable row and one number.
- * Only rendered for a line that is actually awarded — a cancelled run gets its
- * `note` instead, which is the more useful sentence.
- *
- * The length here is `combo_pays`, not `pays`: a run that leads with wilds is two
- * combos and the paytable pays the better of them, so four wilds then an Ox is
- * priced as four wilds even though the run covers five. The two differ only
- * there, and the `note` says so when they do.
- */
+/** What this line earns, and on whose authority. */
 function Award({ line }) {
   return (
     <div className="space-y-1">
@@ -209,15 +169,7 @@ function Award({ line }) {
   );
 }
 
-/**
- * One awarded line.
- *
- * Two numbers, and the words for them are not interchangeable: the line
- * **matches** five symbols and **pays** twenty-five credits. Saying "pays 5"
- * for the run length reads as five credits, which is the one misreading this
- * layout exists to prevent — so the match count sits with the label and "pays"
- * is left for the credits alone.
- */
+/** One awarded line. */
 function AwardedLine({ line, wild }) {
   return (
     <div
@@ -324,30 +276,8 @@ function LineRow({ line, image, wild }) {
 }
 
 /**
- * The lines the *running* game plays, checked against the reels this spin landed,
- * and priced against its own paytable.
- *
- * Two judgements, kept visibly separate:
- *
- * - **What landed** is read off the picture by the image classifier: each tile is
- *   named with a symbol code, and a line's run is the leading stretch of equal
- *   codes. Those codes are on screen, because a line that matches two is a claim
- *   about two codes. Nothing about the win comes out of the log — a check that
- *   read the answer there would agree with the game by construction.
- * - **Whether it pays** is the paytable's answer alone. A run of two of a symbol
- *   that pays from three is a real run and no win, so it is not shown as a result
- *   at all — only its codes, in the full line list, flagged there. `awarded`,
- *   `runs_found` and each line's `note` carry the reasoning for anyone reading
- *   the record.
- *
- * What used to be a third judgement is gone. The run was measured by cosine
- * similarity, which cannot name a symbol, so the award stayed a range of every
- * paytable row paying at that length until the game's *logged reel stops* narrowed
- * it — from a source that agreed with the game by construction. One reading of one
- * picture now answers both halves, and the ranges went with it.
- *
- * Two numbers, two words, never swapped: a line **matches** five symbols and
- * **pays** twenty-five credits.
+ * The lines the *running* game plays, checked against the reels this spin landed, and
+ * priced against its own paytable.
  */
 export function PaylineValidationCard({ paylines, detailed }) {
   const expected = paylines.expected;

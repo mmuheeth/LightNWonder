@@ -1,6 +1,5 @@
-"""Virtual OLED i-deck control endpoints, thin wrappers over
-:mod:`app.services.ideck`. Window, layout and confirmation all come from the
-environment, never the request body."""
+"""Virtual OLED i-deck endpoints, thin wrappers over :mod:`app.services.ideck`. Window,
+layout and confirmation come from the environment, not the request."""
 
 from __future__ import annotations
 
@@ -54,10 +53,7 @@ async def get_status() -> ApiResponse[IDeckStatus]:
     responses={500: {"description": "The panel layout is unreadable"}},
 )
 async def get_buttons() -> ApiResponse[list[IDeckButton]]:
-    """Every key on the deck, in layout order.
-
-    Client coordinates are populated only while the panel is open and restored.
-    """
+    """Every key on the deck, in layout order."""
     keys = await ideck_service.buttons()
     return ApiResponse[list[IDeckButton]].ok(
         data=keys, message=f"{len(keys)} i-deck buttons available"
@@ -71,11 +67,7 @@ async def get_buttons() -> ApiResponse[list[IDeckButton]]:
     responses=PRESS_ERRORS,
 )
 async def press(payload: PressRequest) -> ApiResponse[PressResult]:
-    """Press a key by its layout name, matched case-insensitively.
-
-    Unless verification is turned off, this only succeeds once the panel's own
-    log shows the press landing.
-    """
+    """Press a key by its layout name, matched case-insensitively."""
     result = await ideck_service.press(
         payload.button, verify=payload.verify, hold_seconds=payload.hold_seconds
     )
@@ -89,11 +81,7 @@ async def press(payload: PressRequest) -> ApiResponse[PressResult]:
     responses=PRESS_ERRORS,
 )
 async def press_sequence(payload: SequenceRequest) -> ApiResponse[list[PressResult]]:
-    """Press keys in order, pausing between them.
-
-    Stops at the first failure, so a partially completed run reports the error
-    rather than a success.
-    """
+    """Press keys in order, pausing between them."""
     results = await ideck_service.press_sequence(
         payload.buttons, delay_seconds=payload.delay_seconds, verify=payload.verify
     )
@@ -108,10 +96,6 @@ async def press_sequence(payload: SequenceRequest) -> ApiResponse[list[PressResu
     summary="Check the panel accepts posted input",
 )
 async def probe() -> ApiResponse[ProbeResult]:
-    """Post a mouse move and nothing else, to prove input reaches the panel.
-
-    Always 200, and always free of game side effects -- run this before any real
-    press when setting the integration up.
-    """
+    """Post a mouse move and nothing else, to prove input reaches the panel."""
     result = await ideck_service.probe()
     return ApiResponse[ProbeResult].ok(data=result, message=result.detail)

@@ -29,7 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.config.game_config import GameConfigError, load_game_config, save_active_game
 from app.config.ocr import EXECUTABLE_NAME, discover_executable
-from app.core.config import settings
+from app.config.runtime import settings
 from app.schemas.obs import ScreenshotResult
 from app.services import obs as obs_service
 from app.services import ocr as ocr_service

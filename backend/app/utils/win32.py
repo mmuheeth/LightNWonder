@@ -1,19 +1,5 @@
-"""Minimal Win32 interop for driving another process's window -- the only
-``ctypes`` in the codebase, so tests can monkeypatch it wholesale and the
-suite still collects on a non-Windows machine.
-
-Two delivery mechanisms live here because the i-deck and the game need
-different ones. ``post_*`` uses ``PostMessageW`` rather than ``SendMessageW``
-so an async caller never stalls behind a busy window, and reaches the i-deck's
-SDL panel, which re-reads its message queue -- it never moves the physical
-cursor. Unity does not react to posted mouse messages at all: it reads real OS
-input, so reaching the game means moving the actual cursor
-(``set_cursor_pos``) and injecting a real click (``inject_left_down`` /
-``inject_left_up`` via ``SendInput``), which is why those two, unlike
-``post_*``, land wherever is topmost under the cursor rather than at a
-specific ``hwnd`` -- ``bring_to_front`` and ``window_at`` exist to make that
-safe.
-"""
+"""Minimal Win32 interop for driving another process's window -- the only ``ctypes``
+here, so tests can monkeypatch it wholesale."""
 
 from __future__ import annotations
 
@@ -108,9 +94,7 @@ class _Input(ctypes.Structure):
 
 @dataclass(frozen=True)
 class WindowInfo:
-    """A snapshot of one top-level window. ``client_width``/``client_height``
-    are the drawable area mouse messages are addressed in, and read ``0``
-    while minimized -- Windows gives an iconic window no client area."""
+    """A snapshot of one top-level window."""
 
     hwnd: int
     title: str
@@ -269,9 +253,8 @@ def _describe(lib: Any, hwnd: int) -> WindowInfo | None:
 
 
 def _token_integrity(process: int) -> int | None:
-    """Read a process handle's integrity level (last sub-authority of the
-    token's mandatory-label SID: 0x1000 low ... 0x4000 system), or ``None``
-    if opaque."""
+    """Read a process handle's integrity level (last sub-authority of the token's
+    mandatory-label SID: 0x1000 low ... 0x4000 system), or ``None`` if opaque."""
     advapi32, kernel32 = _advapi32(), _kernel32()
     token = ctypes.c_void_p()
     if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
@@ -356,9 +339,7 @@ def is_supported() -> bool:
 
 
 def find_window(*, title: str, class_name: str | None = None) -> WindowInfo | None:
-    """Find a top-level window by title, optionally pinned to a window class.
-    An exact (case-insensitive) title match wins; a substring match is the
-    fallback, for a panel that appends a suffix to its caption."""
+    """Find a top-level window by title, optionally pinned to a window class."""
     lib = _lib()
     wanted = title.casefold()
     exact: WindowInfo | None = None
@@ -391,11 +372,7 @@ def describe(hwnd: int) -> WindowInfo | None:
 
 
 def can_post(hwnd: int) -> bool:
-    """Whether this process is allowed to send the window input. Compares
-    integrity levels rather than probing with a real message, since UIPI lets
-    ``WM_NULL`` through while dropping the mouse messages a press is made of.
-    Unknown answers are optimistic -- an uninspectable process reports true and
-    lets the actual call fail instead."""
+    """Whether this process is allowed to send the window input."""
     theirs = _window_integrity(hwnd)
     if theirs is None:
         return True
@@ -431,9 +408,8 @@ def post_left_up(hwnd: int, x: int, y: int) -> None:
 
 
 def client_to_screen(hwnd: int, x: int, y: int) -> tuple[int, int]:
-    """A client-area point of ``hwnd``, in screen coordinates -- what
-    ``set_cursor_pos``/``window_at`` need, since a click target only knows
-    the client-fraction point ``to_point`` resolved."""
+    """A client-area point of ``hwnd`` in screen coordinates, which is what
+    ``set_cursor_pos``/``window_at`` need."""
     point = _Point(x, y)
     _lib().ClientToScreen(hwnd, ctypes.byref(point))
     return point.x, point.y
@@ -447,9 +423,7 @@ def get_cursor_pos() -> tuple[int, int]:
 
 
 def set_cursor_pos(x: int, y: int) -> None:
-    """Move the real cursor to a screen point. ``SendInput`` reads this
-    position rather than a message's coordinates, so a Unity window -- unlike
-    the i-deck's SDL one -- only sees a click here."""
+    """Move the real cursor to a screen point."""
     if not _lib().SetCursorPos(x, y):
         code = ctypes.get_last_error()
         raise OSError(
@@ -460,10 +434,7 @@ def set_cursor_pos(x: int, y: int) -> None:
 
 
 def window_at(x: int, y: int) -> int:
-    """The top-level window under a screen point, or ``0`` if none. Only
-    meaningful before an injected click, which lands on whatever is topmost
-    there -- a posted message ignores z-order entirely, so ``post_*`` never
-    needed this."""
+    """The top-level window under a screen point, or ``0`` if none."""
     lib = _lib()
     hwnd = lib.WindowFromPoint(_Point(x, y)) or 0
     if not hwnd:
@@ -472,11 +443,7 @@ def window_at(x: int, y: int) -> int:
 
 
 def bring_to_front(hwnd: int) -> bool:
-    """Raise ``hwnd`` and give it the foreground. Returns whether it actually
-    landed there -- ``SetForegroundWindow`` is refused unless the caller
-    already owns the foreground, hence attaching this thread's input queue to
-    the target's first. The one function here that steals focus; needed only
-    because ``inject_click`` follows the cursor/topmost window, not an HWND."""
+    """Raise ``hwnd`` and give it the foreground."""
     lib, kernel32 = _lib(), _kernel32()
     target_thread = lib.GetWindowThreadProcessId(hwnd, None)
     our_thread = kernel32.GetCurrentThreadId()
@@ -508,19 +475,13 @@ def _send_input(flags: int, what: str) -> None:
 
 
 def inject_left_down() -> None:
-    """Press the left button as real hardware input, at the cursor's current
-    position. Deliberately carries no coordinates of its own --
-    ``MOUSEEVENTF_ABSOLUTE`` normalizes to a second coordinate space, so
-    moving with ``set_cursor_pos`` first and injecting without movement keeps
-    everything in the one space ``ClickTarget`` already speaks."""
+    """Press the left button as real hardware input at the cursor's current position,
+    carrying no coordinates of its own."""
     _send_input(MOUSEEVENTF_LEFTDOWN, "LEFTDOWN")
 
 
 def inject_left_up() -> None:
-    """Release the left button as real hardware input. A failure here is
-    worse than the click failing outright -- the button can be left stuck
-    down -- but there is nothing more this layer can do about it than say
-    so; the caller's log already names the target and window."""
+    """Release the left button as real hardware input."""
     _send_input(MOUSEEVENTF_LEFTUP, "LEFTUP")
 
 

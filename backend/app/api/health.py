@@ -1,12 +1,11 @@
-"""Health endpoints, mounted at the app root (not ``/api``) so probes never
-depend on the API prefix. Only ``/health/ready`` fails (503); the rest always
-answer 200 with the verdict in ``data.status``."""
+"""Health endpoints, mounted at the app root (not ``/api``) so probes never depend on
+the API prefix."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.core.config import settings
+from app.config.runtime import settings
 from app.exceptions.base import ServiceUnavailableError
 from app.schemas.health import (
     DependencyCheck,

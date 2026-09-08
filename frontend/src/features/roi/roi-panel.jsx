@@ -24,13 +24,7 @@ function formatCapturedAt(value) {
 
 const CASH_METER_REGION = "cash_meter";
 
-/**
- * Cut the cash meter out of the latest screenshot and show it. The region
- * comes from the active game's `roi.cash_meter`; the frame is the newest shot
- * the OBS panel's Screenshot button wrote. Extracting it also reads the
- * meter, so `<MeterValues>` renders below the picture rather than in its own
- * card.
- */
+/** Cut the cash meter out of the latest screenshot and show it. */
 export function RoiPanel() {
   const { data, error, isPending, isFetching, refetch } = useRoiRegions();
   const extract = useExtractRoi();

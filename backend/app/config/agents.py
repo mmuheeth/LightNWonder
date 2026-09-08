@@ -1,7 +1,4 @@
-"""Provider-neutral LangChain/LangGraph settings (``provider:model`` selection).
-
-Agent execution is disabled by default so placeholder dev credentials boot safely.
-"""
+"""Provider-neutral LangChain/LangGraph settings (``provider:model`` selection)."""
 
 from __future__ import annotations
 

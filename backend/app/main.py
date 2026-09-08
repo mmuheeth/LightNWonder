@@ -1,9 +1,4 @@
-"""Application factory.
-
-``create_app`` builds a fully configured :class:`~fastapi.FastAPI` instance.
-Keeping construction in a function (rather than at import time) lets tests build
-isolated apps with overridden settings.
-"""
+"""Application factory."""
 
 from __future__ import annotations
 
@@ -17,7 +12,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from app.api.health import HEALTH_PATHS
 from app.api.health import router as health_router
 from app.api.router import api_router
-from app.core.config import Settings, get_settings
+from app.config.runtime import Settings, get_settings
 from app.core.logging import configure_logging, get_logger
 from app.exceptions import register_exception_handlers
 from app.exceptions.base import AppException

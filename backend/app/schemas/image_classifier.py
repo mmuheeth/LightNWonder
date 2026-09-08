@@ -1,19 +1,4 @@
-"""Image classifier status, dataset, training and classification payloads.
-
-Two conventions here are load-bearing rather than stylistic.
-
-A tile whose winning probability falls short of the confidence floor comes back
-with ``symbol`` null and ``label`` "unknown", **and keeps its ranked
-predictions**. This game declares eighteen symbol codes and the artwork covers
-nine, so the classifier is regularly shown a picture of something it has no class
-for -- a cash orb, a wild, a mystery. A softmax cannot say "none of these", it can
-only spread its mass, so the floor is where "none of these" is decided and the
-predictions underneath are the evidence for that decision. Dropping them would
-leave a rejection unarguable.
-
-Accuracy is reported as two separate numbers that are never averaged together.
-See :class:`ClassifierMetrics`.
-"""
+"""Image classifier status, dataset, training and classification payloads."""
 
 from __future__ import annotations
 
@@ -97,12 +82,7 @@ class DatasetClass(BaseModel):
 
 
 class DatasetSummary(BaseModel):
-    """What is available to train on, and what is wrong with it.
-
-    ``warnings`` exists because both problems with this dataset are invisible from
-    a file count: several classes hold a single picture, and the game declares
-    twice as many symbol codes as there is artwork for.
-    """
+    """What is available to train on, and what is wrong with it."""
 
     directory: str = Field(description="Absolute path the images were read from.")
     exists: bool = Field(description="Whether that directory is there at all.")
@@ -130,21 +110,7 @@ class DatasetSummary(BaseModel):
 
 
 class ClassifierMetrics(BaseModel):
-    """What the last training run measured.
-
-    Two accuracies, deliberately never combined. ``frame_holdout_accuracy`` is
-    over frames that were not trained on, which is as close to a real score as
-    this data allows -- but a class here is an animation *loop*, so even a block
-    taken from the middle of it resembles what was trained on.
-    ``frame_holdout_leakage`` says how much: 0 means the held-back frames were
-    effectively duplicates and the accuracy over them means nothing, 1 means they
-    were as unlike the training frames as any two frames of that symbol get.
-
-    ``augmented_accuracy`` covers every class including the single-image ones, but
-    it re-augments the training pictures themselves, so it measures robustness to
-    the augmentation rather than generalisation. Presenting one blended figure
-    would look more confident and answer less.
-    """
+    """What the last training run measured."""
 
     classes: list[str] = Field(default_factory=list)
     architecture: str = Field(
@@ -217,11 +183,7 @@ class TrainingEpoch(BaseModel):
 
 
 class TrainingStage(BaseModel):
-    """One stage of the run.
-
-    Every stage exists from the moment the run is created, so a failure in stage
-    two leaves stages three onwards visibly unreached rather than simply absent.
-    """
+    """One stage of the run."""
 
     key: str
     label: str
@@ -385,14 +347,7 @@ class ClassifyRequest(BaseModel):
 
 
 class ClassifyResult(BaseModel):
-    """Every tile of one split, named.
-
-    ``symbol_grid`` is row-major with null where a tile was not named, and is
-    deliberately the same field name and shape as the reel-stop grid on a spin
-    analysis. That one is read out of the game's own log; this one is read out of
-    the picture, and the two being directly comparable is the point -- a checker
-    that took its answer from the log could only ever agree with the game.
-    """
+    """Every tile of one split, named."""
 
     game: str
     split: str = Field(description="Split directory the tiles were read from.")

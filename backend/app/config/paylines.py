@@ -1,8 +1,4 @@
-"""Payline check settings: default bet set, match threshold, overlay sizing.
-
-The threshold lives here rather than in the per-game ``paylines`` block because
-it's tuned by trying it against a frame, not something that ships with the game.
-"""
+"""Payline check settings: default bet set, match threshold, overlay sizing."""
 
 from __future__ import annotations
 

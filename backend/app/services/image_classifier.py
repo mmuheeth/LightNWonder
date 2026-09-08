@@ -1,38 +1,4 @@
-"""Naming the symbol on a reel tile, from the picture rather than from the log.
-
-Orchestration only. The artwork-to-training-picture work is
-:mod:`app.utils.symbol_dataset`, the network is :mod:`app.utils.symbol_model`,
-the tiles come from :mod:`app.services.grid` and the annotated picture from
-:mod:`app.utils.symbol_overlay`. What lives here is the order those go in, the
-one training run the process may have, and the confidence floor.
-
-Four things are deliberate.
-
-**torch is imported lazily, inside the functions that need it.** The module, the
-endpoints and the whole app import and start on a machine with no ML stack, and
-``status()`` reports ``not_installed`` rather than the service failing to load.
-This is the same bargain :mod:`app.services.ocr` makes with Tesseract, and it is
-what lets the dashboard say what is missing instead of the backend refusing to
-boot.
-
-**The game config is read for display names and nothing else.** Unlike
-:mod:`app.services.paylines`, which needs the config to know where a line runs
-and so must reject a differently shaped split, a classifier names each tile on
-its own. Rows and columns are only how the answers get arranged. So a split from
-before ``reel_bounds`` last changed still classifies, and a game declaring no
-``symbols`` block falls back to bare codes rather than failing.
-
-**A tile below the floor is an answer, not a gap.** The active game declares
-eighteen symbol codes and the artwork covers nine, so the model is regularly
-shown a cash orb or a wild it has no class for. A softmax cannot say "none of
-these"; it can only spread. The floor is where that gets decided, and the ranked
-predictions travel with the rejection as the evidence for it.
-
-**Cancellation is cooperative.** The training thread checks a flag between
-batches, so a cancelled run unwinds through its own code and nothing is left
-awaiting a cancellation that never gets collected -- which is also what keeps
-``filterwarnings = error`` happy.
-"""
+"""Naming the symbol on a reel tile, from the picture rather than from the log."""
 
 from __future__ import annotations
 
@@ -175,13 +141,7 @@ class _StageRecord:
 
 @dataclass
 class _TrainingRunRecord:
-    """One training run, mutated in place as it progresses.
-
-    The epoch callback runs on the worker thread while ``status()`` reads from the
-    event loop, so a reader can catch the record mid-update. That is fine and
-    deliberate: every read builds a whole snapshot, exactly as the spin stream
-    sends whole states, so a slightly early reader is stale rather than wrong.
-    """
+    """One training run, mutated in place as it progresses."""
 
     run_id: str
     architecture: str
@@ -231,12 +191,7 @@ class _TrainingRunRecord:
 
 
 def reset() -> None:
-    """Drop the cached model and any run record. Tests only.
-
-    Synchronous despite owning a task: :func:`abort` is the async door, and
-    ``conftest`` awaits that first. Kept apart so a test that never started a run
-    does not have to await anything.
-    """
+    """Drop the cached model and any run record. Tests only."""
     global _run, _dataset_cache, _lock
     _run = None
     _checkpoints.clear()
@@ -247,11 +202,7 @@ def reset() -> None:
 
 
 async def abort() -> None:
-    """Stop a run and forget everything. Called from the lifespan and by tests.
-
-    Awaits the task rather than only cancelling it: an un-awaited cancellation is
-    a pending-task warning, and ``pytest.ini`` turns warnings into failures.
-    """
+    """Stop a run and forget everything. Called from the lifespan and by tests."""
     global _run
     run, _run = _run, None
     if run is not None and run.task is not None:
@@ -304,13 +255,7 @@ def _versions() -> tuple[str | None, str | None]:
 
 
 def _active_game() -> tuple[str, dict[str, str]]:
-    """The selected game and its symbol display names.
-
-    Both halves are optional. A machine with no selection, or a game declaring no
-    ``symbols`` block, still classifies -- the codes are the directory names and a
-    missing display name falls back to the code. Failing here would make the
-    feature depend on a config it does not actually need.
-    """
+    """The selected game and its symbol display names."""
     try:
         name = settings.ideck_active_game
     except Exception:  # noqa: BLE001 -- an unreadable selection is not fatal here
@@ -399,14 +344,7 @@ def _build_dataset(names: dict[str, str]) -> DatasetSummary:
 
 
 def _dataset(names: dict[str, str]) -> DatasetSummary:
-    """The dataset summary, cached on the dataset's own fingerprint.
-
-    Not a micro-optimisation: building it opens all 197 images to read their size
-    and opacity, which measures at about twelve seconds, and ``status()`` is
-    polled every second and a half while a run is going. The fingerprint is
-    stats-only and cheap, so it is the right key -- edit, add or remove a picture
-    and the next call rebuilds; otherwise the poll costs nothing.
-    """
+    """The dataset summary, cached on the dataset's own fingerprint."""
     global _dataset_cache
     root = settings.classifier_dataset_dir
     key = symbol_dataset.fingerprint(root)
@@ -436,14 +374,7 @@ def _checkpoint_stat(path: Path) -> tuple[str, int, int] | None:
 
 
 def resolve_architecture(requested: str | None) -> str:
-    """The architecture a request meant, defaulting to the configured one.
-
-    Public because :mod:`app.services.analyze_spin` names one per run and wants an
-    unknown name refused when the run is *asked for*, not twelve steps later. On a
-    machine with no torch the known set is empty and the name passes through --
-    there is nothing to check it against, and the missing stack is the error that
-    matters.
-    """
+    """The architecture a request meant, defaulting to the configured one."""
     module = _import_model()
     known = tuple(module.ARCHITECTURES) if module is not None else ()
     name = requested or settings.CLASSIFIER_ARCHITECTURE
@@ -455,12 +386,7 @@ def resolve_architecture(requested: str | None) -> str:
 
 
 def _load_checkpoint(architecture: str | None = None) -> Any | None:
-    """One architecture's trained model, cached on the file's mtime and size.
-
-    Keyed on both for the same reason :mod:`app.services.paytable` is: a
-    checkpoint is tens of megabytes and re-reading it per request would dominate
-    a classification that is otherwise one forward pass.
-    """
+    """One architecture's trained model, cached on the file's mtime and size."""
     module = _import_model()
     if module is None:
         return None
@@ -519,12 +445,7 @@ def _model_summary(loaded: Any, fingerprint: str, expected: int) -> ModelSummary
 
 
 def _architecture_options(module: Any) -> list[ArchitectureOption]:
-    """Every network that can be fitted, and whether one is already trained.
-
-    Both are listed always, trained or not, so the dashboard can offer the choice
-    before either exists -- and so a trained one and an untrained one are the same
-    kind of row rather than one being absent.
-    """
+    """Every network that can be fitted, and whether one is already trained."""
     default = settings.CLASSIFIER_ARCHITECTURE
     options: list[ArchitectureOption] = []
     for name in module.ARCHITECTURES:
@@ -1044,12 +965,7 @@ def _write_overlay(
     split: grid_service.SplitOnDisk,
     drawn: list[symbol_overlay.DrawnSymbol],
 ) -> tuple[str | None, str | None, str | None]:
-    """Draw and save the annotated reels; a failure here is not fatal.
-
-    The picture is evidence, not the answer -- a classification whose overlay
-    could not be written is still a correct classification, so this reports
-    nothing rather than failing the request.
-    """
+    """Draw and save the annotated reels; a failure here is not fatal."""
     try:
         picture = symbol_overlay.draw(
             split.crop,

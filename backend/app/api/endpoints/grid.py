@@ -1,6 +1,4 @@
-"""Reel grid endpoints, thin wrappers over :mod:`app.services.grid`. Splits
-the active game's ``roi.reels`` region by its ``reel_bounds`` block; the
-request only names which screenshot to use, never a rectangle."""
+"""Reel grid endpoints, thin wrappers over :mod:`app.services.grid`."""
 
 from __future__ import annotations
 
@@ -32,9 +30,7 @@ BAD_CONFIG: ResponseSpec = {500: {"description": "The game config is unreadable"
     responses={**BAD_FRAME, **BAD_CONFIG},
 )
 async def get_layout() -> ApiResponse[GridLayout]:
-    """Shape of the active game's reel grid and the frame a split would use.
-    A game with no ``roi.reels``/``reel_bounds`` comes back with ``error`` set
-    on a 200, not a 404 -- not every game has reels."""
+    """Shape of the active game's reel grid and the frame a split would use."""
     layout = await grid_service.layout()
     message = (
         f"{layout.rows}x{layout.columns} reel grid in {layout.game}"
@@ -56,10 +52,8 @@ async def get_layout() -> ApiResponse[GridLayout]:
     },
 )
 async def split(payload: GridSplitRequest) -> ApiResponse[GridSplitResult]:
-    """Crop the reels out of one screenshot (newest if ``file_name`` omitted)
-    and divide them into tiles, written under
-    ``obs-captured-files/grid/<frame stem>/``. ``inset`` overrides the
-    config's border trim for this one split."""
+    """Crop the reels out of one screenshot (newest if ``file_name`` omitted) and divide
+    them into tiles, written under ``obs-captured-files/grid/<frame stem>/``."""
     result = await grid_service.split(payload)
     return ApiResponse[GridSplitResult].ok(
         data=result,

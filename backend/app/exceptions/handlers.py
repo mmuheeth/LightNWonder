@@ -1,7 +1,5 @@
-"""Exception handlers: the only place that builds an error response, covering
-our own AppException, validation errors, framework HTTPExceptions, and anything
-else (logged and reported as an opaque 500).
-"""
+"""The only place an error response is built: our AppException, validation errors,
+HTTPExceptions, and anything else as an opaque 500."""
 
 from __future__ import annotations
 
@@ -12,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.context import REQUEST_ID_SCOPE_KEY, get_request_id
 from app.core.logging import get_logger
 from app.exceptions.base import AppException

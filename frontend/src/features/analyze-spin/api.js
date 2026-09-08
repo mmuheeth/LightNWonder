@@ -1,12 +1,6 @@
 /**
- * Analyze Spin client. The whole sequence lives in the backend — the browser
- * asks it to start, watches it happen, and reads what it made of the result.
- *
- * Two shapes of the same payload: `getSpinStatus` without images is what a poll
- * or the stream carries, and with images is the report — the meter crops, the
- * ringed reels the classifier named, the annotated reels and the awarded lines'
- * own pictures. They are separate asks because the pictures only exist once a
- * run has finished.
+ * Analyze Spin client. The whole sequence lives in the backend — the browser asks it to
+ * start, watches it happen, and reads what it made of the result.
  */
 
 import { env, routes } from "@/config/env";
@@ -17,11 +11,6 @@ const STREAM_PATH = `${ANALYZE_SPIN_URL}/stream`;
 
 /**
  * Absolute `ws://`/`wss://` URL of the progress stream.
- *
- * Built from the API base rather than hardcoded so it follows the same
- * deployment: empty in development, where the request is relative and the Vite
- * proxy (with `ws: true`) forwards the upgrade.
- *
  * @returns {string}
  */
 export function spinStreamUrl() {
@@ -35,11 +24,6 @@ export function spinStreamUrl() {
 
 /**
  * URL of one screenshot a run took, for an `<img>` src.
- *
- * The one fetch here that bypasses `apiRequest`: an image cannot unwrap the
- * response envelope, so the backend serves this route raw — the same exception
- * a capture run's screenshots make.
- *
  * @param {string} fileName one of `run.frames[].file_name`
  * @returns {string}
  */
@@ -49,11 +33,6 @@ export function spinFrameUrl(fileName) {
 
 /**
  * URL of one reel position's clip, for a `<video>` src.
- *
- * Keyed by run as well as by name, unlike a frame: a clip belongs to the spin it
- * was filmed during and lives in that run's own directory, so `r1c1.webm` on its
- * own would name one video per spin ever analysed.
- *
  * @param {string} runId `run.run_id`
  * @param {string} fileName one of `run.tile_clips.clips[].file_name`
  * @returns {string}
@@ -64,13 +43,8 @@ export function spinClipUrl(runId, fileName) {
 
 /**
  * Fetch the run in progress, or the last one that finished.
- *
- * Always resolves — `active` is what to branch on, and `run` outlives its own
- * run so a reload after a spin still shows the report. `run` is null only
- * before the first spin of the process.
- *
  * @param {{includeImages?: boolean, signal?: AbortSignal}} [options]
- * @returns {Promise<{active: boolean, run: SpinRun|null}>}
+ * @returns {Promise<{active: boolean, run: object|null}>}
  */
 export function getSpinStatus({ includeImages = false, signal } = {}) {
   return apiRequest({
@@ -82,15 +56,12 @@ export function getSpinStatus({ includeImages = false, signal } = {}) {
 }
 
 /**
- * Spin once and validate it. Returns as soon as the run is under way, not when
- * it ends — 409 when one is already going, or when the active game declares no
- * log to follow a spin through, 400 for an architecture that does not exist.
- *
- * @param {{record?: boolean, architecture?: string}} [options] `record` also
- *   makes a video of the spin with OBS; off by default. `architecture` picks
- *   which trained network names the tiles of the reels — omit it to let the
- *   backend use its own default.
- * @returns {Promise<{active: boolean, run: SpinRun|null}>}
+ * Spin once and validate it.
+ * @param {{record?: boolean, architecture?: string}} [options] `record` also makes a
+ *   video of the spin with OBS; off by default. `architecture` picks which trained
+ *   network names the tiles of the reels — omit it to let the backend use its own
+ *   default.
+ * @returns {Promise<{active: boolean, run: object|null}>}
  */
 export function startSpin({ record = false, architecture } = {}) {
   return apiRequest({
@@ -101,108 +72,10 @@ export function startSpin({ record = false, architecture } = {}) {
 }
 
 /**
- * Ask the run in progress to stop. Cooperative, so this resolves before the run
- * has actually ended — watch `run.state` for `cancelled`.
- *
- * @returns {Promise<{active: boolean, run: SpinRun|null}>}
+ * Ask the run in progress to stop. Cooperative, so this resolves before the run has
+ * actually ended — watch `run.state` for `cancelled`.
+ * @returns {Promise<{active: boolean, run: object|null}>}
  */
 export function cancelSpin() {
   return apiRequest({ method: "POST", url: `${ANALYZE_SPIN_URL}/cancel` });
 }
-
-/**
- * One orchestrated spin and the two validations over it.
- *
- * @typedef {object} SpinRun
- * @property {string} run_id
- * @property {string} game
- * @property {string} label
- * @property {"running"|"completed"|"failed"|"cancelled"} state
- * @property {"win"|"no-win"|"unknown"} outcome
- * @property {string} message
- * @property {string} started_at
- * @property {string|null} finished_at
- * @property {number} duration_ms
- * @property {Array<{key: string, label: string,
- *   state: "pending"|"running"|"completed"|"skipped"|"failed",
- *   detail: string|null, started_at: string|null, finished_at: string|null,
- *   duration_ms: number|null, error: string|null,
- *   error_code: string|null}>} steps
- * @property {Array<{key: string, label: string, file_name: string,
- *   at: string, blank: boolean, attempts: number}>} frames
- * @property {Array<{event: string, summary: string, at: string|null,
- *   log_line: string}>} events
- * @property {{output_path: string|null, duration_ms: number}|null} recording
- * @property {{directory: string|null, rows: number, columns: number,
- *   frames: number, fps: number, requested_fps: number, duration_ms: number,
- *   codec: string|null, content_type: string|null,
- *   clips: Array<{name: string, row: number, column: number,
- *     file_name: string, width: number, height: number, frames: number,
- *     bytes_written: number}>,
- *   error: string|null}|null} tile_clips one short video per reel position,
- *   filmed while the win presentation played. Only on a run that was recording,
- *   and only on a spin that won — so null is the ordinary case. Not a step of
- *   the sequence: nothing is graded by it, so a failure to film shows on
- *   `errors` rather than as a fourteenth row of the timeline.
- * @property {{mode: "cash"|"credits"|"unknown", currency: string|null,
- *   denomination: {value: number, unit: "cent"|"unknown", label: string,
- *     money_per_credit: number|null, declared_multiplier: number|null,
- *     agrees: boolean|null, resolved_from: string}|null,
- *   readings: Array<{frame: string, label: string, file_name: string,
- *     balance: number|null, win: number|null, bet: number|null,
- *     credits: {balance: number|null, win: number|null, bet: number|null},
- *     cash: {balance: number|null, win: number|null, bet: number|null},
- *     values: object|null, error: string|null, crop_image: string|null}>,
- *   checks: Array<{key: string, unit: "credits"|"cash"|null, label: string,
- *     verdict: "passed"|"failed"|"indeterminate", expected: number|null,
- *     actual: number|null, difference: number|null, detail: string}>,
- *   tolerance: number, credit_tolerance: number,
- *   verdict: "passed"|"failed"|"indeterminate",
- *   error: string|null}|null} meter
- * @property {{split: string, architecture: string, label: string,
- *   trained_at: string|null, min_confidence: number, rows: number,
- *   columns: number, symbol_grid: Array<Array<string|null>>,
- *   label_grid: Array<Array<string|null>>,
- *   tiles: Array<{name: string, row: number, column: number,
- *     symbol: string|null, label: string, leading: string|null,
- *     confidence: number, known: boolean}>,
- *   named: number, unknown: number, summary: string, output_dir: string|null,
- *   overlay_file: string|null}|null} reels what the image classifier read off the
- *   result screenshot. The one measurement the payline validation rests on, and
- *   the replacement for two older ones: cosine similarity between tiles (which
- *   could not name a symbol) and the reel stops in the game's own log (which
- *   named them by agreeing with the game).
- * @property {{frame: string, split: string|null, paytable_id: string,
- *   paytable_origin: string, payline_set_id: string|null,
- *   resolved_from: string, line_count: number|null,
- *   min_confidence: number|null, summary: string, pay_lengths: number[],
- *   lines: Array<{line: string, label: string, positions: string[],
- *     elements: number[][], pays: number, paying: boolean, awarded: boolean,
- *     color: string, break_position: string|null,
- *     steps: Array<{left: string, right: string, similarity: number|null,
- *       left_symbol: string|null, right_symbol: string|null,
- *       matched: boolean, counted: boolean}>,
- *     symbols: Array<string|null>, symbol: string|null,
- *     symbol_name: string|null, combo_id: number|null,
- *     combo_symbols: string[], combo_value: number|null,
- *     credits: number|null,
- *     min_pay_length: number|null, note: string|null,
- *     image_data: string|null}>,
- *   runs_found: number, awarded_lines: number, unnamed_positions: string[],
- *   stats: {lines: number, paying: number, comparisons: number,
- *     matches: number, best_line: string|null, best_pays: number,
- *     score_min: number|null, score_max: number|null,
- *     matched_min: number|null, rejected_max: number|null}|null,
- *   expected: {paying_lines: number, credits: number,
- *     bet_per_unit: number|null,
- *     line_count: number|null, denomination_label: string|null,
- *     money_per_credit: number|null,
- *     total_bet: number|null, bet_credits: number|null,
- *     credits_per_line: number|null, cash: number|null,
- *     unit: "credits"|"cash", observed_win: number|null,
- *     observed_credits: number|null, observed_cash: number|null,
- *     verdict: "passed"|"failed"|"indeterminate", detail: string}|null,
- *   output_dir: string|null, output_file: string|null,
- *   overlay_image: string|null, error: string|null}|null} paylines
- * @property {string[]} errors
- */

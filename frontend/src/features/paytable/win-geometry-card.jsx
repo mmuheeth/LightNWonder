@@ -21,14 +21,7 @@ const RESOLVED_FROM = {
   unresolved: "neither file says",
 };
 
-/**
- * One line drawn on the reels it runs across, rather than written out as pairs.
- *
- * `elements` is `[reel, position]` and both are 0-indexed, which is the form
- * the file uses; the grid below is that literally, so a V-shaped line looks
- * like a V. `rows`/`columns` come from the widest line in the set, so a game
- * with four reels does not get a five-column drawing.
- */
+/** One line drawn on the reels it runs across, rather than written out as pairs. */
 function PaylineGrid({ payline, rows, columns }) {
   const taken = new Set(
     payline.elements.map(([reel, position]) => `${reel}:${position}`),
@@ -68,14 +61,8 @@ function PaylineGrid({ payline, rows, columns }) {
 }
 
 /**
- * The payline set the loaded paytable actually plays, out of the sets
- * `winGeometry.xml` declares for the whole game.
- *
- * That file sits at the GameConfig root and is shared by every paytable, so
- * "which set" is the question this card exists to answer; the drawings below it
- * are the answer's evidence. An unreadable geometry file is carried as an error
- * here rather than failing the page — the symbols, strips and combos above are
- * all still true.
+ * The payline set the loaded paytable actually plays, out of the sets `winGeometry.xml`
+ * declares for the whole game.
  */
 export function WinGeometryCard({ geometry }) {
   const rows =

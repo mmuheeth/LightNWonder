@@ -1,7 +1,4 @@
-"""ROI extraction payloads. Unlike the OCR schemas next door, extraction
-returns a crop, not a reading -- the region can be checked before Tesseract
-is even installed. The cash meter region is the exception: it comes back
-read as well as cropped, via :attr:`RoiExtractResult.meter`."""
+"""ROI extraction payloads."""
 
 from __future__ import annotations
 

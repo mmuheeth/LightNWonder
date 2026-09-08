@@ -1,13 +1,5 @@
-"""Image classifier settings: where the training images and the trained
-checkpoint live, how a symbol is named from a tile, and how much of the machine
-training is allowed to take.
-
-Consumed by :mod:`app.utils.symbol_dataset` (which builds training samples out of
-the artwork), :mod:`app.utils.symbol_model` (the only module that imports torch)
-and :mod:`app.services.image_classifier`. Like OCR, the engine is optional: a
-machine without torch installed still starts and only training and classifying
-fail, so nothing here is required to be satisfiable.
-"""
+"""Image classifier settings: where the artwork and checkpoint live, how a tile is
+named, and how much of the machine training may take."""
 
 from __future__ import annotations
 
@@ -27,14 +19,10 @@ __all__ = ["Architecture", "BackgroundStyle", "ImageClassifierSettings"]
 BackgroundStyle = Literal["plate", "solid", "none"]
 
 # Which network to fit. Both take the same 224px ImageNet-normalised input and the
-# same transforms, so a model of either kind is trained and read the same way and
-# only the backbone differs -- which is the point: two independent architectures
-# disagreeing about a tile is worth more than one of them being confident.
-#
-# EfficientNet-B0 is 5.3M parameters, ResNet34 is 21.8M. On CPU the larger one is
-# not necessarily the slower one (ResNet is plain convolutions, while
-# EfficientNet's depthwise separable ones are poorly served by CPU kernels), so
-# pick on measured accuracy rather than on parameter count.
+# same transforms, so only the backbone differs -- which is the point: two
+# independent architectures disagreeing about a tile is worth more than one of them
+# being confident. EfficientNet-B0 is 5.3M parameters, ResNet34 21.8M, and on CPU
+# the larger is not the slower, so pick on measured accuracy not parameter count.
 Architecture = Literal["efficientnet_b0", "resnet34"]
 
 
@@ -61,30 +49,11 @@ class ImageClassifierSettings(BaseSettings):
     CLASSIFIER_IMAGE_SIZE: int = Field(default=224, ge=32, le=600)
 
     # Probability the winning symbol must reach for the tile to be named at all.
-    # Load-bearing rather than decorative: this game declares eighteen symbol
-    # codes and the dataset covers nine, so a softmax over the nine would name a
-    # cash orb with conviction. Below this a tile reports `unknown` and still
-    # carries its top few probabilities, which is the honest answer.
-    #
-    # 0.90 is a deliberately strict cut, chosen so that a *named* tile is one the
-    # model was nearly certain about, and it is well above where the classes
-    # actually separate. Measured over 210 real tiles from 14 written splits: 29%
-    # score below 0.50, the widest empty band runs 0.563-0.681, and everything
-    # from 0.681 up is a real symbol -- so a floor anywhere in that band would name
-    # every symbol correctly. At 0.90 the weakest real class is rejected too: `JJ`
-    # (Ten) scores 0.68-0.76 and `HH` (Jack) around 0.84, so those come back blank
-    # in the grid even though the reading was right.
-    #
-    # That is the intended trade. Nothing is hidden by it: a tile below the floor
-    # still carries its ranked candidates, and the dashboard shows the leading one
-    # and its probability in the per-tile table, greyed. So the grid means "the
-    # model was sure" and the table means "this is what it thought" -- two
-    # different questions, answered separately.
-    #
-    # Re-measure against written splits rather than adjusting by intuition, and
-    # re-measure after *any* change to the transforms: an earlier build put this at
-    # 0.70 on numbers taken before the evaluation transform was fixed, which then
-    # rejected genuine Ten tiles at 0.681 while looking principled.
+    # Load-bearing: the game declares eighteen codes and the dataset covers nine,
+    # so a softmax over the nine would name a cash orb with conviction. 0.90 sits
+    # well above where the classes separate (widest empty band 0.563-0.681), so a
+    # correct-but-unsure reading comes back blank -- its ranked candidates travel
+    # anyway. Re-measure against written splits after any change to the transforms.
     CLASSIFIER_MIN_CONFIDENCE: float = Field(default=0.90, ge=0.0, le=1.0)
 
     # How many of the ranked probabilities travel back per tile. Three is enough
@@ -92,15 +61,11 @@ class ImageClassifierSettings(BaseSettings):
     CLASSIFIER_TOP_K: int = Field(default=3, ge=1, le=20)
 
     # --- training ---------------------------------------------------------
-    # Two stages: the new classifier head alone against a frozen backbone, then
-    # everything at a tenth of the rate. The first stage is what stops the
-    # randomly-initialised head from wrecking the pretrained features.
-    #
-    # Measured on this machine at 224px, 320 samples and six threads: a head
-    # epoch is ~19s and a finetune epoch ~47s, and training accuracy is already
-    # 0.96 after the *first* finetune epoch -- nine classes of distinct artwork is
-    # an easy fit. So these are set for a run of about four minutes rather than
-    # the eight a longer schedule would cost for no measurable gain.
+    # Two stages: the new head alone against a frozen backbone, then everything at
+    # a tenth of the rate -- the first is what stops the randomly-initialised head
+    # from wrecking the pretrained features. Set for a run of about four minutes:
+    # training accuracy is already 0.96 after the first finetune epoch, so a longer
+    # schedule costs twice that for no measurable gain.
     CLASSIFIER_EPOCHS_HEAD: int = Field(default=3, ge=0, le=200)
     CLASSIFIER_EPOCHS_FINETUNE: int = Field(default=4, ge=0, le=200)
 
@@ -157,12 +122,7 @@ class ImageClassifierSettings(BaseSettings):
         return self.CLASSIFIER_MODEL_DIR.expanduser().resolve()
 
     def classifier_checkpoint_for(self, architecture: str) -> Path:
-        """The trained model of one architecture.
-
-        One file per architecture rather than one file overall, so training the
-        second kind does not destroy the first and the two can be compared on the
-        same split.
-        """
+        """The trained model of one architecture."""
         return self.classifier_model_dir / f"model-{architecture}.pt"
 
     def classifier_metrics_for(self, architecture: str) -> Path:
@@ -176,12 +136,7 @@ class ImageClassifierSettings(BaseSettings):
 
     @property
     def classifier_sample_dir(self) -> Path:
-        """Where synthesised training samples are written to be eyeballed.
-
-        Worth having as a real directory rather than a debug flag: if accuracy
-        disappoints, whether the background was composited correctly is the first
-        question, and it is answerable by looking.
-        """
+        """Where synthesised training samples are written to be eyeballed."""
         return self.classifier_model_dir / "samples"
 
     @property

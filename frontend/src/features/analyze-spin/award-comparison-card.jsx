@@ -22,13 +22,7 @@ function count(value) {
   return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)));
 }
 
-/**
- * One step of the conversion, or one side of the comparison.
- *
- * `operator` is the arithmetic that got here from the line above — shown in the
- * gutter rather than implied, because the whole point of listing the steps is
- * that a wrong verdict is nearly always one of them rather than the pay itself.
- */
+/** One step of the conversion, or one side of the comparison. */
 function Step({ operator, label, value, hint, emphasis }) {
   return (
     <div
@@ -59,19 +53,7 @@ function Step({ operator, label, value, hint, emphasis }) {
 /** A blank cell, for a figure that does not exist rather than one that is zero. */
 const EMPTY = "";
 
-/**
- * The spin, calculated beside read.
- *
- * Four value columns in two pairs, and the split is the point: **only one unit is
- * ever read.** The meter draws credits or money, never both, so one of the two
- * "read by OCR" columns is empty for the whole run — and the figures in the other
- * unit are *calculated* from it through the denomination, which is a different kind
- * of number and cannot disagree with its source.
- *
- * That is what makes the verdict legible: where a row has a calculated figure and
- * a read one in the same unit, the two were measured independently and their
- * agreement is the check. Where it has only one, there was nothing to compare.
- */
+/** The spin, calculated beside read. */
 function SpinTable({ rows, inCredits }) {
   const columns = [
     { key: "calcCredits", format: count },
@@ -142,75 +124,7 @@ function SpinTable({ rows, inCredits }) {
   );
 }
 
-/**
- * What the paytable owed against what the machine paid.
- *
- * The last card on the page, and the only one that puts two independently
- * measured numbers side by side: the credits the awarded paylines came to, from
- * the reels and the game's own maths, and the WIN cell OCR read off the result
- * screenshot. Everything before this is a *reading*; this is the check.
- *
- * **The conversion is two multiplications**: a paytable combo's value is a rate
- * per *bet unit*, so the lines' rates are staked first — times the bet per unit —
- * and only the result is worth converting into money. The captured win behind
- * the second half (`75` on a credit meter, `$0.75` on a cash one at 1c) was a
- * spin at one credit a unit, where the two are the same number; it is consistent
- * with the stake and never was evidence against one. What it does rule out is
- * scaling by the stake spread over a *line*, which on FortuneOx is 88 over 40
- * lines and not a rung of anything.
- *
- * **And on a credit meter there is no multiplication at all**, so the ladder does
- * not show one: the glass is already counting the thing the paytable is
- * denominated in, and the award is compared to the WIN cell directly. Every row
- * above the total is a step that actually happened — a `× 0.02` sitting over a
- * figure that did not use it is the ladder-does-not-add-up problem again, just in
- * the other direction.
- *
- * That rate row shows `money_per_credit` and not the denomination, and the
- * distinction is the other reason this card once did not add up: the game's log
- * reports a 2c cabinet as `2`, a count of cents, while one credit is worth 0.02.
- * The label ("2c") is what a reader recognises and the rate is what the arithmetic
- * uses, so the row carries both — the number in the value column, the name in the
- * hint.
- *
- * Under the ladder, the spin as a table: before, bet value, won, after — with four
- * value columns in two pairs, **calculated** and **read by OCR**, each split by
- * unit.
- *
- * That split is the load-bearing part, and getting it wrong was a real bug here.
- * **Only one unit is ever read.** The meter draws credits or money, never both, so
- * one of the two OCR columns is empty for the whole run; the figures in the other
- * unit are *calculated* from it through the denomination, and a calculated figure
- * cannot disagree with the thing it was calculated from. Showing both as though
- * OCR had seen them claimed two independent readings where there was one.
- *
- * So the verdict reads straight off the table: where a row has a calculated figure
- * **and** a read one in the same unit, the two were measured independently and
- * their agreement is the check — the award against the WIN cell, and the balance
- * arithmetic against the closing balance. Where a row has only one, there was
- * nothing to compare, which is why an opening balance and a bet have no calculated
- * counterpart in their own unit. The badge is the worst of those verdicts, taken
- * from the backend's own rather than by re-comparing the numbers here: the
- * tolerances live there, and two places deciding the same thing is how they come
- * to disagree.
- *
- * There is deliberately **no difference row**. The badge is the answer and the
- * figures it compared are adjacent cells, so a signed delta was a third way of
- * saying the same thing. What is *not* self-evident from the pair is the tolerance
- * behind the verdict, so that says itself in the caption.
- *
- * The stake *per line* is not one of the multiplications and is not shown as a
- * step, though it is still on the payload as `credits_per_line`. It is a real
- * thing a player reads off the glass and it prices nothing: 88 credits over 40
- * lines is 2.2, which no ladder offers.
- *
- * `indeterminate` is not a soft failure, and it has three causes worth telling
- * apart: no bet per unit was given, so the lines' rates cannot be staked; the
- * denomination never appeared in the log; or it appeared but its paytable named
- * no unit, so credits cannot be priced in money. The backend's `detail` says
- * which. An unreadable *bet* is none of them — the stake is an input here, not
- * something read off the meter.
- */
+/** What the paytable owed against what the machine paid. */
 /** One unit's account of the spin, off the frames that hold each figure. */
 function figuresOf(meter, unit) {
   const byFrame = new Map((meter?.readings ?? []).map((r) => [r.frame, r]));
@@ -239,15 +153,7 @@ function worstVerdict(verdicts) {
   return "passed";
 }
 
-/**
- * The check that says where the balance ended up, in one unit.
- *
- * `balance-reconciled` is the whole spin as one identity and is the right answer
- * when the win was collected. On a losing spin take-win is skipped, so there is no
- * collected frame and no such check — but `bet-deducted` is asking the same
- * question there, since with nothing won the balance after the bet *is* the
- * balance at the end.
- */
+/** The check that says where the balance ended up, in one unit. */
 function endingCheck(meter, unit) {
   const checks = meter?.checks ?? [];
   return (

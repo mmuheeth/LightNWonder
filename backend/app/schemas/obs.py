@@ -1,9 +1,4 @@
-"""OBS Studio payloads.
-
-Field names here are snake_case even though obs-websocket speaks camelCase on
-the wire; :mod:`app.services.obs` does the translation so the HTTP contract
-matches the rest of the API.
-"""
+"""OBS Studio payloads."""
 
 from __future__ import annotations
 
@@ -75,9 +70,8 @@ class ObsGameWindowSelection(BaseModel):
 
 
 class ScreenshotRequest(BaseModel):
-    """Request body for capturing a screenshot; supply ``file_name`` to also
-    write the file to the screenshot directory, ``output_dir`` for a
-    subdirectory below that root (requires ``file_name``)."""
+    """Screenshot request; ``file_name`` also writes the file, ``output_dir`` picks a
+    subdirectory below the root and requires ``file_name``."""
 
     model_config = ConfigDict(
         json_schema_extra={

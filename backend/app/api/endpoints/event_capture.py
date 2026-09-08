@@ -1,6 +1,5 @@
-"""Event capture endpoints, thin wrappers over
-:mod:`app.services.event_capture`. One run exists process-wide, so two callers
-pointed at the same backend share it."""
+"""Event capture endpoints, thin wrappers over :mod:`app.services.event_capture`. One
+run exists process-wide, so two callers pointed at the same backend share it."""
 
 from __future__ import annotations
 

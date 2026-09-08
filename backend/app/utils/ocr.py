@@ -1,11 +1,5 @@
-"""Read the text in an image with the Tesseract engine (a program, not a
-library, so this wraps running it). The image is piped in on stdin and read
-back on stdout -- no temp file. Output is requested as TSV, not plain text,
-since it carries per-word confidence and a bounding box that plain text can't
-distinguish "real reading" from "noise". A crop is preprocessed (enlarged,
-contrast-stretched) first, since Tesseract's defaults expect a scanned page,
-not a short line of game-frame artwork.
-"""
+"""Read the text in an image with the Tesseract engine (a program, not a library, so
+this wraps running it)."""
 
 from __future__ import annotations
 
@@ -83,9 +77,7 @@ _NUMBER = re.compile(r"[-+]?\d[\d.,]*")
 
 @dataclass(frozen=True)
 class OcrOptions:
-    """How one region should be preprocessed and read. Defaults target a
-    single line of large glyphs cut out of a game frame -- the fallback, not
-    the configuration; :class:`app.config.ocr.OcrSettings` is that."""
+    """How one region should be preprocessed and read."""
 
     language: str = "eng"
     psm: int = 7
@@ -126,9 +118,7 @@ class OcrOptions:
     def merged(
         self, overrides: Mapping[str, Any] | None, *, where: str = "ocr"
     ) -> OcrOptions:
-        """Return these options with ``overrides`` applied over the top. Only
-        the keys present in ``overrides`` change, so a config can declare just
-        what its region needs."""
+        """Return these options with ``overrides`` applied over the top."""
         if not overrides:
             return self
         # parse_overrides already locates its own failures, so its message is
@@ -181,10 +171,7 @@ _NULLABLE_OVERRIDES = frozenset({"threshold", "dpi"})
 
 
 def parse_overrides(raw: Any, *, where: str = "ocr") -> dict[str, Any]:
-    """Narrow a decoded JSON object to a set of option overrides. Used by the
-    game-config loader, so a typo is reported when the config is read, not
-    mid-scan. Values are range-checked by building the options they'd produce.
-    """
+    """Narrow a decoded JSON object to a set of option overrides."""
     if not isinstance(raw, Mapping):
         raise OcrOptionsError(f"{where} must be a JSON object of OCR options")
 
@@ -219,9 +206,7 @@ def parse_overrides(raw: Any, *, where: str = "ocr") -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class OcrWord:
-    """One word the engine recognised, and how sure it was. The box is in the
-    coordinates of the original image, not the enlarged copy the engine saw,
-    so it can be drawn back onto the crop it came from."""
+    """One word the engine recognised, and how sure it was."""
 
     text: str
     confidence: float
@@ -268,9 +253,7 @@ class OcrResult:
 def preprocess(
     image: Image.Image, options: OcrOptions = DEFAULT_OPTIONS
 ) -> Image.Image:
-    """Return the copy of ``image`` that will be handed to the engine. Order
-    matters: contrast is stretched before enlarging, so resizing interpolates
-    an already-corrected image. The source is left alone."""
+    """Return the copy of ``image`` that will be handed to the engine."""
     prepared = image
     if options.grayscale or options.threshold is not None:
         # Thresholding needs a single channel, so it forces the conversion even
@@ -330,9 +313,8 @@ def read_file(
     executable: Path | str,
     options: OcrOptions = DEFAULT_OPTIONS,
 ) -> OcrResult:
-    """Read the text in an image file. Opened, loaded and closed before the
-    engine runs, so nothing holds a handle on a frame OBS may still be
-    writing."""
+    """Read the text in an image file. Opened, loaded and closed before the engine runs,
+    so nothing holds a handle on a frame OBS may still be writing."""
     try:
         with Image.open(source) as image:
             image.load()
@@ -364,10 +346,7 @@ def engine_languages(
 
 
 def parse_numbers(text: str) -> tuple[Decimal, ...]:
-    """Every number in ``text``, as exact decimals. Whichever of ``.``/``,``
-    comes last in a token is the decimal point (locale-independent), so both
-    ``1,234.56`` and ``1.234,56`` read as the same amount; a lone separator
-    with exactly three digits after it is a thousands grouping instead."""
+    """Every number in ``text``, as exact decimals."""
     numbers: list[Decimal] = []
     for match in _NUMBER.finditer(text):
         value = _to_decimal(match.group())
@@ -392,9 +371,7 @@ def _run(
     payload: bytes | None = None,
     timeout: float,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run the engine once and return the finished process. The single place
-    this module touches a subprocess, so a test can stand in for the engine
-    by replacing this one function."""
+    """Run the engine once and return the finished process."""
     command = [str(executable), *args]
     try:
         completed = subprocess.run(
@@ -426,9 +403,8 @@ def _run(
 
 
 def _encode(image: Image.Image) -> bytes:
-    """The image as PNG bytes, ready for the engine's stdin. PNG rather than
-    JPEG since lossy ringing around a glyph is exactly the noise that costs a
-    digit."""
+    """The image as PNG bytes, ready for the engine's stdin. PNG rather than JPEG since
+    lossy ringing around a glyph is exactly the noise that costs a digit."""
     buffer = io.BytesIO()
     try:
         image.save(buffer, format="PNG")
@@ -446,11 +422,8 @@ def _reason(stderr: bytes) -> str:
 
 
 def _parse_tsv(stdout: str, *, scale: float) -> tuple[tuple[OcrWord, ...], str]:
-    """Read the word rows out of Tesseract's TSV output, returning the words
-    and the plain text rebuilt from them (words joined by spaces, lines by
-    newlines) so both describe the same reading. Non-word rows and malformed
-    lines are skipped rather than raised on -- one bad line costs a word, not
-    the whole reading."""
+    """Tesseract's TSV word rows plus the text rebuilt from them. A malformed line costs
+    a word, not the whole reading."""
     words: list[OcrWord] = []
     lines: list[list[str]] = []
     line_key: tuple[str, str, str] | None = None

@@ -1,27 +1,5 @@
-"""Payloads for Analyze Spin: one orchestrated spin, and the two validations
-run over what it produced.
-
-Three shapes are worth reading before the rest:
-
-* :class:`SpinStep` is the *plan* as much as the progress. Every step of a run
-  exists from the moment it starts, ``pending`` until it happens, so the UI
-  renders the whole sequence up front and a run that dies on step four says
-  which later steps never ran rather than simply stopping.
-* :class:`SpinMeterCheck` carries ``expected`` beside ``actual``. A cash-meter
-  check that only said "failed" would be unactionable: the digits it read and
-  the arithmetic it did are the answer, and the verdict is a consequence.
-* :class:`SpinLineAward` names the symbol its run is made of and prices it
-  exactly. That is new: the run used to be measured by cosine similarity, which
-  says which tiles match each other and never which symbol they are, so an award
-  could only be narrowed to every paytable row paying at that length. The symbol
-  now comes from :class:`SpinReelReading` -- the image classifier reading the
-  tiles -- so a run is one row and one number.
-
-Image fields are populated only when the caller asks for them
-(``include_images``). The progress stream never carries them: a snapshot goes
-out on every step transition, and forty line pictures per push would make the
-stream the slowest part of a spin.
-"""
+"""Payloads for Analyze Spin: one orchestrated spin, and the two validations run over
+what it produced."""
 
 from __future__ import annotations
 
@@ -208,15 +186,7 @@ class SpinMeterUnit(StrEnum):
 
 
 class SpinMeterFigures(BaseModel):
-    """The strip's three numbers in one unit.
-
-    A meter draws one of the two and the other follows from the denomination, so
-    both are always reported: the paytable talks in credits while the glass may be
-    drawing money, and a reader should not have to do the conversion to compare
-    them. Which one was *read* is the validation's ``mode``; the other is derived.
-    All three are null when the denomination is unknown, since then there is
-    nothing to convert with.
-    """
+    """The strip's three numbers in one unit."""
 
     balance: float | None = Field(default=None, description="The balance cell.")
     win: float | None = Field(
@@ -307,28 +277,7 @@ class SpinMeterCheck(BaseModel):
 
 
 class SpinMeterValidation(BaseModel):
-    """Every frame's meter, and what the differences between them prove.
-
-    ``mode``, ``currency`` and ``denomination`` come first because they are the
-    units every number below is in: the same ``1250`` is 1250 credits or 1250 of
-    some currency, and which one it is changes what the balance, the win and the
-    bet *mean*. One answer for the run rather than one per frame, since a machine
-    does not change denomination mid-spin -- the per-frame reading is still on
-    ``readings[].values`` for a run where the frames disagreed.
-
-    The three are not three readings of one thing. ``mode`` and ``currency`` are
-    read off the strip; ``denomination`` is what converts between the two units
-    ``mode`` chooses between, and it comes from the game's log.
-
-    Because it does convert between them, **every reading carries both units and
-    every arithmetic relation is checked in both** -- once over ``credits`` and
-    once over ``cash``, each with its own tolerance, and ``checks[].unit`` says
-    which. They are the same equation scaled, so neither can fail alone for a real
-    reason; what differs is the precision they are read at, and a relation that
-    holds in money to two decimals while being a whole credit out is a statement
-    about the OCR rather than about the game. A unit whose figures are unknown
-    contributes no checks rather than indeterminate ones.
-    """
+    """Every frame's meter, and what the differences between them prove."""
 
     mode: MeterMode = Field(
         default=MeterMode.UNKNOWN,
@@ -404,12 +353,7 @@ class SpinMeterValidation(BaseModel):
 
 
 class SpinSymbolReading(BaseModel):
-    """One tile of the spin's reels, as the classifier read it.
-
-    ``leading`` and ``confidence`` are present whether or not the tile was named,
-    because a rejection with no figure behind it is not checkable: the grid means
-    "the model was sure", and this row means "here is what it thought".
-    """
+    """One tile of the spin's reels, as the classifier read it."""
 
     name: str = Field(description="Grid position, e.g. 'r1c1'.")
     row: int = Field(ge=1)
@@ -438,27 +382,7 @@ class SpinSymbolReading(BaseModel):
 
 
 class SpinReelReading(BaseModel):
-    """What landed, read off the picture by the image classifier.
-
-    This is the one measurement the payline validation now rests on, and it
-    replaced two older ones at once:
-
-    * **cosine similarity between tiles**, which said which tiles were alike and
-      never which symbol they were -- so an award could only be narrowed to every
-      paytable row paying at that run length, not priced;
-    * **the reel stops in the game's own log**, which named the symbols by
-      agreeing with the game. A reading taken out of the log cannot catch a reel
-      drawing the wrong symbol, because it never looked at the reel.
-
-    Both are still in the tree and neither is used here. What is left is one
-    source: the tiles the reel grid wrote, named by a network that only ever saw
-    the picture.
-
-    Carries no ``error``, unlike the two validations: it exists only when the
-    reading succeeded. A failure is on its own step (``classify``) and again on
-    the payline validation's ``error``, which is what has to explain why the lines
-    could not be checked.
-    """
+    """What landed, read off the picture by the image classifier."""
 
     split: str = Field(description="Split directory the tiles were read from.")
     architecture: str = Field(description="Which network answered, e.g. 'resnet34'.")
@@ -515,20 +439,7 @@ class SpinReelReading(BaseModel):
 
 
 class SpinLineAward(BaseModel):
-    """One payline of the live geometry, evaluated and priced.
-
-    Two judgements, kept apart. **What landed** is ``pays`` -- the leading run of
-    positions the classifier named with the same code, the wild read as whatever
-    the run pays as, with the codes themselves on ``steps``. **Whether it pays**
-    is ``awarded``, which is the paytable's answer and nobody else's: a run of two
-    of a symbol that pays from three is a real run and no win.
-
-    A wild-led line carries a third number. ``symbol`` is what the run resolved
-    to, ``leading_wilds`` how many of its leading positions were the wild itself,
-    and ``combo_pays`` how many positions the combo that actually paid covers --
-    shorter than ``pays`` exactly when the wild's own combo was worth more than
-    the substituted reading.
-    """
+    """One payline of the live geometry, evaluated and priced."""
 
     line: str = Field(description="Line number as the geometry counts it, e.g. '3'.")
     label: str = Field(description="How it is spoken about, e.g. 'Line 3'.")
@@ -675,34 +586,8 @@ class SpinLineAward(BaseModel):
 
 
 class SpinExpectedAward(BaseModel):
-    """What the paytable says the spin should have paid, and whether the meter
-    agrees.
-
-    The award is two multiplications, and they happen in different places. A
-    paytable combo's value is a rate *per bet unit*, so each line is priced
-    ``combo_value x bet_per_unit`` back in :class:`SpinLineAward` -- by the time
-    the total gets here that has already happened, and ``credits`` is just their
-    sum. The one multiplication left is ``credits x money_per_credit``, into
-    money.
-
-    ``bet_per_unit`` is an input the run was *given* rather than one it read, so
-    without it there is no award to compare and the verdict is ``indeterminate``.
-    The bet in credits is reported beside it and is not an input: it is what
-    checks the given rung against the machine, which is the
-    ``bet-declared-credits`` check on the meter validation.
-
-    The denomination arrives as two fields on purpose. The game's log reports it
-    as a count of cents (``denom[2.000]`` on a ``-2c-`` paytable), so the number
-    to divide a money bet by is ``money_per_credit`` (0.02) and never the value
-    itself -- the two differ by a factor of a hundred, and the wrong one produces
-    a plausible-looking figure rather than an error. ``denomination_label`` is the
-    operator-facing form and takes no part in the arithmetic.
-
-    One number rather than a range, unlike the version this replaced: the
-    classifier names the symbol on every tile, so each awarded line resolves to
-    one paytable row and one value. There is nothing left to be uncertain
-    *between* -- an unreadable input makes the verdict ``indeterminate`` instead.
-    """
+    """What the paytable says the spin should have paid, and whether the meter agrees.
+    One number, not a range; ``indeterminate`` when an input was unread."""
 
     paying_lines: int = Field(ge=0, description="Lines with a run that pays.")
     credits: float = Field(
@@ -811,20 +696,7 @@ class SpinExpectedAward(BaseModel):
 
 
 class SpinPaylineValidation(BaseModel):
-    """The lines the *running* game plays, checked against the spin's reels.
-
-    The patterns come from the game's own ``winGeometry.xml`` by way of the
-    paytable its log named -- not from the ``paylines`` block of the config in
-    this repo, which is a hand-copy kept for machines without the game
-    installed. Which set of that file is in play comes from the paytable's own
-    ``NumberOfLines``, and ``resolved_from`` says so.
-
-    What the lines are read *by* is :class:`SpinReelReading`, on the run beside
-    this: the symbol codes the image classifier named each tile with. Neither the
-    cosine similarity between tiles nor the reel stops in the game's log takes
-    part -- the first could not name a symbol and the second agreed with the game
-    by construction.
-    """
+    """The lines the *running* game plays, checked against the spin's reels."""
 
     frame: str = Field(description="Screenshot the reels were split out of.")
     split: str | None = Field(
@@ -1002,12 +874,7 @@ class SpinRun(BaseModel):
 
 
 class SpinAnalysisState(BaseModel):
-    """What the service has: the run in progress, or the last one it finished.
-
-    ``run`` outliving its own completion is deliberate -- the report is the
-    point of the feature, so reloading the page after a spin has to still show
-    it. ``active`` is what a caller branches on, not ``run`` being present.
-    """
+    """What the service has: the run in progress, or the last one it finished."""
 
     active: bool = Field(description="Whether a run is in progress right now.")
     run: SpinRun | None = Field(

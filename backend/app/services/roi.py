@@ -1,19 +1,4 @@
-"""Cuts a configured region out of a captured frame.
-
-Same joinery as :mod:`app.services.ocr`, one step short: OCR hands the crop to
-Tesseract, this hands back the picture — checking a region's aim needs no engine.
-The frame comes off disk (newest in ``obs_dashboard_screenshot_dir``), never a
-live OBS capture, so the same crop extracted twice is the same picture. Crops
-return as data URIs and nothing is written, except ``cash_meter``, which is also
-kept on disk and read via :mod:`app.services.meter`. Regions resolve against
-:func:`content_box` (the game's content, not the canvas), since letterbox bars
-change width as the window resizes — see :mod:`app.utils.letterbox`.
-:func:`resolve_frame`/:func:`open_frame`/:func:`is_blank`/:func:`content_box`/
-:func:`resolve_box`/
-:func:`describe`/:func:`describe_path`/:func:`encode_png` are public so
-:mod:`app.services.grid` and :mod:`app.services.ocr` share this reading instead of
-re-deriving it. Holds no state, so no ``reset()``.
-"""
+"""Cuts a configured region out of a captured frame."""
 
 from __future__ import annotations
 
@@ -26,7 +11,7 @@ from pathlib import Path
 from PIL import Image
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     BadRequestError,
@@ -144,15 +129,7 @@ def open_frame(path: Path) -> Image.Image:
 
 
 def is_blank(path: Path) -> bool:
-    """Whether the frame at ``path`` has nothing in it.
-
-    Here rather than in the caller because this module already owns opening a
-    frame, and because the threshold has to be the same one regions are resolved
-    against -- a frame nothing can be cropped out of and a frame that is blank
-    are the same measurement (:func:`app.utils.letterbox.is_blank`). An
-    unreadable file is reported as *not* blank: that is a different failure with
-    a different message, and whoever reads the frame next will give it.
-    """
+    """Whether the frame at ``path`` has nothing in it."""
     try:
         with Image.open(path) as image:
             image.load()
@@ -178,11 +155,8 @@ def content_box(image: Image.Image) -> letterbox.ContentBox:
 def resolve_box(
     roi: image_roi.Roi, image: Image.Image
 ) -> tuple[tuple[int, int, int, int], letterbox.ContentBox]:
-    """Where one region lands on one frame, in the frame's own pixels — the box
-    comes back too, since a misplaced crop is either a bad region or a misdetected
-    box, and only the pair says which. For several regions on one frame, call
-    :func:`content_box` once and :meth:`image_roi.Roi.to_box_within` per region
-    instead."""
+    """Where one region lands on one frame, in the frame's own pixels, with the content
+    box beside it -- only the pair says which of the two was wrong."""
     content = content_box(image)
     return roi.to_box_within(content.box), content
 
@@ -269,8 +243,7 @@ async def catalog() -> RoiCatalog:
 
 def encode_png(crop: Image.Image) -> str:
     """The crop as a PNG data URI — PNG regardless of source format, since JPEG
-    artefacts would make a region look badly aimed. Unlike OCR's equivalent, an
-    encode failure is fatal here: the picture *is* the answer."""
+    artefacts would make a region look badly aimed."""
     buffer = io.BytesIO()
     try:
         crop.save(buffer, format="PNG")

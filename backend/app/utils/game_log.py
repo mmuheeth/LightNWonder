@@ -1,11 +1,5 @@
 """Patterns for the log a GDK game client writes, turning lines into
-:class:`DetectedEvent` values -- sibling of :mod:`app.utils.panel_log`, which
-does the same for the OLED panel service's log. Rules anchor on the publish
-line rather than the bare message name (state machines that ignored it echo
-the name too) and name state machines by pattern since each game suffixes them
-differently. ``delay_ms`` lets a rule wait past a lagging screen; ``capture``
-marks whether an otherwise-recognised event is worth a screenshot.
-"""
+:class:`DetectedEvent` values. Sibling of :mod:`app.utils.panel_log`."""
 
 from __future__ import annotations
 
@@ -19,7 +13,6 @@ from typing import Any
 __all__ = [
     "DEFAULT_RULES",
     "PAYTABLE_LOADED",
-    "REEL_STOPS",
     "TOUCH_REGISTERED",
     "DetectedEvent",
     "EventRule",
@@ -232,9 +225,8 @@ def resolve_rules(
     extra: Sequence[EventRule] = (),
     disabled: Sequence[str] = (),
 ) -> tuple[EventRule, ...]:
-    """Combine the shipped rules with one game's additions and removals. A
-    game's own rules come first, so they can override a shipped rule rather
-    than only add to it."""
+    """Combine the shipped rules with one game's additions and removals. A game's own
+    rules come first, so they can override a shipped rule rather than only add to it."""
     excluded = {name.strip().casefold() for name in disabled}
     overridden = {rule.event.casefold() for rule in extra}
     return (
@@ -253,14 +245,8 @@ _QUALIFIER = r"(?:[\w.]+\.)?"
 
 
 def _message(message_name: str) -> str:
-    """Match the authoritative record of one message being handled: either a
-    ``MessageQueue``/``SyncMessagePublisher`` publish, or the state transition
-    it caused (some theme logs only surface the latter). Deliberately does not
-    match the ``... not handled by state ...`` echo every ignoring state
-    machine logs, or that alone would turn one event into five hits. The
-    namespace prefix is optional and unpinned since it differs per feature and
-    is sometimes absent entirely.
-    """
+    """Match one message being handled: a publish line or the state transition it
+    caused, never the "not handled by state" echo."""
     return (
         rf"(?:\[(?:MessageQueue|SyncMessagePublisher)\.Publish\] msg\[{_QUALIFIER}{message_name}\]"
         rf"|transitioned from \[[^\]]+\] to \[[^\]]+\] on event \[{_QUALIFIER}{message_name}\])"
@@ -268,9 +254,7 @@ def _message(message_name: str) -> str:
 
 
 def _state(machine: str, *, to: str, frm: str = r"[^\]]+") -> str:
-    """Match one state machine arriving in a state. ``machine`` is a regex, not
-    a literal, since each game suffixes the interesting machines differently
-    (e.g. ``FreeSpinStateMachineFreeSpin`` vs ``...CoinOnReelFS``)."""
+    """Match one state machine arriving in a state."""
     return rf"StateMachine\[{machine}\] transitioned from \[{frm}\] to \[{to}\]"
 
 
@@ -286,16 +270,12 @@ def _on(message_name: str) -> str:
 TOUCH_REGISTERED = re.compile(r"\b(?:TouchMsg|TouchEventNotificationMsg)\b")
 
 
-# The game names the paytable it loaded here, and ``paytable`` is byte-identical
-# to the folder holding that paytable's maths -- which is what lets
-# :mod:`app.services.paytable` join a running game to its ``math.xml``. Shared
-# with the ``paytable-changed`` rule below rather than written twice: the same
-# line answers "did it just change" (forwards, while following) and "what is
-# loaded now" (backwards, once, via :func:`app.utils.log_search.last_match`).
-#
-# ``supported`` is optional so an older log that stops after the id still
-# matches -- a rule's ``None`` groups are dropped from its fields by
-# :func:`match`, so the event gains a field only when the line carries one.
+# The game names the paytable it loaded here, and ``paytable`` is byte-identical to
+# the folder holding that paytable's maths -- which is what lets
+# :mod:`app.services.paytable` join a running game to its ``math.xml``. Shared with
+# the ``paytable-changed`` rule below rather than written twice: the same line
+# answers "did it just change" and "what is loaded now". ``supported`` is optional,
+# so an older log that stops after the id still matches.
 PAYTABLE_LOADED = re.compile(
     r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
     r" current paytableId\[(?P<paytable>[^\]]+)\]"
@@ -303,29 +283,10 @@ PAYTABLE_LOADED = re.compile(
 )
 
 
-# Where each reel landed, one index per reel into that reel's strip. Written
-# before the stop animation plays, so it arrives ahead of the reels-stopped
-# transition rather than with it.
-#
-# Deliberately not a DEFAULT_RULES entry, for the same reason the rest of the
-# raw pre-animation bookkeeping is not: it produces no frame distinguishable
-# from its neighbours, so it is nothing to screenshot. It is a module-level
-# pattern like PAYTABLE_LOADED instead -- something a service asks the log for
-# on purpose, rather than something a run notices going past.
-#
-# What it is for is naming symbols, never deciding wins: with math.xml's strips
-# these indices say *which* symbol sat at every grid position, which is the one
-# question cosine similarity cannot answer about a run it found. See
-# :mod:`app.utils.reel_stops`.
-REEL_STOPS = re.compile(
-    r"ReelSet\.SetStops\(ReelsStopData\):\s*\[(?P<stops>[\d,\s]+)\]"
-)
-
-
-# Ordered (first match wins, narrow before broad) and deliberately a *visual*
-# list only -- internal bookkeeping the log names but that produces no frame
-# distinguishable from its neighbors is left out. ``capture=False`` keeps a
-# rule in the vocabulary without it becoming a screenshot.
+# Ordered (first match wins, narrow before broad) and deliberately a *visual* list
+# only -- internal bookkeeping the log names but that produces no frame
+# distinguishable from its neighbours is left out. ``capture=False`` keeps a rule in
+# the vocabulary without it becoming a screenshot.
 DEFAULT_RULES: tuple[EventRule, ...] = (
     EventRule(
         event="game-started",

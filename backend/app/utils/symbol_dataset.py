@@ -1,25 +1,4 @@
-"""A folder of symbol artwork read back as training pictures.
-
-The artwork is not what the classifier will see. A game ships each symbol as a
-transparent cut-out at 380-600px square; the reel grid writes tiles of roughly
-117x88 with the symbol already composited onto the reel's own dark purple field.
-Training straight off the artwork therefore teaches the network that a symbol
-sits on *nothing*, and every tile it is later shown disagrees -- which is how the
-earlier cosine-similarity attempt came to miss the card symbols completely while
-scoring only 0.35-0.44 on the picture symbols.
-
-So this module's job is to put the background back. Every constant below was
-measured off the 600 tiles the grid has already written, not chosen:
-
-* the reel field is ``rgb(35, 0, 56)``, and two thirds of tiles' corners sit
-  within a couple of levels of it;
-* 238 of those 600 tiles keep a sliver of the gold reel divider at one edge,
-  averaging ``rgb(201, 121, 37)`` -- the ``inset`` crop trims most of it, not all;
-* a couple of percent are pure black, which is a frame caught mid-fade.
-
-Deliberately torch-free: Pillow and numpy only, so the sample synthesis can be
-tested, and looked at, on a machine with no ML stack installed at all.
-"""
+"""A folder of symbol artwork read back as training pictures."""
 
 from __future__ import annotations
 
@@ -86,13 +65,7 @@ class DatasetError(Exception):
 
 @dataclass(frozen=True)
 class SymbolSource:
-    """One artwork file, cropped to its own opaque box and ready to compose.
-
-    ``dense`` is what decides whether a background is needed at all, and it is a
-    measured property of this file rather than a fact about its class -- a game
-    whose whole set ships pre-composited needs no special case, and one that
-    mixes the two kinds gets each of them right.
-    """
+    """One artwork file, cropped to its own opaque box and ready to compose."""
 
     path: Path
     symbol: str
@@ -130,12 +103,7 @@ class ClassSummary:
 
 
 def _alpha_box(image: Image.Image) -> tuple[int, int, int, int]:
-    """The box enclosing every pixel that is not fully transparent.
-
-    Falls back to the whole picture: an image with no alpha, or one transparent
-    throughout, has nothing to crop to and is better handed on unchanged than
-    rejected.
-    """
+    """The box enclosing every pixel that is not fully transparent."""
     if image.mode != "RGBA":
         return (0, 0, image.width, image.height)
     alpha = np.asarray(image.getchannel("A"))
@@ -192,12 +160,7 @@ def _image_files(directory: Path) -> list[Path]:
 
 
 def load_sources(root: Path) -> list[ClassSources]:
-    """Every class under ``root``, each with its artwork opened and cropped.
-
-    Classes holding no readable image are dropped rather than carried as an empty
-    label: a directory someone made and never filled would otherwise become a
-    class the model can predict and never be right about.
-    """
+    """Every class under ``root``, each with its artwork opened and cropped."""
     classes: list[ClassSources] = []
     for directory in _class_dirs(root):
         sources = tuple(_load(path, directory.name) for path in _image_files(directory))
@@ -209,13 +172,7 @@ def load_sources(root: Path) -> list[ClassSources]:
 
 
 def summarise(root: Path) -> list[ClassSummary]:
-    """Per-class counts, sizes and opacity, without composing anything.
-
-    Reads pixels rather than only counting files, because the one number worth
-    warning about -- how many classes hold a single distinct picture -- is not
-    visible from a listing, and neither is whether a class carries its own
-    background.
-    """
+    """Per-class counts, sizes and opacity, without composing anything."""
     summaries: list[ClassSummary] = []
     for directory in _class_dirs(root):
         widths: list[int] = []
@@ -247,12 +204,7 @@ def summarise(root: Path) -> list[ClassSummary]:
 
 
 def fingerprint(root: Path) -> str:
-    """A short digest of the dataset's filenames, sizes and mtimes.
-
-    Travels on the checkpoint so a model can say it was trained on different
-    pictures than the ones on disk now. A stale model that merely predicts badly
-    is much harder to notice than one that says it is stale.
-    """
+    """A short digest of the dataset's filenames, sizes and mtimes."""
     digest = hashlib.sha256()
     try:
         directories = list(_class_dirs(root))
@@ -269,12 +221,7 @@ def fingerprint(root: Path) -> str:
 
 
 def plate(size: int, rng: random.Random) -> Image.Image:
-    """One empty reel cell, ``size`` square.
-
-    Not a flat rectangle: a cell carries a little noise, is lit slightly from the
-    top, and 40% of the time keeps a sliver of the gold divider at one edge. The
-    flat version trains a network that any texture at all is a symbol.
-    """
+    """One empty reel cell, ``size`` square."""
     if rng.random() < BLACK_PROBABILITY:
         return Image.new("RGB", (size, size), (0, 0, 0))
 
@@ -330,12 +277,7 @@ def compose(
     *,
     style: str = "plate",
 ) -> Image.Image:
-    """One training picture: this artwork, on the background the game gives it.
-
-    A source that already carries its own field and frame (``dense``) is only
-    fitted to the canvas -- pasting it onto a plate would hide the plate anyway,
-    and scaling it down to make room would invent a border no real tile has.
-    """
+    """One training picture: this artwork, on the background the game gives it."""
     if style == "none":
         background = Image.new("RGB", (size, size), (0, 0, 0))
     elif style == "solid":
@@ -374,31 +316,18 @@ def symbols(classes: Sequence[ClassSources]) -> list[str]:
 
 
 # --- Holding frames back, and admitting how little that proves ------------
-# A class here is an animation *loop*, not a set of independent pictures, and
-# neighbouring frames are near-identical -- so no split of it is honestly
-# unseen. Two things follow, and both are implemented rather than assumed.
-#
-# First, *which* frames to hold back matters. Holding back the last few is
-# nearly worthless because the loop closes: measured on this dataset, the last
-# frame of AA and of DD sit 0.02/255 from a retained frame, i.e. the same
-# picture. A contiguous block from the middle is the better choice and is what
-# `frame_split` returns.
-#
-# Second, even that leaks. `leakage` measures how much, so the accuracy built on
-# it can be reported with its own caveat attached instead of being passed off as
-# a holdout score.
+# A class here is an animation *loop*, not a set of independent pictures, so no
+# split of it is honestly unseen. Holding back the last few frames is nearly
+# worthless because the loop closes -- AA's and DD's last frames sit 0.02/255 from a
+# retained one -- so `frame_split` returns a contiguous block from the middle. Even
+# that leaks, and `leakage` measures how much, so the accuracy built on it can be
+# reported with its own caveat rather than passed off as a holdout score.
 
 _LEAK_THUMBNAIL = 64
 
 
 def frame_split(count: int, holdout: int) -> tuple[list[int], list[int]]:
-    """Indices to train on and to hold back, for one class of ``count`` frames.
-
-    The held-back block is taken from the middle of the loop rather than the end.
-    A class with too few frames to spare a block keeps all of them and holds
-    nothing back -- a single-image class contributes to no honest accuracy figure
-    and pretending otherwise is the one genuinely misleading thing this could do.
-    """
+    """Indices to train on and to hold back, for one class of ``count`` frames."""
     if holdout <= 0 or count < 3 * holdout:
         return list(range(count)), []
     start = (count - holdout) // 2
@@ -420,14 +349,7 @@ def _thumbnails(sources: Sequence[SymbolSource]) -> np.ndarray:
 def leakage(
     sources: Sequence[SymbolSource], kept: Sequence[int], held: Sequence[int]
 ) -> float:
-    """How close the held-back frames sit to the ones trained on, in ``0..1``.
-
-    Each held-back frame's distance to the nearest retained frame, divided by the
-    mean distance between any two frames of the class. 0 means the held-back
-    frames are duplicates of training data and the accuracy over them says
-    nothing; 1 means they are as unlike the training frames as two random frames
-    of the same symbol are, which is the most this dataset can offer.
-    """
+    """How close the held-back frames sit to the ones trained on, in ``0..1``."""
     if not held or not kept:
         return 0.0
     vectors = _thumbnails(sources)

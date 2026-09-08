@@ -1,12 +1,5 @@
-"""Image classifier endpoints, thin wrappers over
-:mod:`app.services.image_classifier`. Trains EfficientNet-B0 on the symbol
-artwork and names the tiles of a written reel split.
-
-``/status`` never fails: a machine with no torch installed reports
-``not_installed`` on a 200, the same way OCR reports a missing Tesseract, so the
-page can say what is missing rather than showing an error. Only ``/train`` and
-``/classify`` raise for it.
-"""
+"""Image classifier endpoints over :mod:`app.services.image_classifier`. ``/status``
+never fails; only training and classifying raise for missing torch."""
 
 from __future__ import annotations
 
@@ -50,11 +43,7 @@ FAILED: ResponseSpec = {
     summary="Whether a tile can be named right now",
 )
 async def get_status() -> ApiResponse[ClassifierStatus]:
-    """Engine state, the trained model, the dataset and any live training run.
-
-    Always a 200. A missing torch, an untrained model and a stale checkpoint are
-    all *states* here, not errors -- the page needs to render the reason.
-    """
+    """Engine state, the trained model, the dataset and any live training run."""
     status = await classifier_service.status()
     return ApiResponse[ClassifierStatus].ok(
         data=status,
@@ -68,9 +57,8 @@ async def get_status() -> ApiResponse[ClassifierStatus]:
     summary="Training images available, and what is wrong with them",
 )
 async def get_dataset() -> ApiResponse[DatasetSummary]:
-    """Per-class counts and sizes, plus the warnings a file listing cannot show:
-    classes holding a single picture, and symbol codes the game declares that
-    have no artwork at all."""
+    """Per-class counts and sizes, plus warnings a listing cannot show: single-picture
+    classes, and declared codes with no artwork."""
     summary = await classifier_service.dataset()
     return ApiResponse[DatasetSummary].ok(
         data=summary,
@@ -108,12 +96,7 @@ async def get_splits() -> ApiResponse[SplitCatalog]:
     responses={**UNAVAILABLE, **NOT_FOUND, **FAILED},
 )
 async def train(payload: TrainRequest | None = None) -> ApiResponse[TrainingRun]:
-    """Start a training run and return as soon as it is under way.
-
-    Takes minutes on CPU, so this does not wait for it: poll ``/status`` for the
-    stages and per-epoch figures. Every stage exists from the moment the run is
-    created, so a failure part way through leaves the rest visibly unreached.
-    """
+    """Start a training run and return as soon as it is under way."""
     run = await classifier_service.train(payload or TrainRequest())
     return ApiResponse[TrainingRun].ok(
         data=run,
@@ -131,9 +114,7 @@ async def train(payload: TrainRequest | None = None) -> ApiResponse[TrainingRun]
     responses={**UNAVAILABLE},
 )
 async def cancel() -> ApiResponse[TrainingRun]:
-    """Ask the run to stop. The flag is read between batches, so this returns
-    immediately and the run unwinds through its own code a moment later --
-    leaving whatever model was already saved untouched."""
+    """Ask the run to stop."""
     run = await classifier_service.cancel()
     return ApiResponse[TrainingRun].ok(
         data=run, message=f"Training run {run.run_id} will stop"
@@ -154,11 +135,6 @@ async def cancel() -> ApiResponse[TrainingRun]:
 async def classify(
     payload: ClassifyRequest | None = None,
 ) -> ApiResponse[ClassifyResult]:
-    """Classify the tiles of one split (the newest if ``split`` is omitted).
-
-    Reads a split the reel grid already wrote rather than taking a screenshot, so
-    the same split classifies to the same answer twice and a threshold can be
-    re-tried without the game still showing that spin.
-    """
+    """Classify the tiles of one split (the newest if ``split`` is omitted)."""
     result = await classifier_service.classify(payload or ClassifyRequest())
     return ApiResponse[ClassifyResult].ok(data=result, message=result.summary)

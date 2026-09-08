@@ -18,11 +18,7 @@ import { queryKeys } from "@/lib/query-keys";
 const ACTIVE_INTERVAL_MS = 2_000;
 const IDLE_STALE_MS = 30_000;
 
-/**
- * Poll the run in progress. Idles on `false` rather than a slow interval when
- * nothing is active, in line with `useObsStatus` — mutations invalidate the
- * subtree so the card still updates the moment you act on it.
- */
+/** Poll the run in progress. */
 export function useCaptureStatus() {
   return useQuery({
     queryKey: queryKeys.eventCapture.status(),

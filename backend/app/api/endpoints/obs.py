@@ -1,6 +1,4 @@
-"""OBS Studio control endpoints, thin wrappers over :mod:`app.services.obs`.
-Connection settings come from the environment so the OBS password never
-travels to or from the browser."""
+"""OBS Studio control endpoints, thin wrappers over :mod:`app.services.obs`."""
 
 from __future__ import annotations
 

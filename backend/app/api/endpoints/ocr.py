@@ -1,6 +1,4 @@
-"""OCR endpoints, thin wrappers over :mod:`app.services.ocr`. Regions come
-from the active game's config; a request only says which to read, off which
-frame, and which engine options to override for that read."""
+"""OCR endpoints, thin wrappers over :mod:`app.services.ocr`."""
 
 from __future__ import annotations
 
@@ -65,9 +63,8 @@ async def get_regions() -> ApiResponse[OcrRegionCatalog]:
     responses={**NO_ENGINE, **NO_REGION, **NO_FRAME},
 )
 async def read(payload: OcrReadRequest) -> ApiResponse[OcrReadResult]:
-    """Read the named regions, or all of them, off one frame -- from OBS now
-    with no ``run_id``, or a capture run's screenshot with one. One unreadable
-    region carries its own error; the rest still come back."""
+    """Read the named regions, or all of them, off one frame -- from OBS now with no
+    ``run_id``, or a capture run's screenshot with one."""
     result = await ocr_service.read(payload)
     read_count = sum(1 for reading in result.readings if reading.error is None)
     return ApiResponse[OcrReadResult].ok(

@@ -19,9 +19,8 @@ import {
 import { queryKeys } from "@/lib/query-keys";
 
 /**
- * Fetch the OBS connection and recording status. Background polling is opt-in;
- * the panel's Refresh button and mutations still refresh it immediately.
- *
+ * Fetch the OBS connection and recording status. Background polling is opt-in; the
+ * panel's Refresh button and mutations still refresh it immediately.
  * @param {{refetchInterval?: number|false}} [options]
  */
 export function useObsStatus({ refetchInterval = false } = {}) {

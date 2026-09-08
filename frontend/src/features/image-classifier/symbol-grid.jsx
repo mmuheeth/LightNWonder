@@ -1,17 +1,4 @@
-/**
- * The reels as a matrix, laid out the way they sit on screen.
- *
- * Rendered twice per result -- once in codes, once in display names -- because the
- * codes are what the rest of the system speaks (the maths files, the paylines
- * block, a spin's reel stops) and the names are what a person reads. Both
- * matrices come from the response rather than being derived here, so the two
- * cannot end up disagreeing about which cell is which.
- *
- * Same shape as the reel-stop grid a spin analysis shows, on purpose: that one is
- * read out of the game's own log and this one out of the picture, and the whole
- * value of the classifier is that the two can be put side by side. A dash is a
- * tile nothing cleared the confidence floor for, which is an answer, not a hole.
- */
+/** The reels as a matrix, laid out the way they sit on screen. */
 export function SymbolGrid({ grid, title, mono = true }) {
   if (!grid?.length) return null;
 

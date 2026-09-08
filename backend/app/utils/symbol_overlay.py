@@ -1,21 +1,4 @@
-"""Ring the cells the classifier named, over the reels it read.
-
-Deliberately no text. The codes and confidences are already on the response and
-rendered as a table beside this picture, so drawing them here too would duplicate
-data at the one size where it is least readable -- over busy artwork, at a tile's
-own scale. What the picture is uniquely good for is *where*: a green ring where a
-tile was named and an amber one where nothing cleared the confidence floor makes
-a transposed matrix or a mislabelled reel obvious at a glance, which is the same
-reason the grid writes ``reels.png`` and the payline check writes its overlay.
-
-The two colours are drawn differently on purpose -- a tile below the floor is a
-*reported* outcome, not a gap.
-
-Cells are laid out by dividing the crop evenly, not by asking the game config for
-the reel bounds. The classifier deliberately does not depend on that config, and
-an even division puts a ring on the right cell regardless of the inset the tiles
-were trimmed by.
-"""
+"""Ring the cells the classifier named, over the reels it read."""
 
 from __future__ import annotations
 
@@ -38,12 +21,7 @@ _RING_WIDTH = 2
 
 @dataclass(frozen=True)
 class DrawnSymbol:
-    """One cell's verdict, reduced to what the picture actually shows.
-
-    Only whether it was named, and where. The symbol and its confidence are not
-    here because they are not drawn -- carrying them would be a field that looks
-    like it matters and does not.
-    """
+    """One cell's verdict, reduced to what the picture actually shows."""
 
     row: int
     """1-indexed."""

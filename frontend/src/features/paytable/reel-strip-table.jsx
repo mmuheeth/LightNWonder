@@ -11,14 +11,8 @@ import {
 import { SymbolChip } from "@/features/paytable/symbol-chip";
 
 /**
- * The strips of one set, laid out the way they sit on the machine: one column
- * per reel, one row per stop.
- *
- * A strip *is* its stop order, so this is the order and nothing else — not a
- * tally of what each symbol occupies, and not the per-stop weights, both of
- * which are on the response but say nothing about where a symbol sits. Strips
- * within a set can differ in length (a five-reel set with a shorter reel 5 is
- * normal), so short columns simply end.
+ * The strips of one set, laid out the way they sit on the machine: one column per reel,
+ * one row per stop.
  */
 export function ReelStripTable({ math }) {
   const sets = math.reel_strip_sets;

@@ -1,17 +1,10 @@
-"""Uvicorn entrypoint.
-
-Run with any of::
-
-    python -m app             # uses .env / defaults
-    serve                     # console script from pyproject
-    uvicorn app.main:app --reload --port 8001
-"""
+"""Uvicorn entrypoint."""
 
 from __future__ import annotations
 
 import uvicorn
 
-from app.core.config import get_settings
+from app.config.runtime import get_settings
 
 
 def main() -> None:

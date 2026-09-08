@@ -11,22 +11,7 @@ import {
   useTrainClassifier,
 } from "@/features/image-classifier/use-image-classifier";
 
-/**
- * Naming the symbol on a reel tile, from the picture.
- *
- * Its own route rather than a dashboard card, for the same reason Game Config and
- * Analyze Spin are: training is a five-stage list with its own figures and engine
- * picker, and a classification is two matrices, an annotated picture and a
- * fifteen-row table. None of that survives half a row.
- *
- * The engine's state badge belongs to the Training card, not to this header --
- * it is a fact about the model, and that card is where it gets changed.
- *
- * Nothing else in this app names a symbol from pixels -- the payline check only
- * asks whether two tiles match each other, and the reel-stop reading takes its
- * answer from the game's own log. So this is the one reading that can disagree
- * with the game, which is the only kind that can catch it drawing the wrong thing.
- */
+/** Naming the symbol on a reel tile, from the picture. */
 export function ImageClassifierPage() {
   const status = useClassifierStatus();
   const splits = useSplits();

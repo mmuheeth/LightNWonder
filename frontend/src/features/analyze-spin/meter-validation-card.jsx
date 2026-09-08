@@ -14,9 +14,8 @@ import { VerdictBadge } from "@/features/analyze-spin/verdict-badge";
 const UNNAMED_SYMBOL = "?";
 
 /**
- * `1250.4` is money and reads as `1,250.40`; `49531` is a credit count and reads
- * as `49,531`. Neither wants the other's format, which is the whole reason the
- * mode is on the payload.
+ * `1250.4` is money and reads as `1,250.40`; `49531` is a credit count and reads as
+ * `49,531`.
  */
 function amount(value, money) {
   if (typeof value !== "number") return "—";
@@ -28,20 +27,7 @@ function amount(value, money) {
     : value.toLocaleString();
 }
 
-/**
- * What the numbers below are *in*, stated once for the whole card.
- *
- * Once rather than per figure, and per card rather than per frame: the units are
- * a property of the machine, not of a screenshot, so the backend resolves one
- * answer across every frame it read (`meter.mode`) and the per-frame reading
- * stays on `readings[].values` for a run where they disagreed. Prefixing nine
- * figures with a symbol would say it eight times over.
- *
- * It sits beside the verdict because it qualifies the verdict: the arithmetic
- * under it — the bet leaving the balance, the win joining it — is checked in
- * whatever units the glass was drawing, and a reader comparing a balance against
- * the game needs to know which.
- */
+/** What the numbers below are *in*, stated once for the whole card. */
 function Units({ mode, currency, denomination }) {
   const known = mode === "cash" || mode === "credits";
   const cash = mode === "cash";
@@ -101,14 +87,7 @@ function Units({ mode, currency, denomination }) {
   );
 }
 
-/**
- * One frame's three numbers, over the strip they were read off.
- *
- * A full row each rather than three across, because the crop *is* the evidence:
- * the meter is a wide, thin strip of small digits, and at a third of the card's
- * width a misread 8 for a 3 is not something a reader can see. The numbers sit on
- * one line above it so the whole reading is still one glance.
- */
+/** One frame's three numbers, over the strip they were read off. */
 function Reading({ reading, crop, money }) {
   // The unit the strip was drawing goes first, because that one was *read*; the
   // other is derived from it through the denomination. Shown only when it has
@@ -177,31 +156,7 @@ function Reading({ reading, crop, money }) {
   );
 }
 
-/**
- * The cash meter across every screenshot the spin took.
- *
- * Just the readings: one row per frame, each carrying its three numbers and the
- * strip they came off at full width. The relations between them (the bet came off
- * the balance, the win went onto it) are still computed and still on the payload
- * as `checks` — now in **both units**, `credits` and `cash`, since a cabinet draws
- * one and the paytable speaks the other — and `verdict` in the header is their
- * summary. They are simply not a table worth reading past on the way to the award.
- * The one comparison a reader actually wants is the WIN cell against what the
- * paytable owed, and that has its own card at the foot of the page.
- *
- * Each figure does carry its counterpart in the other unit, greyed beside it. One
- * number said twice, deliberately: an award is priced in credits and the glass may
- * be showing money, and the pair sitting together is what makes the two
- * comparable without arithmetic in the reader's head.
- *
- * What the header does carry beside that verdict is the units — cash and its
- * currency, or credits, and the denomination that converts between them —
- * because every figure below is ambiguous without them.
- *
-
- * Crops come from the report rather than the progress stream, so they appear a
- * moment after the numbers do.
- */
+/** The cash meter across every screenshot the spin took. */
 export function MeterValidationCard({ meter, detailed }) {
   const crops = new Map(
     (detailed?.readings ?? []).map((reading) => [reading.frame, reading.crop_image]),

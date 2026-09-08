@@ -1,23 +1,5 @@
-"""Read the ``paylines`` block of a game config, and read one line of symbol
-codes by the rule a game pays it.
-
-The block is named bet configurations (``"5"``, ``"20"``, ``"40"``), each a set
-of lines of ``[row, column]`` positions (1-indexed, row first, same numbering as
-a tile's name). A set is looked up by name since line 4 of the five-line set
-isn't line 4 of the forty-line set. Columns must strictly increase along a line
--- a payline is compared left to right one adjacent pair at a time, and a
-repeated/backtracked reel would otherwise compare a tile against itself and
-score a perfect match.
-
-:func:`read_run` is the other half: given the codes a classifier read off one
-line's tiles, how far the leading run reaches and what it pays as. **It is not a
-pairwise comparison, and that is the whole point of it being here.** A wild
-stands in for whatever the *run* is paying as, so ``AA WC BB`` is a run of two
-(the wild is an Ox) and never a run of three -- yet every adjacent pair in it
-"matches" when each is judged on its own. A line is therefore read with the run's
-symbol carried along it, which is what :class:`WildRule` and :class:`SymbolRun`
-exist to express.
-"""
+"""Read the ``paylines`` block of a game config, and read one line of symbol codes by
+the rule a game pays it."""
 
 from __future__ import annotations
 
@@ -69,20 +51,7 @@ class PaylineError(ValueError):
 
 @dataclass(frozen=True)
 class WildRule:
-    """Which code substitutes for which when a line is read.
-
-    Two things, kept apart because they fail differently: :attr:`code` is the
-    wild itself and :attr:`replaces` is the *closed* list of symbols it stands in
-    for. The list is closed on purpose -- a game's scatters and feature symbols
-    are paid by counting them anywhere on the grid, not along a line, so a wild
-    landing beside two orbs is a wild beside two orbs and not three orbs. Reading
-    the wild as "matches anything" is the mistake this shape prevents.
-
-    An empty :attr:`replaces` is :data:`NO_WILDS`: the game declared no
-    substitution, so the wild is an ordinary symbol compared by equality. That is
-    also the behaviour of every game config written before the block existed,
-    which is why nothing here has to be conditional at the call site.
-    """
+    """Which code substitutes for which when a line is read."""
 
     code: str
     replaces: frozenset[str]
@@ -101,12 +70,7 @@ class WildRule:
         return bool(self.replaces)
 
     def is_wild(self, symbol: str | None) -> bool:
-        """Whether a code read off a tile is the wild.
-
-        False for every code when the game declares no substitution: a wild that
-        stands in for nothing behaves exactly like the symbol it is, and saying
-        otherwise would only make a run stop for a reason nothing measured.
-        """
+        """Whether a code read off a tile is the wild."""
         return self.active and symbol == self.code
 
     def stands_in_for(self, symbol: str | None) -> bool:
@@ -144,31 +108,7 @@ class SymbolRun:
 
 
 def read_run(codes: Sequence[str | None], wilds: WildRule = NO_WILDS) -> SymbolRun:
-    """How far one line's leading run reaches, and what it pays as.
-
-    ``codes`` is the code a classifier read off each tile of the line, left to
-    right, ``None`` for a tile it was not sure enough of to name. The run stops
-    at the first position that cannot join it, and every position after that is
-    ignored -- a line pays its *leading* run, so three alike on reels 3, 4 and 5
-    pay nothing when reels 1 and 2 differ.
-
-    A position joins when:
-
-    * it is the code the run is already paying as; or
-    * it is the wild, and the wild may stand in for that code; or
-    * the run has been wild all the way here and the wild may stand in for this
-      code, which is the position that *names* the run.
-
-    An unnamed tile joins nothing, in either direction: a classifier below its
-    floor said "I could not tell", and twice over that is not a run. So a line
-    whose first tile is unnamed covers exactly that one position and pays
-    nothing, rather than being credited with a run nothing measured.
-
-    The rule is stateful along the line and cannot be decomposed into pairs. With
-    ``AA WC BB`` every adjacent pair is a match on its own -- the wild is an Ox
-    beside the Ox and a Pisces beside the Pisces -- and the line is still a run of
-    two, because a wild is *one* symbol and cannot be both.
-    """
+    """How far one line's leading run reaches, and what it pays as."""
     if not codes:
         return SymbolRun(covered=0, symbol=None, leading_wilds=0, line_symbols=())
 
@@ -261,14 +201,7 @@ class Payline:
 
     @property
     def names(self) -> tuple[str, ...]:
-        """The positions as tile names, which is what a read is given.
-
-        A line's *pairs* are deliberately not offered here. Since the wild, a
-        read is not a sequence of independent pair comparisons -- it carries the
-        run's symbol along the line -- so a property handing out adjacent pairs
-        would invite exactly the pairwise implementation :func:`read_run` exists
-        to replace.
-        """
+        """The positions as tile names, which is what a read is given."""
         return tuple(position.name for position in self.positions)
 
 
@@ -287,10 +220,7 @@ class PaylineSet:
         return len(self.lines)
 
     def within(self, rows: int, columns: int) -> None:
-        """Check every position lands on a grid of this shape. Separate from
-        parsing since the grid shape isn't the config block's to know -- a set
-        can be correct for the game's current grid and wrong for an old split.
-        """
+        """Check every position lands on a grid of this shape."""
         for line in self.lines:
             for position in line.positions:
                 if not 1 <= position.row <= rows:
@@ -366,9 +296,8 @@ def _line(name: str, value: Any, *, where: str) -> Payline:
 
 
 def set_names(block: Any, *, where: str = "paylines") -> tuple[str, ...]:
-    """The bet configurations the block declares, in numeric order. Reads only
-    the keys, so a typo in the forty-line set can't stop the five-line one
-    from being offered."""
+    """The bet configurations the block declares, in numeric order. Reads only the keys,
+    so a typo in the forty-line set can't stop the five-line one from being offered."""
     return tuple(sorted(_block(block, where=where), key=_sort_key))
 
 

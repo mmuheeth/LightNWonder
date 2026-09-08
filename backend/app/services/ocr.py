@@ -1,15 +1,4 @@
-"""Reads the game's on-screen text with Tesseract.
-
-A frame is either taken live from OBS (inline base64, never written to disk) or
-read back from a capture run's saved screenshot, which is what makes a reading
-reproducible. Options resolve environment → game config's ``ocr`` block → request,
-later wins, and the reading reports what it ended up with. The engine is looked
-up once and cached until :func:`reset`. One region failing (engine choked on it)
-doesn't fail the read — it comes back with its own ``error`` — but a region name
-that isn't configured is a rejected request. The content box (game content vs.
-canvas letterbox bars, see :mod:`app.services.roi`) is found once per frame, not
-per region.
-"""
+"""Reads the game's on-screen text with Tesseract."""
 
 from __future__ import annotations
 
@@ -27,7 +16,7 @@ from PIL import Image
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
 from app.config.ocr import candidate_executables
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     BadRequestError,
@@ -202,9 +191,7 @@ def _active_config() -> tuple[str, GameConfig]:
 def _requested_regions(
     config: GameConfig, requested: Sequence[str] | None
 ) -> list[str]:
-    """Which regions to read, checked against the ones the game declares. An
-    unconfigured name is a 404, not an empty reading -- a typo and an unreadable
-    meter are different problems."""
+    """Which regions to read, checked against the ones the game declares."""
     if not config.roi:
         raise OcrRegionNotFoundError(
             f"The game config for {config.name!r} declares no 'roi' regions to read"

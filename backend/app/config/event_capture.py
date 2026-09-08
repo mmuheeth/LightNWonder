@@ -1,8 +1,4 @@
-"""Event Based Capture runtime settings.
-
-Runs are written below the OBS screenshot root, not a root of their own, since
-OBS will only write inside a directory it has already been given.
-"""
+"""Event Based Capture runtime settings."""
 
 from __future__ import annotations
 

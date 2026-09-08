@@ -1,30 +1,4 @@
-"""Joining a running game to the maths it actually loaded.
-
-Three separate things have to agree before a symbol code on this page means
-anything, and each is owned by someone else:
-
-* the **game's log** says which paytable is loaded, as a ``paytableId`` written
-  on every denomination change (:data:`app.utils.game_log.PAYTABLE_LOADED`);
-* the **game's install** has one folder per paytable under its ``GameConfig``
-  directory, named byte-identically to that id, holding ``math.xml`` and
-  ``gameConfig.cfg`` (:mod:`app.utils.game_math`), with one ``winGeometry.xml``
-  shared by all of them (:mod:`app.utils.win_geometry`);
-* the **game config in this repo** points at that directory, and carries the
-  one thing the maths cannot supply: what its two-letter symbol codes are
-  called. *Which* codes exist, what they pay and where they sit on the reels are
-  all read from the maths -- only the names are declared, and only because no
-  element of these files holds display text of any kind.
-
-This module is the only one that knows all three, and it reports how the join
-was made rather than presenting the result as fact -- a page showing the wrong
-maths is a stale log or a hand-typed id, and only saying which lets a reader
-tell. The log is read *backwards* (:func:`app.utils.log_search.last_match`),
-because the question is what it last said, not what it is about to say.
-
-Holds state, unlike :mod:`app.services.roi`: ``math.xml`` is close to a
-megabyte and parsing it per request would make the page feel broken, so parsed
-files are cached against their mtime and :func:`reset` drops them.
-"""
+"""Joining a running game to the maths it actually loaded."""
 
 from __future__ import annotations
 
@@ -40,7 +14,7 @@ from app.config.game_config import (
     GameConfigError,
     load_game_config,
 )
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     GameConfigInvalidError,
@@ -149,12 +123,7 @@ def _active_config() -> tuple[str, GameConfig]:
 
 
 def _root(config: GameConfig) -> Path:
-    """The game's installed ``GameConfig`` directory.
-
-    A 409 rather than a 404: the game is not installed on this machine (or its
-    config has never been pointed at it), which is something to fix on the
-    machine, not in the request.
-    """
+    """The game's installed ``GameConfig`` directory."""
     root = config.game_config_dir
     if root is None:
         raise PaytableUnavailableError(
@@ -169,12 +138,8 @@ def _root(config: GameConfig) -> Path:
 
 
 def _available(root: Path) -> list[str]:
-    """Paytable folders the game ships, newest maths last is not interesting --
-    sorted by name, which is how the ids read.
-
-    A directory only counts when it holds a ``math.xml``: the GameConfig root
-    also holds loose files and the occasional tooling directory.
-    """
+    """Paytable folders the game ships, newest maths last is not interesting -- sorted
+    by name, which is how the ids read."""
     try:
         entries = sorted(
             entry.name
@@ -197,12 +162,7 @@ def _available(root: Path) -> list[str]:
 
 
 def _from_log(config: GameConfig) -> tuple[str, PaytableSource] | None:
-    """Last paytable the game's log named, or ``None`` if it never did.
-
-    Not an error when it did not: a game that has not been started since the log
-    rotated has simply not said yet, and the page can still be asked for a
-    specific folder.
-    """
+    """Last paytable the game's log named, or ``None`` if it never did."""
     log_path = config.log_path
     if log_path is None:
         return None
@@ -311,18 +271,7 @@ def _geometry_path(config: GameConfig, root: Path) -> Path:
 
 
 def _labels(math: GameMath, config: GameConfig) -> dict[str, str]:
-    """What to call each symbol code.
-
-    The maths files carry no display text in any element, so a readable name
-    exists only where the game config's ``symbols`` block declares one -- this
-    is the one thing on the page that is configured rather than read, and it is
-    configured because it cannot be read.
-
-    Underneath it is what the maths' own *structure* implies: a member of
-    ``WildSymbolList`` is a Wild, a code a ``CountScatterCombo`` counts is a
-    Scatter. That fallback is what a game whose config names nothing yet gets,
-    so a new game is still readable before anyone fills its block in.
-    """
+    """What to call each symbol code."""
     labels = {
         code: ROLE_LABELS[role]
         for code, role in math.roles().items()
@@ -333,14 +282,7 @@ def _labels(math: GameMath, config: GameConfig) -> dict[str, str]:
 
 
 def _symbols(math: GameMath, config: GameConfig) -> list[SymbolInfo]:
-    """Every symbol code in play, best-paying first.
-
-    Counted off ``ReelStripList``, because that is what can actually land, but
-    codes the symbol set merely *declares* are listed too rather than dropped:
-    FortuneOx declares eighteen and puts seventeen on a strip, and the
-    eighteenth is a real feature symbol with a name and an award. Its zeros are
-    what say no spin can produce it here, which is more use than its absence.
-    """
+    """Every symbol code in play, best-paying first."""
     roles = math.roles()
     labels = _labels(math, config)
     pays = math.top_line_pays()
@@ -385,12 +327,8 @@ def _symbols(math: GameMath, config: GameConfig) -> list[SymbolInfo]:
 
 
 def _strip_positions(math: GameMath) -> dict[str, tuple[str, int]]:
-    """Which set each strip belongs to and where in it, so a strip's row can
-    say "reel 3 of Reels_BG_0" rather than just its name.
-
-    A strip listed by two sets keeps its first placement; nothing in the shipped
-    files does that, and picking the later one would be arbitrary.
-    """
+    """Which set each strip belongs to and where in it, so a strip's row can say "reel 3
+    of Reels_BG_0" rather than just its name."""
     placement: dict[str, tuple[str, int]] = {}
     for strip_set in math.reel_strip_sets:
         for index, identifier in enumerate(strip_set.strip_ids):
@@ -454,16 +392,7 @@ def _combos(math: GameMath, config: GameConfig) -> list[PaylineComboInfo]:
 def _pay_table(
     math: GameMath, config: GameConfig
 ) -> tuple[list[int], list[PaylinePayRow]]:
-    """The line pays pivoted into a paytable poster.
-
-    A combo is one symbol repeated with an ``ANY`` tail, so every pay is really
-    a (symbol, run length, value) triple and the natural shape is a grid --
-    which is how every paytable a player has ever seen is laid out. Symbols with
-    an identical row are merged (a game gives its card ranks one profile, and
-    five identical rows say less than one row naming five symbols), and the
-    merge is on the values alone, so two symbols only share a row when they
-    genuinely pay the same at every length.
-    """
+    """The line pays pivoted into a paytable poster."""
     pays = math.line_pays()
     if not pays:
         return [], []
@@ -515,12 +444,7 @@ def _scatters(math: GameMath, config: GameConfig) -> list[ScatterComboInfo]:
 def _applicable_set(
     math: GameMath, identity: PaytableIdentity | None
 ) -> tuple[str | None, str]:
-    """Which payline set is in play, and on whose authority.
-
-    The paytable folder is per line configuration, so its own ``NumberOfLines``
-    outranks ``math.xml``'s default -- the same ``math.xml`` ships in folders
-    that play 5, 20 and 40 lines.
-    """
+    """Which payline set is in play, and on whose authority."""
     if identity is not None and identity.number_of_lines:
         return str(identity.number_of_lines), "game_config"
     if math.defaults.payline_set_id:
@@ -531,12 +455,7 @@ def _applicable_set(
 def _win_geometry(
     path: Path, math: GameMath, identity: PaytableIdentity | None
 ) -> WinGeometryInfo:
-    """Read the geometry file and narrow it to the set in play.
-
-    An unreadable one is carried as an ``error`` rather than raised: the symbols,
-    strips and combos above it are all still worth looking at, and a page that
-    404s because one of four tables is missing is worse than one that says so.
-    """
+    """Read the geometry file and narrow it to the set in play."""
     set_id, resolved_from = _applicable_set(math, identity)
     try:
         geometry: WinGeometry = _cached(path, load_win_geometry)
@@ -589,19 +508,7 @@ def _win_geometry(
 def _bet_config(
     directory: Path, identity: PaytableIdentity | None
 ) -> BetConfigInfo | None:
-    """Read the folder's two bet configuration files, if it ships them.
-
-    Absent is ``None`` rather than an error: an older install may not carry
-    them, and neither does a machine without the game. Present but unreadable is
-    an ``error`` on a 200, exactly as an unreadable ``winGeometry.xml`` is --
-    the symbols, strips and combos are all still true without knowing what a
-    spin costs.
-
-    The two are read as a pair because only together do they separate the cost
-    of a spin from the ladder that multiplies it. The line count comes from the
-    paytable's own ``NumberOfLines``, which is what picks the block: the same
-    files ship in folders playing 40 lines at 88 and 20 at 50.
-    """
+    """Read the folder's two bet configuration files, if it ships them."""
     ladder_path = directory / BET_PER_UNIT_FILE
     cost_path = directory / BET_UNIT_FILE
     if not ladder_path.is_file() and not cost_path.is_file():
@@ -690,15 +597,8 @@ def _math_info(math: GameMath, config: GameConfig) -> GameMathInfo:
 def _denomination(
     source: PaytableSource, paytable_id: str, identity: PaytableIdentity | None
 ) -> DenominationInfo | None:
-    """Interpret the denomination the log reported: its unit, and the rate that
-    turns credits into money.
-
-    This is the third of the three-way join's outputs, and it needs all three
-    legs -- the log for the value, the folder name for the unit, the folder's own
-    ``gameConfig.cfg`` for the corroboration -- which is why it is assembled here
-    rather than in :func:`_from_log`. ``PaytableSource`` stays a record of *how
-    the id was arrived at*, a different question.
-    """
+    """Interpret the denomination the log reported: its unit, and the rate that turns
+    credits into money."""
     resolved = denomination.parse(
         source.denomination,
         paytable_id=paytable_id,

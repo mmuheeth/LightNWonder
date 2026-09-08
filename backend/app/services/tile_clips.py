@@ -1,37 +1,4 @@
-"""Record one short video per reel position, straight off OBS.
-
-The reel grid already cuts a *screenshot* into tiles, and that is the reading
-everything is graded by. This answers the question a still cannot: what one
-symbol did after the reels stopped. A winning spin lights the positions that
-paid and leaves the rest alone, so fifteen small clips laid out as the grid say
-which cells the game thought had won -- evidence about the presentation, next to
-the classifier's evidence about the symbols.
-
-Four things about it are worth knowing.
-
-**There is no video stream to subscribe to.** obs-websocket offers screenshots
-and a recording, and nothing in between, so a clip is built by asking for
-screenshots as fast as OBS will answer and cutting each one up. The frames are
-JPEG rather than PNG for exactly that reason -- these are video frames, and
-PNG-encoding a 1080p canvas ten times a second is the slowest part of the loop
-by a distance.
-
-**The geometry is resolved once, from the first frame.** Finding the content box
-of a letterboxed frame means scanning the whole picture, and the game window
-does not move or change shape between two frames of one spin, so
-:func:`app.services.grid.place_on` is called once and its boxes reused. That
-also guarantees every clip is the same size, which the encoder requires.
-
-**Nothing here raises.** A clip is a record, never a reading anything is graded
-by, so a machine whose OBS dropped the connection halfway through gets the
-frames it managed and an ``error`` saying why there are no more -- and the spin
-that was being analysed is unaffected. The one thing a caller must do with the
-returned ``error`` is surface it.
-
-**It holds no state**, like :mod:`app.services.roi` and
-:mod:`app.services.grid`, so there is no ``reset()`` and nothing in
-``conftest.py``.
-"""
+"""Record one short video per reel position, straight off OBS."""
 
 from __future__ import annotations
 
@@ -45,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import AppException
 from app.schemas.obs import ScreenshotRequest
@@ -68,12 +35,7 @@ _FRAME_HEADROOM = 1.5
 
 
 def _decode(data_uri: str) -> Image.Image:
-    """Turn one of OBS's base64 data URIs into an open image.
-
-    The same three lines :mod:`app.services.ocr` has, and deliberately not
-    shared with it: OCR raises its own read failure and this raises nothing,
-    so what they have in common is the two-line body rather than the behaviour.
-    """
+    """Turn one of OBS's base64 data URIs into an open image."""
     _, _, encoded = data_uri.rpartition(",")
     raw = base64.b64decode(encoded, validate=True)
     image = Image.open(io.BytesIO(raw))
@@ -112,9 +74,7 @@ def _take(
     image: Image.Image,
     box: tuple[int, int, int, int],
 ) -> None:
-    """Crop the reels out of one frame and cut it into tiles. Off the event
-    loop: this is a numpy copy per tile per frame, several times a second, in a
-    process that is also driving OBS and the i-deck."""
+    """Crop the reels out of one frame and cut it into tiles."""
     recorder.add(image.crop(box))
 
 
@@ -141,15 +101,7 @@ async def record(
     source_name: str | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> TileClipSet:
-    """Grab frames for ``seconds`` and write one clip per tile into ``directory``.
-
-    ``should_stop`` is polled between frames, so a cooperative cancel ends the
-    capture at the next one rather than being waited out -- and whatever was
-    grabbed before it is still written, since half a clip is more use than none.
-
-    Never raises. Whatever went wrong comes back as ``error`` on the set, with
-    the frames that were captured before it beside.
-    """
+    """Grab frames for ``seconds`` and write one clip per tile into ``directory``."""
     requested = max(fps, _MIN_FPS)
     window = max(seconds, _MIN_SECONDS)
     budget = math.ceil(window * requested * _FRAME_HEADROOM) + 1

@@ -1,9 +1,4 @@
-/**
- * Test helpers: render a component with the providers it needs.
- *
- * Retries are disabled so a failing request surfaces immediately instead of
- * making tests wait through the backoff schedule.
- */
+/** Test helpers: render a component with the providers it needs. */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";

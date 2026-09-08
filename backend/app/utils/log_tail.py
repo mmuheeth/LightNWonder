@@ -1,10 +1,4 @@
-"""Follow a file another process is appending to. :class:`LogTail` is a single
-read (hand it a cursor, get back what arrived after it, e.g. to confirm one
-button press); :class:`LogFollower` holds its own cursor for reacting to a log
-as it's written. A shrinking file means the log rotated, not an error -- the
-cursor restarts from the new file's beginning. Reads never raise: an absent,
-locked or unreadable log just yields nothing.
-"""
+"""Follow a file another process is appending to."""
 
 from __future__ import annotations
 
@@ -54,9 +48,8 @@ class LogTail:
             return 0
 
     def read_since(self, offset: int) -> tuple[str, int]:
-        """Read whatever was appended since ``offset``, returning the new text
-        and the next cursor. A file smaller than ``offset`` has rotated, so
-        reading restarts from its beginning."""
+        """Read whatever was appended since ``offset``, returning the new text and the
+        next cursor."""
         try:
             size = self.path.stat().st_size
         except OSError:
@@ -93,12 +86,7 @@ class LogTail:
 
 
 class LogFollower:
-    """A cursor that remembers where it got to, for following a live log.
-
-    Starts at the *end* of the file -- a run should not open with a screenshot
-    of every spin since the game launched. Set :attr:`cursor` to 0 to read the
-    file from its start instead.
-    """
+    """A cursor that remembers where it got to, for following a live log."""
 
     def __init__(
         self, path: Path, *, poll_seconds: float = DEFAULT_POLL_SECONDS

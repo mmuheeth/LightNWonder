@@ -2,22 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { percent } from "@/features/image-classifier/percent";
 
 /**
- * Every tile as a row: what it was named, where it sits, and how sure the model
- * was.
- *
- * A table rather than fifteen thumbnails, because the pictures are already on
- * screen once -- the ringed overlay above shows *where* each verdict landed, and
- * repeating each tile beside its own row adds a second copy of the same
- * information at a size too small to judge anything by. What a table is better at
- * is the thing the overlay cannot show: the numbers, scannable down a column.
- *
- * **A tile below the floor still shows its leading candidate, greyed, with the
- * probability in red.** That is the whole point of keeping these rows: the grid
- * above answers "was the model sure", and this answers "what did it think" -- two
- * different questions. A rejection with nothing behind it would be unarguable,
- * and with the floor at 90% the rejected rows are where most of the information
- * is: the model can read a symbol correctly at 70% and still, correctly by this
- * rule, decline to commit to it.
+ * Every tile as a row: what it was named, where it sits, and how sure the model was.
  */
 export function TileStats({ tiles, floor }) {
   if (!tiles?.length) return null;

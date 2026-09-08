@@ -1,6 +1,4 @@
-"""Paytable endpoints, thin wrappers over :mod:`app.services.paytable`. Reads
-the maths the running game loaded: which paytable folder its log named, and the
-symbols, reel strips, combos and payline geometry in that folder's XML."""
+"""Paytable endpoints, thin wrappers over :mod:`app.services.paytable`."""
 
 from __future__ import annotations
 
@@ -44,12 +42,8 @@ async def get_paytable(
         ),
     ),
 ) -> ApiResponse[PaytableView]:
-    """Everything the loaded paytable declares: symbols and their roles, every
-    reel strip, the line and scatter combos, and the payline set in play.
-
-    Which folder is read comes from the game's own log by default, and the
-    answer says so in ``source`` -- the join between a running game and a
-    directory on disk is the part worth being able to check."""
+    """Everything the loaded paytable declares: symbols and their roles, every reel
+    strip, the line and scatter combos, and the payline set in play."""
     view = await paytable_service.view(paytable_id)
     lines = view.win_geometry.line_count
     return ApiResponse[PaytableView].ok(

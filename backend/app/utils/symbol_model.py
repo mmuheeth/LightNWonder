@@ -1,23 +1,4 @@
-"""EfficientNet-B0 over the pictures :mod:`app.utils.symbol_dataset` builds.
-
-The only module in the codebase that imports torch, and it is imported lazily by
-its caller so a machine without the ML stack still starts -- the same bargain OCR
-makes with Tesseract. It knows nothing about FastAPI: training takes a progress
-callback and a cancellation predicate, and returns what it measured.
-
-Two things here are not the stock recipe and should not be "simplified" back:
-
-**There is no horizontal flip.** It is the reflex first augmentation and it is
-wrong for this data: five of the nine symbols are the characters A, K, Q, J and
-10, and a mirrored J is not a J seen from elsewhere, it is a picture the game
-never draws.
-
-**Resolution is an augmentation.** The artwork is 380-600px and the tiles this
-will be shown are 61-128px wide, upscaled to the network's input. So every
-training picture is knocked down to a random size in that range and back up
-again, which is the one transform that makes a sharp asset resemble a blurry
-crop. Without it the network trains on detail that is simply absent at inference.
-"""
+"""EfficientNet-B0 over the pictures :mod:`app.utils.symbol_dataset` builds."""
 
 from __future__ import annotations
 
@@ -79,34 +60,20 @@ _CROP_RATIO = (0.85, 1.6)
 _CROP_SCALE = (0.65, 1.0)
 
 # How much of a picture the evaluation transform keeps before scaling it to the
-# input size -- i.e. the same slight zoom that training's random crop applies on
-# average (uniform area over 0.65-1.0 is a mean linear scale of about 0.91).
-#
-# This is not a spare knob, it is a correctness fix, and it is measured. Without
-# it, evaluation showed the network the *whole* picture while training had only
-# ever shown it zoomed crops, so at inference every symbol appeared smaller than
-# anything in training -- straightforwardly out of distribution. The sparsest
-# symbol in this set (DD, opaque over only ~0.22 of its own box) scored 0.42 on
-# pictures it had been trained on and 1.00 on the same pictures with a 10% centre
-# zoom; CC went 0.92 to 1.00. It is torchvision's own ImageNet recipe
-# (Resize(256) then CenterCrop(224)) and it has to stay paired with _CROP_SCALE:
-# change one and the other needs revisiting, which is what TRANSFORM_VERSION is
-# for.
+# input size -- the same slight zoom training's random crop applies on average. A
+# correctness fix, not a spare knob: without it inference showed the network the
+# whole picture while training had only ever shown it zoomed crops, and DD scored
+# 0.42 on pictures it had trained on versus 1.00 with a 10% centre zoom. Has to stay
+# paired with _CROP_SCALE, which is what TRANSFORM_VERSION exists to catch.
 _EVAL_CROP = 0.90
 
 
-# The networks that can be fitted, and where each keeps its classifier head.
-#
-# Both take the same 224px ImageNet-normalised input and go through the same
-# transforms, so everything else in this module -- the sample synthesis, the
-# augmentation, the schedule, the evaluation, the checkpoint -- is shared. Only the
-# backbone and the name of its final layer differ, which is why adding a third is
-# one entry here rather than a second code path.
-#
-# `head` is the parameter-name prefix of the layer that gets replaced, and it is
-# what `_freeze` keeps trainable during the first stage. Getting it wrong would
-# silently train nothing in stage one, so it lives beside the builder that
-# replaces that exact layer.
+# The networks that can be fitted, and where each keeps its classifier head. Both
+# take the same input through the same transforms, so only the backbone differs and
+# adding a third is one entry here rather than a second code path. `head` is the
+# parameter-name prefix `_freeze` keeps trainable during the first stage -- get it
+# wrong and stage one silently trains nothing, which is why it lives beside the
+# builder that replaces that exact layer.
 _ARCHITECTURES: dict[str, dict[str, Any]] = {
     "efficientnet_b0": {
         "label": "EfficientNet-B0",
@@ -152,19 +119,7 @@ class EpochRecord:
 
 @dataclass(frozen=True)
 class Metrics:
-    """What a finished run measured, and how much each number is worth.
-
-    Two accuracies, kept apart on purpose. ``frame_holdout_accuracy`` is over
-    frames never trained on, which is the closest this dataset comes to a real
-    score -- but a class here is an animation loop, so even a middle block of it
-    resembles what was trained on, and ``frame_holdout_leakage`` says how much
-    (0 = the held-back frames were duplicates and the number means nothing,
-    1 = as unlike the training frames as two frames of the same symbol get).
-    ``augmented_accuracy`` covers all nine classes but is leaky by construction:
-    it re-augments the training pictures, so it measures robustness to the
-    augmentation, not generalisation. Averaging the two would produce one
-    confident-looking number that answers no question at all.
-    """
+    """What a finished run measured, and how much each number is worth."""
 
     classes: list[str]
     architecture: str
@@ -217,13 +172,7 @@ class Checkpoint:
 
 
 def configure_threads(threads: int) -> None:
-    """Cap torch's thread pool.
-
-    Not a tuning knob so much as a courtesy: this process is also the one holding
-    the OBS socket, posting clicks into the game window and driving the button
-    deck, and torch helps itself to every core by default. A training run that
-    takes all twelve makes the whole dashboard look hung.
-    """
+    """Cap torch's thread pool."""
     torch.set_num_threads(max(1, threads))
 
 
@@ -257,11 +206,7 @@ def _train_transform(size: int) -> v2.Compose:
 
 
 def _eval_transform(size: int) -> v2.Compose:
-    """The counterpart of :func:`_train_transform`, and it must stay one.
-
-    Resizes past the input size and centre-crops back to it, so a symbol arrives
-    at the scale the random crops trained the network at. See ``_EVAL_CROP``.
-    """
+    """The counterpart of :func:`_train_transform`, and it must stay one."""
     outer = max(size + 1, round(size / _EVAL_CROP))
     return v2.Compose(
         [
@@ -275,11 +220,7 @@ def _eval_transform(size: int) -> v2.Compose:
 
 
 class _Samples(Dataset[tuple[torch.Tensor, int]]):
-    """Composed pictures, synthesised per access rather than pre-rendered.
-
-    On-the-fly because the point of the augmentation is that no two draws of the
-    same source file are the same picture; a cached set of 197 would defeat it.
-    """
+    """Composed pictures, synthesised per access rather than pre-rendered."""
 
     def __init__(
         self,
@@ -348,25 +289,14 @@ def _build(classes: int, pretrained: bool, architecture: str) -> nn.Module:
 
 
 def _freeze(model: nn.Module, architecture: str, *, frozen: bool) -> None:
-    """Freeze everything but the head, or nothing at all.
-
-    The head's parameter prefix comes from the registry -- ResNet calls it ``fc``
-    and EfficientNet ``classifier`` -- because using the wrong one would freeze the
-    whole network and quietly train nothing during the first stage.
-    """
+    """Freeze everything but the head, or nothing at all."""
     head = str(_ARCHITECTURES.get(architecture, {}).get("head", "classifier"))
     for name, parameter in model.named_parameters():
         parameter.requires_grad = not frozen or name.startswith(head)
 
 
 def _sampler(labels: Sequence[int], samples: int, seed: int) -> WeightedRandomSampler:
-    """Draw every class equally often, whatever the file counts say.
-
-    This dataset is 48 frames of one symbol against a single picture of another.
-    Left alone, an epoch is 96% picture symbols and the card symbols are never
-    learned; and because the counts are that lopsided, a fixed number of draws
-    per epoch is the only thing that makes "an epoch" mean anything.
-    """
+    """Draw every class equally often, whatever the file counts say."""
     counts = np.bincount(labels)
     weights = [1.0 / float(counts[label]) for label in labels]
     generator = torch.Generator().manual_seed(seed)
@@ -631,12 +561,7 @@ def _write_samples(
     style: str,
     seed: int,
 ) -> None:
-    """Save one composed picture per class, for a human to look at.
-
-    Worth the handful of files: whether the background was put back correctly is
-    the first question when accuracy disappoints, and it is answerable by looking
-    rather than by reasoning about it.
-    """
+    """Save one composed picture per class, for a human to look at."""
     try:
         directory.mkdir(parents=True, exist_ok=True)
         rng = random.Random(seed)
@@ -725,11 +650,7 @@ def load(path: Path) -> Checkpoint:
 def predict(
     checkpoint: Checkpoint, images: Sequence[Image.Image], threads: int
 ) -> np.ndarray:
-    """Probabilities per class for each picture, as an ``(n, classes)`` array.
-
-    One batch rather than a loop: fifteen tiles is one forward pass, and the
-    per-call overhead of torch on CPU is a good fraction of the work itself.
-    """
+    """Probabilities per class for each picture, as an ``(n, classes)`` array."""
     if not images:
         return np.zeros((0, len(checkpoint.classes)), dtype=np.float64)
     configure_threads(threads)
@@ -750,10 +671,6 @@ def epoch_total(epochs_head: int, epochs_finetune: int) -> int:
 
 
 def estimate_seconds(epochs: int, samples: int, batch_size: int) -> float:
-    """A rough wall-clock estimate, for the UI to set expectations with.
-
-    Deliberately crude -- it exists so a three-minute run does not look hung, not
-    so anyone can plan around it.
-    """
+    """A rough wall-clock estimate, for the UI to set expectations with."""
     batches = math.ceil(samples / max(1, batch_size))
     return epochs * batches * 1.4

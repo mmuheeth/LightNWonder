@@ -1,7 +1,4 @@
-"""Request and response models for the payline check. Results carry the
-evidence beside the pay verdict, since a pay count alone can't be checked
-against a config or a screenshot -- and *which* evidence depends on how the
-tiles were compared, which is what :class:`PaylineMethod` names."""
+"""Request and response models for the payline check."""
 
 from __future__ import annotations
 
@@ -25,12 +22,7 @@ __all__ = [
 
 
 class PaylineMethod(StrEnum):
-    """How two tiles were decided to be the same symbol.
-
-    The two answer different questions, and the fields carrying their evidence
-    are correspondingly different -- a similarity step has a score and no codes,
-    a symbol step has codes and no score.
-    """
+    """How two tiles were decided to be the same symbol."""
 
     SIMILARITY = "similarity"
     """Cosine similarity between the two pictures, cut at a threshold. Says the
@@ -73,17 +65,8 @@ class PaylineSource(BaseModel):
 
 
 class PaylineStep(BaseModel):
-    """One adjacent pair on a line. ``matched`` is whether the run continued
-    across it; ``counted`` is whether the leading run got this far.
-
-    The two flags are not one flag. A *counted* step is judged against what the
-    run is paying as (``line_symbol``), because a wild stands in for the run's
-    symbol and not for the tile beside it -- so ``AA WC BB`` breaks at the second
-    pair even though the wild matches a Pisces perfectly well on its own. An
-    *uncounted* step is past the break, where there is no run left to continue,
-    so it reports the pairwise answer instead: it is evidence the break was real,
-    which is why the pair is compared at all.
-    """
+    """One adjacent pair on a line. ``matched`` is whether the run continued across it;
+    ``counted`` is whether the leading run got this far."""
 
     left: str = Field(description="Position name of the left tile, e.g. 'r2c1'.")
     right: str = Field(description="Position name of the right tile, e.g. 'r2c2'.")
@@ -374,13 +357,7 @@ class PaylineCheckResult(BaseModel):
 
 
 class PaylineOverlay(BaseModel):
-    """One combined picture of some lines over the reels, and where it landed.
-
-    Returned by a redraw rather than a check: the lines worth drawing are not
-    always known when the lines are evaluated (see
-    :func:`app.services.paylines.redraw`), and the picture is then the only part
-    that changes.
-    """
+    """One combined picture of some lines over the reels, and where it landed."""
 
     output_dir: str = Field(description="Absolute directory it was written to.")
     output_file: str = Field(description="What it was written as.")

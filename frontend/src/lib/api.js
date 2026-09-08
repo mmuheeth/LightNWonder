@@ -22,7 +22,6 @@ function assertEnvelope(envelope, status) {
 
 /**
  * Perform a request and return the envelope's `data`.
- *
  * @param {import("axios").AxiosRequestConfig} config
  * @returns {Promise<unknown>} the unwrapped payload (`null` for empty responses)
  */

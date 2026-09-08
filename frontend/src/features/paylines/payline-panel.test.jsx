@@ -189,25 +189,12 @@ async function renderReady(payload = layout()) {
   return request;
 }
 
-/**
- * One labelled figure in the statistics block.
- *
- * Scoped rather than looked up by its value, because a score printed in the
- * statistics is often the same score printed in a line's comparisons -- and a
- * bare `getByText("0.8260")` matching both says nothing about which block is
- * showing what.
- */
+/** One labelled figure in the statistics block. */
 function figure(label) {
   return screen.getByText(label).closest("div");
 }
 
-/**
- * A line's dropdown trigger, disambiguated from the result box above it.
- *
- * A paying line's name is now shown twice -- once as its own result box, once
- * as the header of its dropdown -- so a bare `getByText("Line 1")` matches
- * both and throws. Only the dropdown's copy sits inside a `<summary>`.
- */
+/** A line's dropdown trigger, disambiguated from the result box above it. */
 function dropdownFor(label) {
   return screen
     .getAllByText(label)

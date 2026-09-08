@@ -1,7 +1,5 @@
-"""Path handling for names that came from outside -- guards against path
-traversal (``..\\..\\Windows\\Temp`` joined to a capture dir is still valid).
-:func:`resolve_within` is the one place that check lives.
-"""
+"""Path handling for names that came from outside: guards against traversal, since
+a relative path joined to a capture dir is still a valid path."""
 
 from __future__ import annotations
 
@@ -9,11 +7,7 @@ from pathlib import Path
 
 
 class UnsafeNameError(ValueError):
-    """A supplied name is not a bare filename, or escapes its directory.
-
-    Carries :attr:`reason` separately so callers can use the short form in a
-    field-level error detail.
-    """
+    """A supplied name is not a bare filename, or escapes its directory."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -21,10 +15,8 @@ class UnsafeNameError(ValueError):
 
 
 def resolve_within(root: Path, name: str, *, default_suffix: str | None = None) -> Path:
-    """Resolve a bare filename inside ``root``. ``root`` must be absolute --
-    a relative one resolves against the working directory, not the caller's
-    intended root.
-    """
+    """Resolve a bare filename inside ``root``. ``root`` must be absolute -- a relative
+    one resolves against the working directory, not the caller's intended root."""
     candidate = Path(name)
     # `Path("..").name` is ".." rather than "", so an all-dots name clears the
     # first check and has to be rejected on its own.

@@ -1,11 +1,4 @@
-"""Find the part of a captured frame the game actually fills (the "content
-box"). OBS letterboxes a window capture inside its fixed canvas, and the bar
-width is a property of the window's shape at capture time, not the canvas --
-so regions/click targets are resolved against this box, not canvas fractions,
-to survive a resize. Detection refuses (returns the whole frame) when nothing
-clears the threshold or the box is under ``min_fraction`` of the frame, since
-both look like a normal fade-to-black and a bad crop there beats an error.
-"""
+"""Find the part of a captured frame the game actually fills (the "content box")."""
 
 from __future__ import annotations
 
@@ -31,11 +24,7 @@ DEFAULT_MIN_FRACTION = 0.25
 
 @dataclass(frozen=True)
 class ContentBox:
-    """The rectangle of a frame the game fills, in pixels of that frame.
-
-    Edges are half-open like Pillow's own box. Frame size is carried along
-    since "is this letterboxed" needs the pair, not just the box.
-    """
+    """The rectangle of a frame the game fills, in pixels of that frame."""
 
     left: int
     top: int
@@ -83,11 +72,7 @@ def content_box(
     threshold: int = DEFAULT_THRESHOLD,
     min_fraction: float = DEFAULT_MIN_FRACTION,
 ) -> ContentBox:
-    """The part of ``image`` that is game rather than letterbox.
-
-    ``threshold`` is clamped into ``0..255`` rather than rejected, since it
-    arrives from configuration and a frame is still croppable at either end.
-    """
+    """The part of ``image`` that is game rather than letterbox."""
     whole = ContentBox.whole(image.width, image.height)
     if image.width <= 0 or image.height <= 0:
         return whole
@@ -118,16 +103,7 @@ def content_box(
 
 
 def is_blank(image: Image.Image, *, threshold: int = DEFAULT_THRESHOLD) -> bool:
-    """Whether nothing in ``image`` clears ``threshold`` -- an all-black capture.
-
-    The same measurement :func:`content_box` makes and deliberately does not act
-    on: there, nothing above the threshold means "do not trim", because a fade to
-    black is a normal thing for a screenshot to catch and one bad crop beats an
-    error on the frame after it. A caller that took the frame *on purpose* wants
-    the opposite answer -- an empty frame is a capture that did not happen, and
-    every reading taken off it is meaningless rather than merely dark. So the
-    fact is exposed and what to do about it is left to whoever asked.
-    """
+    """Whether nothing in ``image`` clears ``threshold`` -- an all-black capture."""
     if image.width <= 0 or image.height <= 0:
         return True
     limit = min(max(int(threshold), 0), 255)

@@ -3,20 +3,16 @@ import { AlertTriangle } from "lucide-react";
 import { StatRow } from "@/components/stat-row";
 
 /**
- * The five values read off a cash-meter crop, rendered inside the ROI card
- * since cropping and reading are one action. Low confidence is shown, not
- * smoothed over -- a misread digit still looks like a number -- and
- * `unmapped` is a warning that the skin's layout may not be the expected one.
+ * The five values read off a cash-meter crop, rendered inside the ROI card since
+ * cropping and reading are one action.
  */
 
 /** Below this a value is worth checking against the crop rather than trusting. */
 const CONFIDENCE_FLOOR = 75;
 
 /**
- * Exactly 0 is "unmeasured", not "certainly wrong", so it is deliberately not
- * flagged: Tesseract declines to score a word it read under a character
- * whitelist, and a correct balance frequently arrives that way. Dropping the
- * `confidence > 0` guard below would put a warning beside most correct balances.
+ * Exactly 0 is "unmeasured", not "certainly wrong", so it is deliberately not flagged:
+ * Tesseract declines to score a word it read under a character whitelist, and a correct
  */
 const UNMEASURED = 0;
 
@@ -132,9 +128,8 @@ export function MeterValues({ meter }) {
           <span>
             {meter.unmapped.length} value
             {meter.unmapped.length === 1 ? "" : "s"} read but matched no field (
-            {meter.unmapped.map((item) => item.value).join(", ")}). This skin's
-            layout may differ from the expected one — check the values above
-            against the crop.
+            {meter.unmapped.map((item) => item.value).join(", ")}). This skin's layout
+            may differ from the expected one — check the values above against the crop.
           </span>
         </p>
       ) : null}

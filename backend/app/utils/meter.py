@@ -1,29 +1,5 @@
-"""Reads the numbers off a game's meter strip (``roi.cash_meter``: balance,
-last win, current bet). Four things measured on real captures shape the
-design: digits are located per image (brightest columns) rather than by fixed
-box, since the strip isn't aligned identically every launch; which number is
-which comes from a per-field width window, since the ``CASH``/``WIN``/``BET``
-labels are too small to OCR and cell detection can't order an empty cell;
-the row band is fitted per skin via :func:`fit_band` rather than assumed,
-since labels sit below cells on one game and inside them on another; and a
-field is read at psm 8 first, escalating only while unconvincing, taking the
-engine's most *confident* reading rather than the most popular one.
-
-Two of those bite in ways worth knowing before touching a constant here.
-
-One band has to serve three cells that are not the same height, so it is
-measured against the shortest and the tallest arrives clipped or flush against
-the edge -- which Tesseract reads as a glyph with an extra stroke, turning `105`
-into `4105` at confidence 83. Hence :func:`_grown` and :func:`_padded`: every
-value gets :data:`GLYPH_MARGIN_SHARE` clear rows, taken from the strip where they are
-really there and synthesised where they are not.
-
-And "most confident" needs a caveat, because the engine does not always say.
-Under a ``tessedit_char_whitelist`` Tesseract 5's LSTM reports confidence
-exactly 0 for a word it read perfectly -- see :data:`UNMEASURED`, which is what
-:attr:`MeterField.rank` and :data:`FLOOR` are written around. A reading with no
-score is still a reading.
-"""
+"""Reads the numbers off a game's meter strip (``roi.cash_meter``: balance, last win,
+current bet)."""
 
 from __future__ import annotations
 
@@ -68,55 +44,33 @@ INK_LEVEL = 0.82
 # few enough to keep the cell border out.
 CLUSTER_PAD = 2
 
-# Clear background a glyph needs above and below it before the engine sees it, as
-# a share of the band's own height. Not cosmetic: Tesseract reads a glyph flush
-# against the edge of its image as one with an extra stroke -- `105` came back
-# `4105` at confidence 83 and `$1,250.00` as `$4.7250.00`, both from a crop that
-# is perfectly legible by eye. It bites the tallest cell first, because one band
-# has to serve all three: on FortuneOx's 1080x75 strips the WIN digits stand 3
-# rows taller than CASH's and BET's, so a band that clears their borders leaves
-# WIN's touching both edges. Made up from the strip where the rows are really
-# there (:func:`_grown`) and synthesised only for what is left (:func:`_padded`),
-# since the rows either side of a value are often the cell border and the label --
-# what the band exists to exclude. Topped up rather than always added, because a
-# *fitted* band already pads its cores (:data:`BAND_PAD_SHARE`) and padding one
-# that has room costs a digit: 4 unconditional rows turn a 459x29 strip's `49531`
-# into `49331`.
-#
-# A *share*, not a pixel count, and that is the whole point. Four fixed rows are
-# ample clearance on a 29-row band and thin on a 43-row one, so at a 1.5x canvas
-# the cell border welded a leading `1` onto `$1,250.00` and dragged a correct
-# reading below :data:`FLOOR`. Scaling with the band holds from a 0.35x canvas to
-# 2x. Every pixel-measured constant in this module has to be read this way -- a
-# meter reader is a pile of measurements, and a canvas change invalidates the ones
-# expressed in pixels while leaving every fraction correct.
+# Clear background a glyph needs above and below it, as a share of the band's own
+# height. Not cosmetic: Tesseract reads a glyph flush against the edge of its image
+# as one with an extra stroke (`105` came back `4105`). A *share*, not a pixel
+# count, which is what holds it from a 0.35x canvas to 2x -- every pixel-measured
+# constant in this module has to be read that way. Taken from the strip where the
+# rows are really there (:func:`_grown`) and synthesised only for what is left
+# (:func:`_padded`), and topped up rather than always added, since a fitted band
+# already pads its cores and padding one that has room costs a digit.
 GLYPH_MARGIN_SHARE = 0.18
 
 # Never fewer than this, however small the band: two rows is the least that reads
 # as background rather than as a border touching the glyph.
 MIN_GLYPH_MARGIN = 2
 
-# Brightness for a row to count as holding part of a glyph when that margin is
-# measured, as a share of the crop's own range above its background. Deliberately
-# far looser than :data:`INK_LEVEL`, and for the opposite reason: that one wants
-# glyph *cores*, to keep a cell border out of a column group, while this one wants
-# a glyph's dimmest extremity, since a stroke Tesseract can see is a stroke that
-# needs clearance. At 0.82 the WIN cell measures 4 clear rows it does not have --
-# its digits fade from 250 at the core to 150 at the edge, and every row of the
-# crop but one is part of a digit.
+# Brightness for a row to count as holding part of a glyph, as a share of the crop's
+# own range above its background. Deliberately far looser than :data:`INK_LEVEL`,
+# and for the opposite reason: that one wants glyph *cores*, to keep a cell border
+# out of a column group, while this one wants a glyph's dimmest extremity, since a
+# stroke Tesseract can see is a stroke that needs clearance.
 GLYPH_EDGE = 0.15
 
-# The share of a row's width that has to be lit for it to be the cell's own border
+# Share of a row's width that has to be lit for it to be the cell's own border
 # rather than a line of text, which is where growth stops: a drawn rule lights
-# nearly every column, a row of glyphs only its strokes. Growth itself is limited
-# to :data:`GLYPH_MARGIN_SHARE` of the band, per edge.
-#
-# One band serves three cells of different heights, so the tallest can arrive
-# clipped -- and a clipped glyph cannot be repaired by padding, only by going back
-# to the strip for the rows left out. Growth is what lets one declared fraction
-# hold across capture resolutions: the same band is 29 rows of a 1080x75 strip and
-# 11 of a 421x29 one, and 11 rows have no slack for a meter row that stands 11
-# tall.
+# nearly every column, a row of glyphs only its strokes. Growth is what lets one
+# declared fraction hold across capture resolutions -- the same band is 29 rows of a
+# 1080x75 strip and 11 of a 421x29 one, and a clipped glyph cannot be repaired by
+# padding, only by going back to the strip for the rows left out.
 BORDER_SHARE = 0.8
 
 # Gap (as a share of band height) that splits two lit runs into different numbers.
@@ -125,25 +79,12 @@ BORDER_SHARE = 0.8
 # keep ~19px cell separations apart.
 GAP_SHARE = 0.55
 
-# Floor under that gap, in pixels. A band tight enough to clear the labels at a
-# small capture size leaves the share below the width of a value's own decimal
-# point: at 459x29 the band is 11 rows, 0.55 of it is 6, and `$1.76` arrives as
-# `$1.` and `76` -- the second of which reads 76 and wins its window. Measured
-# over the saved strips: gaps inside one value reach 8 and the tightest gap
-# between two cells is 11, so 9 sits between them.
-#
-# It only ever binds on a small capture, and there it is a genuine trade rather
-# than a tuning: a 1080x75 strip computes 16 from the share alone and never
-# reaches this, a 459x29 one needs 9 or it splits a value, and a 405x28 one needs
-# 5 or it welds CASH to WIN. No single number serves all three, and this is the
-# one constant here that a share could not rescue -- both a width share and a
-# band share were measured, and the width share was far worse (it fragments
-# values at every size). The reason is that the two gaps being told apart, one
-# inside a value and one between two cells, converge as the strip shrinks: at
-# 1080x75 they measure 9 and 17, and by 405x28 there is no longer daylight
-# between them. Sized for the canvas the cabinet runs, where the share governs
-# and this does not, and the cost is that the meter is unreliable below roughly
-# a third of that canvas. See the sweep in `test_meter.py`.
+# Floor under that gap, in pixels. It only ever binds on a small capture: a 1080x75
+# strip computes 16 from the share alone, a 459x29 one needs 9 or it splits `$1.76`
+# into `$1.` and `76`, a 405x28 one needs 5 or it welds CASH to WIN. The one
+# constant here that a share could not rescue -- the gap inside a value and the gap
+# between two cells converge as the strip shrinks (9 and 17 at 1080x75, no daylight
+# by 405x28). Sized for the cabinet's canvas; unreliable below about a third of it.
 MIN_GAP = 9
 
 # Narrower than this and it's a cell corner or artwork speck, not a value.
@@ -168,16 +109,11 @@ ENOUGH_FIELDS = 2
 CONFIDENT = 90.0
 FLOOR = 40.0
 
-# Tesseract 5's LSTM engine reports confidence 0 -- not a low score, exactly 0 --
-# for a word it produced under `tessedit_char_whitelist`, which it honours as a
-# filter but does not score. So 0 from a whitelisted read means "unmeasured", and
-# it is the *correct* readings that hit it most: `$2,959.44` comes back verbatim
-# from six of the seven rungs at confidence 0 every time. Ranked below any
-# measured reading and exempt from :data:`FLOOR`, rather than discarded -- a
-# perfect transcription with no score attached is still the value on the meter.
-# The whitelist stays, because dropping it costs accuracy where it matters most:
-# without it a cell border welds onto the value, `$2` arrives as `s2`, and the
-# leading digit is lost to a value that still looks plausible.
+# Tesseract 5 reports confidence exactly 0 -- not a low score -- for a word produced
+# under `tessedit_char_whitelist`, which it filters on but does not score, and it is
+# the *correct* readings that hit it most. Ranked below any measured reading and
+# exempt from :data:`FLOOR` rather than discarded. The whitelist stays: without it a
+# cell border welds onto the value, `$2` arrives as `s2`, and a digit is lost.
 UNMEASURED = 0.0
 
 # What an unmeasured reading counts as when :func:`fit_band` compares two bands.
@@ -243,17 +179,15 @@ class MeterField:
 
     @property
     def rank(self) -> tuple[bool, bool, float]:
-        """How two readings of the same crop are compared: one that produced a
-        value beats one that did not, one the engine scored beats one it did
-        not, and only then does the score itself decide."""
+        """Compares two readings of one crop: a value beats none, a scored read beats an
+        unscored one, then the score decides."""
         return self.value is not None, self.measured, self.confidence
 
 
 @dataclass(frozen=True)
 class Unmapped:
-    """A confident number that belongs to no field -- reported rather than
-    pushed into the nearest window, since a value silently filed under the
-    wrong name is worse than one that arrives asking to be looked at."""
+    """A confident number belonging to no field, reported rather than filed under the
+    nearest name."""
 
     value: Decimal
     centre: float
@@ -274,12 +208,7 @@ class MeterScan:
 
     @property
     def score(self) -> float:
-        """Mean confidence of the fields that read, for comparing two bands.
-        Mean, not sum -- a sum rewards a band that reads extra junk from the
-        label rows over one that correctly leaves an empty cell empty. A field
-        the engine declined to score counts as :data:`UNMEASURED_SCORE`, so a
-        band whose values all read unmeasured is still preferred to one that
-        reads nothing at all."""
+        """Mean confidence of the fields that read, for comparing two bands."""
         read = [
             f.confidence if f.measured else UNMEASURED_SCORE
             for f in self.fields.values()
@@ -301,14 +230,7 @@ def _grey(image: Image.Image) -> np.ndarray:
 
 
 def row_bands(image: Image.Image) -> tuple[Band, ...]:
-    """Candidate row bands, from the strip's own ink profile. The strict
-    ink threshold finds each text line's bright core, but a core alone crops
-    off a glyph's dimmer top/bottom -- so each core is padded outward by a
-    share of its own height instead of lowering the threshold, which would
-    merge values into labels. Which core holds the values can't be told from
-    the profile alone, so every candidate is offered and :func:`fit_band`
-    picks by reading.
-    """
+    """Candidate row bands, from the strip's own ink profile."""
     grey = _grey(image)
     height = grey.shape[0]
     ceiling = grey.max()
@@ -375,9 +297,7 @@ def ink_groups(image: Image.Image, band: Band) -> tuple[Band, ...]:
 
 
 def _token(text: str) -> tuple[Decimal | None, str]:
-    """The value and its symbol out of raw engine text. Takes the longest
-    number-shaped token rather than the first, since a cell border sometimes
-    arrives as a leading digit or comma welded to the value."""
+    """The value and its symbol out of raw engine text."""
     best = ""
     for match in _TOKEN.finditer(text):
         if len(match.group()) > len(best):
@@ -389,18 +309,12 @@ def _token(text: str) -> tuple[Decimal | None, str]:
 
 def _margin(rows: int) -> int:
     """Clear rows a value occupying ``rows`` of them needs around it, from
-    :data:`GLYPH_MARGIN_SHARE`. A share rather than a constant so the clearance
-    tracks the capture size -- see that constant."""
+    :data:`GLYPH_MARGIN_SHARE`."""
     return max(MIN_GLYPH_MARGIN, round(rows * GLYPH_MARGIN_SHARE))
 
 
 def _grown(image: Image.Image, columns: Band, band: Band) -> Band:
-    """``band``, extended over ``columns`` on whichever edge its glyphs run into.
-
-    Only the edges they touch, and only while the row gained is not the cell's
-    own border -- see :data:`BORDER_SHARE`. A cell whose glyphs already sit clear
-    of the band is left on the band exactly, so this can only widen the crop of
-    a value that was being cut."""
+    """``band``, extended over ``columns`` on whichever edge its glyphs run into."""
     top, bottom = band
     left, right = columns
     window = np.asarray(image.convert("L"), dtype=float)[:, left:right]
@@ -438,20 +352,8 @@ def _grown(image: Image.Image, columns: Band, band: Band) -> Band:
 
 
 def _padded(crop: Image.Image, margin: int | None = None) -> Image.Image:
-    """``crop`` grown until its glyphs have ``margin`` clear rows above and below,
-    or unchanged if they already do -- or if it has no background to grow with.
-
-    ``margin`` defaults to what :func:`_margin` makes of the crop's own height;
-    :func:`read_group` passes the band's instead, so growing the crop first cannot
-    then demand more clearance than the band was measured to need.
-
-    Measured off the crop rather than assumed, on both counts. A band fitted with
-    room to spare is left alone and only a tight one is topped up. And a crop with
-    no clear row at all is left alone entirely, because the fill has to come from
-    somewhere: the band there is not bounding the cell but cutting through it, so
-    the edge pixels are the cell's own border -- one FortuneOx crop at 459x29 has
-    dark red top corners and bright gold bottom ones, and a border in either tone
-    is a new edge rather than the removal of one."""
+    """``crop`` grown until its glyphs have ``margin`` clear rows above and below, or
+    unchanged if they already do -- or if it has no background to grow with."""
     if crop.width == 0 or crop.height == 0:
         return crop
     wanted = _margin(crop.height) if margin is None else margin
@@ -484,9 +386,7 @@ def _padded(crop: Image.Image, margin: int | None = None) -> Image.Image:
 def read_group(
     image: Image.Image, box: Band, band: Band, *, executable: Path
 ) -> MeterField:
-    """Read one number, escalating only while the reading is unconvincing.
-    Never raises for a failed read -- an unreadable field comes back empty
-    beside the ones that worked."""
+    """Read one number, escalating only while the reading is unconvincing."""
     columns = (max(0, box[0] - CLUSTER_PAD), min(image.width, box[1] + CLUSTER_PAD))
     top, bottom = _grown(image, columns, band)
     crop = _padded(
@@ -531,13 +431,8 @@ def read_group(
 
 
 def _reportable(spans: dict[str, tuple[float, float]]) -> tuple[float, float]:
-    """The span of the strip a stray value is worth reporting from: the windows'
-    own reach, widened by the widest of them at each end.
-
-    Widened rather than taken exactly, because a stray *just* outside a window is
-    the case this is for -- a cell that moved, or a window measured slightly
-    wrong. A whole window's width is the largest miss that still means that;
-    further out and it is the strip's chrome, not its cells."""
+    """The span of the strip a stray value is worth reporting from: the windows' own
+    reach, widened by the widest of them at each end."""
     if not spans:
         return 0.0, 1.0
     lows = [low for low, _ in spans.values()]
@@ -553,9 +448,8 @@ def extract(
     band: Band,
     windows: dict[str, tuple[float, float]] | None = None,
 ) -> MeterScan:
-    """Read every number in ``band`` and file each one under its field
-    (``windows`` maps field name to the span of the strip's width it owns,
-    defaulting to :data:`DEFAULT_WINDOWS`)."""
+    """Read every number in ``band`` and file each under its field; ``windows`` maps
+    field name to the span of the strip it owns."""
     spans = DEFAULT_WINDOWS if windows is None else windows
     boxes = ink_groups(image, band)
     # Concurrent: each read is a ~200ms Tesseract subprocess, and `subprocess.run`
@@ -598,15 +492,11 @@ def extract(
         fields[name] = readings[best_index][1]
         claimed.add(best_index)
 
-    # Only a *scored* stray inside the cells' own reach is worth reporting, on
-    # both counts because of what this list is for: it warns that the windows may
-    # not match the skin. The exemption granted above is for a reading with a
-    # field behind it -- knowing which cell it came out of is what makes an
-    # unscored transcription trustworthy, and a stray has no such backing. And a
-    # number out at the strip's extremes is not evidence about the windows but
-    # fixed chrome beside them: the meter row is full-width, so it also carries
-    # "Line 1 Pays 25" at 0.03, "50 CREDIT GAME ACTIVE" at 0.84 and the
-    # change-denom button at 0.96, none of which is a cell that moved.
+    # Only a *scored* stray inside the cells' own reach is worth reporting: this
+    # list warns that the windows may not match the skin, and a number out at the
+    # strip's extremes is fixed chrome beside them rather than a cell that moved
+    # (the full-width row also carries "Line 1 Pays 25" and "50 CREDIT GAME
+    # ACTIVE"). The FLOOR exemption above is for a reading with a field behind it.
     reach = _reportable(spans)
     unmapped = tuple(
         Unmapped(
@@ -630,10 +520,7 @@ def fit_band(
     executable: Path,
     windows: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[Band, MeterScan]:
-    """Choose the row band that reads best, and return it with its scan.
-    Candidates come from the strip's ink profile, not a sweep of every
-    plausible edge pair, so this costs two or three scans. Callers should
-    cache the answer -- the band is a property of the skin, not the frame."""
+    """Choose the row band that reads best, and return it with its scan."""
     best: tuple[Band, MeterScan] | None = None
     for candidate in row_bands(image):
         scan = extract(image, executable=executable, band=candidate, windows=windows)

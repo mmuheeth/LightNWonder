@@ -1,6 +1,5 @@
 """Virtual OLED i-deck runtime settings: the panel window, its files, and
-press/verification behavior. Per-game data lives in app.config.game_config.
-"""
+press/verification behavior. Per-game data lives in app.config.game_config."""
 
 from __future__ import annotations
 

@@ -26,7 +26,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.config.game_config.selection import save_active_game
-from app.core.config import settings
+from app.config.runtime import settings
 from app.services import game_input as game_input_service
 from app.utils import win32
 from app.utils.click_target import ClickTarget

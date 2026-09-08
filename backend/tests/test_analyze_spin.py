@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
-from app.core.config import settings
+from app.config.runtime import settings
 from app.schemas.analyze_spin import (
     SpinMeterReading,
     SpinMeterValidation,

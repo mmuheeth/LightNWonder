@@ -33,7 +33,7 @@ from httpx import AsyncClient
 from PIL import Image
 
 from app.config.game_config import save_active_game
-from app.core.config import settings
+from app.config.runtime import settings
 from tests.asserts import assert_failure, assert_success
 
 API = "/api/roi"

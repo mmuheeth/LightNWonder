@@ -1,7 +1,4 @@
-"""Meter reading payloads. These ride along with an ROI extraction rather
-than having endpoints of their own -- :class:`app.schemas.roi.RoiExtractResult`
-carries a :class:`MeterValues`, and there is no ``/api/meter``. A failed
-reading populates ``error`` rather than failing the crop."""
+"""Meter reading payloads."""
 
 from __future__ import annotations
 

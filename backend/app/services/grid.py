@@ -1,20 +1,4 @@
-"""Splits the reels of a captured frame into a matrix of tiles.
-
-One step past :mod:`app.services.roi`: ROI answers *is this rectangle aimed
-right*, this answers *does it divide into the symbols expected* — a moved reel
-window is a change to ``roi.reels`` alone, a sixth reel a change to
-``reel_bounds.columns`` alone. Frame selection and content-box resolution are
-delegated whole to :mod:`app.services.roi`. Unlike an ROI extraction, the split
-is written to ``<capture dir>/grid/<frame stem>/`` — it's an input to whatever
-reads symbols next, not a throwaway — and splitting the same frame twice is
-idempotent. Every tile gets one shared pixel size (see
-:meth:`app.utils.reel_grid.ReelGrid.place`), since tiles differing by a pixel
-can't be stacked or fed to anything expecting one input size. ``reel_bounds.inset``
-trims each tile's border to cut the win-highlight frame the game draws inside a
-reel; a request may override it for one split (config errors are 500, request
-errors 400). Re-splitting clears stale tiles from a previous, differently-shaped
-split. Holds no state, so no ``reset()``.
-"""
+"""Splits the reels of a captured frame into a matrix of tiles."""
 
 from __future__ import annotations
 
@@ -28,7 +12,7 @@ from pathlib import Path
 from PIL import Image
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     BadRequestError,
@@ -282,9 +266,7 @@ def _split_shape(names: list[str]) -> tuple[int, int]:
 
 
 def read_split(directory: Path) -> SplitOnDisk:
-    """Open one written split: its crop, its tiles, and the shape they make.
-    Every tile is opened — a split with an unreadable tile fails rather than
-    silently evaluating around it."""
+    """Open one written split: its crop, its tiles, and the shape they make."""
     crop_path = directory / _CROP_FILE
     tiles_dir = directory / _TILES_DIR
     if not crop_path.is_file():
@@ -339,14 +321,7 @@ def read_split(directory: Path) -> SplitOnDisk:
 
 @dataclass(frozen=True)
 class FramePlacement:
-    """Where the reels and their tiles land on one frame, in that frame's pixels.
-
-    ``box`` is the reels crop and every tile's own box is relative to *it*, which
-    is the same relationship :class:`app.utils.reel_grid.PlacedTile` has to the
-    crop in :func:`_split`. Kept that way on purpose: a caller crops once and
-    then cuts tiles out of the crop, rather than cutting fifteen rectangles out
-    of a 1080p frame.
-    """
+    """Where the reels and their tiles land on one frame, in that frame's pixels."""
 
     game: str
     box: tuple[int, int, int, int]
@@ -359,12 +334,7 @@ class FramePlacement:
 
 
 def place_on(image: Image.Image) -> FramePlacement:
-    """Resolve the active game's reel grid onto one open frame.
-
-    Resolved once and reused by a caller taking many frames of the same thing:
-    detecting the content box means scanning the whole picture, and the game
-    window does not move or change shape between two frames of one spin.
-    """
+    """Resolve the active game's reel grid onto one open frame."""
     name, config = _active_config()
     region = _reels_region(config)
     grid = _grid(config)

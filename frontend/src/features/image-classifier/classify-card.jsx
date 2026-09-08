@@ -17,13 +17,7 @@ import { percent } from "@/features/image-classifier/percent";
 import { TileStats } from "@/features/image-classifier/tile-stats";
 import { cn } from "@/lib/utils";
 
-/**
- * Name the tiles of one reel split.
- *
- * The split is chosen from what the reel grid has already written rather than
- * taken fresh, which is what makes an answer repeatable: the same split reads the
- * same way twice, and a threshold can be tried again after the game has moved on.
- */
+/** Name the tiles of one reel split. */
 export function ClassifyCard({ status, splits, classify }) {
   const [split, setSplit] = useState("");
   const [floor, setFloor] = useState("");

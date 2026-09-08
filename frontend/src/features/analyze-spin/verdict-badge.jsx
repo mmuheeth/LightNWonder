@@ -2,14 +2,7 @@ import { CircleCheck, CircleHelp, CircleX } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 
-/**
- * A validation's verdict.
- *
- * Three states rather than two, and `indeterminate` is deliberately not styled
- * as a failure: a meter nobody could read and a balance that came out wrong are
- * different problems with different fixes, and colouring them the same would
- * send a reader to re-measure a region when the OCR engine is simply missing.
- */
+/** A validation's verdict. */
 const LOOKS = {
   passed: {
     Icon: CircleCheck,

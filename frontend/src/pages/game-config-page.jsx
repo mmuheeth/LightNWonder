@@ -9,18 +9,7 @@ import { ReelStripTable } from "@/features/paytable/reel-strip-table";
 import { usePaytable, useRefreshPaytable } from "@/features/paytable/use-paytable";
 import { WinGeometryCard } from "@/features/paytable/win-geometry-card";
 
-/**
- * The maths the running game has loaded, read out of its own install.
- *
- * Everything here hangs off one id: the `paytableId` the game writes to its log
- * names a directory under the game's `GameConfig` folder, and that directory's
- * `math.xml` is the symbols, the strips and the combos. So the summary leads
- * and the rest follows from it — and the selector in it can point the page at
- * another paytable of the same game without the game running on it.
- *
- * One page rather than a dashboard card: each of these is a table, and a table
- * does not survive half a row.
- */
+/** The maths the running game has loaded, read out of its own install. */
 export function GameConfigPage() {
   // Empty means "whatever the log says", which is the answer the page is for;
   // an explicit id is a different query rather than a filter on this one.

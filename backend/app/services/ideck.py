@@ -1,14 +1,4 @@
-"""Virtual OLED i-deck control.
-
-``OledPanelSvc.exe`` owns an SDL window with no API of its own, so a press is
-delivered as mouse messages ``PostMessage``d straight to it -- never touching
-the physical cursor. Key geometry comes from the same layout file the panel
-service renders from (:mod:`app.utils.panel_xml`), which is also the only
-source of key names. A press is confirmed by reading what was appended to the
-panel's log (:mod:`app.utils.panel_log`/:mod:`app.utils.log_tail`) after it, and
-retried once with the window foregrounded if unconfirmed, since SDL can swallow
-a first click on an unfocused window.
-"""
+"""Virtual OLED i-deck control."""
 
 from __future__ import annotations
 
@@ -17,7 +7,7 @@ import re
 import time
 
 from app.config.game_config import ActiveGameSelectionError
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
@@ -381,9 +371,8 @@ async def press_sequence(
 
 
 async def probe() -> ProbeResult:
-    """Check the panel reacts to posted input, without pressing anything --
-    posts a mouse move and watches the log for SDL noticing it cross the panel's
-    edge. Never raises: a failed probe is a result, not an error."""
+    """Check the panel reacts to posted input, without pressing anything -- posts a
+    mouse move and watches the log for SDL noticing it cross the panel's edge."""
     if not win32.is_supported():
         return ProbeResult(
             supported=False,

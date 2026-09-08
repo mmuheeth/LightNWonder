@@ -3,22 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { PaylineValidationCard } from "@/features/analyze-spin/payline-validation-card";
 
-/**
- * The card that shows what the reels landed and what the paytable pays for it.
- *
- * What these tests hold in place is the wild, because it is the one thing on this
- * card a reader cannot check by counting the codes in front of them:
- *
- * * **a run can be longer than the codes suggest.** `AA AA WC AA AA` matches five
- *   with only four Ox on screen, so the wild is marked and named once for the
- *   whole card -- otherwise a five over four visible codes reads as a bug.
- * * **a run can be shorter than the codes suggest.** `AA WC BB BB BB` matches two
- *   even though the wild sits happily beside a Pisces, so the join that broke it
- *   has to say what the run was paying as.
- * * **the length that pays is not always the length that landed.** A wild-led run
- *   is priced as whichever combo is worth more, so the derivation shows
- *   `combo_pays`, not `pays`.
- */
+/** The card that shows what the reels landed and what the paytable pays for it. */
 
 /** One line of the validation payload, with the fields the card actually reads. */
 function line({

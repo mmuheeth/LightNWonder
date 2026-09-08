@@ -60,9 +60,8 @@ and current; read the relevant one before changing an integration.
 own window via `Start-Process pwsh`** (not Windows Terminal tabs). The backend
 always starts elevated — accept the UAC/Avecto prompt in its own window — because
 it needs High integrity to drive the i-deck and click the game (UIPI drops
-Medium→High input; the whole cabinet is auto-elevated to High here). `-Elevate`
-and `-NoAdmin` are both deprecated no-op aliases now that elevation is
-unconditional. Confirm from `GET /api/ideck/status`: `ready` means the backend
+Medium→High input; the whole cabinet is auto-elevated to High here). It takes no
+parameters. Confirm from `GET /api/ideck/status`: `ready` means the backend
 can drive the panel, `access_denied` means it cannot. `Start-Process` payloads may
 contain `;`, so the launch strings use `Set-Location …; & $venvPython -m app`.
 
@@ -137,7 +136,8 @@ integration is a new mixin, not a new settings object. `get_settings()` is `lru_
 module-level `settings` instance is imported directly by services — so tests
 override behaviour with
 `monkeypatch.setattr(settings, "IDECK_GAME_CONFIG_DIR", tmp_path)` rather than
-by building new settings. `app/core/config.py` is a re-export shim.
+by building new settings. Everything imports `app.config.runtime` directly --
+the old `app/core/config.py` re-export shim is gone.
 
 **Per-game data is separate from env config.** `app/config/game_config/games/<Game>.json`
 ships with the code and carries the process name, log path, OBS window source,
@@ -178,10 +178,6 @@ their product is the total bet, and is the only place the two factors are
 separate — `SpecificMaxBets` and `AllowedBetsTbl` both carry only the product),
 `win_geometry.py` (`winGeometry.xml`, plus the conversion between its
 0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
-`reel_stops.py` (a spin's logged stops plus the strips become the symbols that
-were on screen -- **dormant**: `analyze_spin` names tiles from the picture now,
-because a symbol read out of the log agrees with the game by construction. Still
-in the tree, called by nothing),
 `win32.py` (the only ctypes),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
 `image_roi.py` (crops a named region out of a frame),
@@ -422,9 +418,8 @@ record, never a reading, so losing OBS halfway costs the clips and nothing else.
 
 **`services/image_classifier.py` is the only reading that can disagree with the
 game, and it is now what `analyze_spin` grades a spin by.** `similarity.py` asks
-whether two tiles match *each other* and never learns what either is;
-`reel_stops.py` names symbols by reading the game's own log, so it agrees by
-construction. This names a tile from the picture — a network in
+whether two tiles match *each other* and never learns what either is. This names
+a tile from the picture — a network in
 `utils/symbol_model.py` (the only module that imports torch) over the tiles
 `grid.py` already wrote. So anything that moves here — the artwork, the
 transforms, the confidence floor — moves a spin's verdict too. Five things it
@@ -639,14 +634,15 @@ This is the invariant to preserve if anything here is refactored:
   codes of every pair travel on `steps`. Nothing about the win comes out of the
   log: a checker that read the answer there would agree with the game by
   construction and could never catch a reel drawing the wrong symbol.
-- **Two things it replaced, and neither is deleted.** Cosine similarity measured a
-  run without naming it, so an award was every paytable row paying at that length;
-  `similarity.py` and `paylines.check`/`check_lines` still do that for the
-  standalone panel. The game's logged reel stops named the symbols by *agreeing
-  with the game*; `utils/reel_stops.py`, `game_log.REEL_STOPS` and
-  `ANALYZE_SPIN_REEL_STOP_ANCHOR` are all still present and all unread here.
-  Don't reintroduce either as a fallback — a run measured by likeness and then
-  priced as if it had been named is worse than a run reported short.
+- **Two things it replaced.** Cosine similarity measured a run without naming it,
+  so an award was every paytable row paying at that length; `similarity.py` and
+  `paylines.check`/`check_lines` still do that for the standalone panel. The
+  game's logged reel stops named the symbols by *agreeing with the game*, and
+  that reading (`utils/reel_stops.py`, `game_log.REEL_STOPS`,
+  `ANALYZE_SPIN_REEL_STOP_ANCHOR`) has been deleted -- recoverable from git if
+  ever wanted. Don't reintroduce either as a fallback — a run measured by
+  likeness and then priced as if it had been named is worse than one reported
+  short.
 - **Two unnamed tiles are never a match.** A tile below
   `CLASSIFIER_MIN_CONFIDENCE` came back with no code, and "I could not tell" twice
   is not evidence of a run — so a line through one **stops there**. That floor

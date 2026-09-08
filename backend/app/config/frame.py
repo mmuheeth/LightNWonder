@@ -1,7 +1,5 @@
-"""Frame letterbox-detection settings, used by :mod:`app.utils.letterbox` to
-find the content box (the part of a frame the game fills) that ROI, OCR and
-the reel grid resolve regions against.
-"""
+"""Letterbox-detection settings: how :mod:`app.utils.letterbox` finds the content box
+that ROI, OCR and the reel grid resolve regions against."""
 
 from __future__ import annotations
 

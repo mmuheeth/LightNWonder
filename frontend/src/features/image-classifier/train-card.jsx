@@ -105,13 +105,7 @@ function StageRow({ stage }) {
   );
 }
 
-/**
- * Train the model, and watch it happen.
- *
- * The run is minutes long, so this shows the stage list and the per-epoch figures
- * rather than a bare spinner: a four-minute wait with no detail is
- * indistinguishable from a hang.
- */
+/** Train the model, and watch it happen. */
 export function TrainCard({ status, isFetching, refetch, train, cancel }) {
   const [engine, setEngine] = useState("");
   const engines = status?.architectures ?? [];

@@ -241,7 +241,7 @@ no prompt (this is exactly how the sibling GameplayScript app works). `.\start.p
 run from that terminal does the same via `Start-Process`; a Windows Terminal tab
 would *not* (it is hosted by the separate Medium `wt` broker, not your elevated
 shell). Confirm from the i-deck card / `GET /api/ideck/status` (`ready` vs
-`access_denied`); if it is refused, use `.\start.ps1 -Elevate`. Full detail in
+`access_denied`). Full detail in
 [docs/elevation.md](docs/elevation.md). See
 [backend/README.md](backend/README.md#virtual-oled-i-deck) for the endpoints and
 the settings.

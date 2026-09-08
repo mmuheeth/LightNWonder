@@ -1,59 +1,4 @@
-"""Checks a split reel grid against the patterns that pay.
-
-One step past :mod:`app.services.grid`: grid asks *does it divide into the
-symbols expected*, this asks *do those symbols line up*. Reads a written split
-(via :func:`app.services.grid.resolve_split`/:func:`read_split`), never a
-screenshot directly, so a check is repeatable without the simulator still
-showing the same spin. A line reads left to right and stops at the first
-non-matching adjacent pair, so ``pays`` is the length of that *leading* run (0,
-or 2+) — every pair is still compared (``counted`` marks which ones the run
-reached) since the pairs after a break are evidence the break was real. Each
-line gets its own picture with a break marker, paying or not; the combined
-overlay draws only paying lines and never the break ring, since several lines
-share it. Holds no state, so no ``reset()``.
-
-**Two tiles are "the same symbol" in one of two ways, and which one was used
-travels on the answer** (``method``, :class:`app.schemas.paylines.PaylineMethod`):
-
-* :data:`PaylineMethod.SIMILARITY` — cosine similarity between the two pictures,
-  cut at ``PAYLINE_MATCH_THRESHOLD`` (invariant to the brightness pulsing and
-  glowing symbols add — see :mod:`app.utils.similarity`). The per-game cut
-  between the match and no-match clusters is why a result read this way reports
-  ``matched_min``/``rejected_max`` beside the threshold. It says the tiles are
-  alike and never which symbol they are.
-* :data:`PaylineMethod.SYMBOL` — the codes a classifier read off each tile
-  (:mod:`app.services.image_classifier`), compared for equality **or by
-  substitution**. No threshold, no scores, and the symbol is *named*, which is
-  what lets a caller holding the paytable price a run exactly instead of
-  narrowing it to every row that pays at that length. Two unnamed tiles never
-  match: "I could not tell" twice is not "the same symbol".
-
-**The wild is why a line is read as a line and not as a bag of pairs.** A game
-declares what its wild stands in for in the config's ``wild_card_replacement``
-block; :func:`app.utils.paylines.read_run` carries the run's own symbol along the
-line and decides each position against *that*, not against the tile to its left.
-``AA WC BB`` is a run of two even though every adjacent pair in it matches on its
-own, because the wild is one symbol and cannot be an Ox and a Pisces at once. So
-a counted step's ``matched`` is "the run continued here", and only an *uncounted*
-one — past the break, where there is no run to continue — falls back to the
-pairwise question. ``line_symbol`` on each step is what the run was paying as, so
-the difference is readable rather than inferred.
-
-A similarity check substitutes nothing, and cannot: it never names a tile, so it
-cannot know a wild when it sees one. Two wilds still score alike, and a wild
-beside the symbol it stands in for scores as two different symbols — which is
-one more reason an award is only ever priced off a symbol check.
-
-Everything below the comparison — the grid geometry, the tiles, the drawing, the
-files written — is identical either way, which is the whole reason both go
-through :func:`_evaluate_set`.
-
-:func:`check` reads the set out of the active game's ``paylines`` block and
-compares by similarity; :func:`check_lines` takes a set it was handed;
-:func:`check_symbols` takes a set *and* the codes to read it by, which is how
-:mod:`app.services.analyze_spin` checks the lines the *running* game declares in
-its own ``winGeometry.xml`` against the symbols the classifier named.
-"""
+"""Checks a split reel grid against the patterns that pay."""
 
 from __future__ import annotations
 
@@ -68,7 +13,7 @@ import numpy as np
 from PIL import Image
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     GameConfigInvalidError,
@@ -156,9 +101,8 @@ def _read_set(config: GameConfig, name: str) -> payline_config.PaylineSet:
 
 
 def _grid(config: GameConfig) -> reel_grid.ReelGrid:
-    """The reel grid of the active game, for the tile geometry the lines need —
-    read from the config (``inset`` included) rather than counted off filenames,
-    since only the config gives a tile's true centre."""
+    """The active game's reel grid, read from the config (``inset`` included) since only
+    that gives a tile's true centre."""
     if not config.reel_bounds:
         raise GridNotConfiguredError(
             f"The game config for {config.name!r} declares no 'reel_bounds' "
@@ -180,14 +124,7 @@ def _vectors(split: grid_service.SplitOnDisk) -> dict[str, np.ndarray]:
 
 @dataclasses.dataclass(frozen=True)
 class _Comparison:
-    """One adjacent pair, as whichever comparer decided it.
-
-    Both kinds of evidence are optional because the two comparers measure
-    different things: a similarity pair has a score and cannot name either tile,
-    a symbol pair names both and has no score. Carrying one shape with holes in
-    it, rather than two shapes, is what keeps :func:`_evaluate` unaware of which
-    comparison it is reading.
-    """
+    """One adjacent pair, as whichever comparer decided it."""
 
     matched: bool
     similarity: float | None = None
@@ -203,14 +140,7 @@ class _Comparison:
 
 @dataclasses.dataclass(frozen=True)
 class _LineRead:
-    """One line, read left to right by whichever comparer holds the split.
-
-    The unit the two methods actually differ over. A pairwise comparer answers a
-    line one pair at a time and has nothing else to say about it; a symbol
-    comparer carries the run's own code along the line so a wild can stand in for
-    it, and reports what it settled on. Everything past this -- the pay count,
-    the drawing, the row on the response -- is written once against this shape.
-    """
+    """One line, read left to right by whichever comparer holds the split."""
 
     steps: list[PaylineStep]
 
@@ -229,13 +159,7 @@ class _LineRead:
 
 
 class _Comparer:
-    """Decides whether two tiles of one split are the same symbol.
-
-    Caches on the *unordered* pair: both ways of deciding are symmetric, and
-    lines within a set share many pairs -- so a pair two lines run through is one
-    comparison, which is also what keeps ``comparisons`` a count of distinct
-    pairs rather than of steps.
-    """
+    """Decides whether two tiles of one split are the same symbol."""
 
     method: PaylineMethod
     threshold: float | None = None
@@ -244,15 +168,7 @@ class _Comparer:
         self._cache: dict[tuple[str, str], _Comparison] = {}
 
     def read(self, positions: Sequence[str]) -> _LineRead:
-        """One line's steps, how far its leading run reached, and where it broke.
-
-        The pairwise read, which is right for any comparison whose verdict rests
-        on the two tiles alone -- and that is every comparison that cannot *name*
-        a tile, since a substitution rule needs to know what it is looking at.
-        ``counted`` marks the steps the read actually reached; the run ends at
-        the first counted step that does not match, and the pairs after it are
-        compared anyway because they are the evidence the break was real.
-        """
+        """One line's steps, how far its leading run reached, and where it broke."""
         steps: list[PaylineStep] = []
         running = True
         covered = 1 if positions else 0
@@ -308,12 +224,7 @@ class _Comparer:
 
 
 class _SimilarityComparer(_Comparer):
-    """Two tiles are the same symbol when their cosine similarity clears the cut.
-
-    Says nothing about *which* symbol: the vectors are pixels, and two crops of
-    one symbol score alike whatever that symbol is. Closing that gap is the
-    caller's problem -- or :class:`_SymbolComparer`'s.
-    """
+    """Two tiles are the same symbol when their cosine similarity clears the cut."""
 
     method = PaylineMethod.SIMILARITY
 
@@ -344,25 +255,8 @@ class _SimilarityComparer(_Comparer):
 
 
 class _SymbolComparer(_Comparer):
-    """Two tiles are the same symbol when a classifier read the same code off
-    both -- or when one of them is the wild, standing in for the other.
-
-    No threshold and no scores: two codes are equal or they are not, and the
-    substitution is a rule rather than a measurement. **Two unnamed tiles are not
-    a match**: a classifier below its confidence floor said "I could not tell",
-    and twice over that is not evidence of a run. A line through such a tile
-    stops there, which is the honest answer and the reason the tile's own
-    confidence has to travel back to the caller.
-
-    :meth:`read` is overridden rather than only :meth:`_decide`, because the wild
-    makes a line more than its pairs. A wild stands in for whatever the *run* is
-    paying as, so which symbol it is depends on positions further left -- and
-    ``AA WC BB`` is a run of two whose every adjacent pair matches. The pairwise
-    answer :meth:`_decide` still gives is what an uncounted step reports (past
-    the break there is no run to continue) and what the run's own ``comparisons``
-    and ``matches`` figures are counted off, which is why every pair is still
-    compared even after the line has stopped.
-    """
+    """Two tiles are the same symbol when a classifier read the same code off both -- or
+    when one of them is the wild, standing in for the other."""
 
     method = PaylineMethod.SYMBOL
 
@@ -429,11 +323,7 @@ class _SymbolComparer(_Comparer):
         )
 
     def _alike(self, first: str | None, second: str | None) -> bool:
-        """Whether two codes are one symbol *pairwise* -- all a lone pair can say.
-
-        Never a substitute for :meth:`read`: a wild stands in for what the run is
-        paying as, and a pair on its own does not know what that is.
-        """
+        """Whether two codes are one symbol *pairwise* -- all a lone pair can say."""
         if first is None or second is None:
             return False
         if first == second:
@@ -464,9 +354,7 @@ def _by_symbol(symbols: Mapping[str, str | None]) -> _ComparerFor:
 
 
 def _wilds(config: GameConfig) -> payline_config.WildRule:
-    """The active game's substitution rule. A game declaring none comes back as
-    :data:`app.utils.paylines.NO_WILDS`, which compares every code by equality --
-    so nothing at the call site is conditional on a game having a wild."""
+    """The active game's substitution rule."""
     return payline_config.WildRule.of(config.wild_card_replacement)
 
 
@@ -499,12 +387,8 @@ def _line_drawing(
     break_position: str | None,
     tiles: dict[str, reel_grid.PlacedTile],
 ) -> payline_overlay.DrawnLine:
-    """One line, as the overlay wants it -- paying or not. ``points`` is the
-    confirmed run and nothing more, empty when ``pays`` is 0.
-
-    Takes position *names* rather than a parsed line, so a caller holding only a
-    finished :class:`PaylineCheckResult` can rebuild the same drawing -- which is
-    what :func:`redraw` does, and why the two cannot draw a line differently."""
+    """One line, as the overlay wants it -- paying or not. ``points`` is the confirmed
+    run and nothing more, empty when ``pays`` is 0."""
     boxes = {name: tiles[name].box for name in positions}
     centres = {name: _centre(box) for name, box in boxes.items()}
 
@@ -568,12 +452,8 @@ def _summarise(lines: list[PaylineLine]) -> str:
 
 
 def _stats(lines: list[PaylineLine], comparer: _Comparer) -> PaylineStats:
-    """The run as a whole, including how well its scores separated -- when there
-    were scores. Counted over distinct pairs, not steps, so a pair two lines
-    share isn't weighted twice. A symbol comparison leaves the four score figures
-    null rather than filling them with 0 and 1: there is no distribution to
-    separate, and a printed threshold nothing was measured against is worse than
-    a blank."""
+    """The run as a whole, including how well its scores separated -- when there were
+    scores."""
     distinct = comparer.distinct
     measured = [one.similarity for one in distinct if one.similarity is not None]
     matched = [
@@ -639,23 +519,13 @@ def _layout() -> PaylineLayout:
 
 
 async def layout() -> PaylineLayout:
-    """The sets the active game declares, and the split a check would read. An
-    unconfigured game or a checkout with nothing split yet comes back with
-    ``error`` set on a 200, not as a failed request."""
+    """The sets the active game declares, and the split a check would read."""
     return await asyncio.to_thread(_layout)
 
 
 @dataclasses.dataclass(frozen=True)
 class ImageOptions:
-    """Which pictures one check comes back with.
-
-    Two knobs rather than one flag because the two pictures answer different
-    questions and cost wildly different amounts: the combined overlay is one
-    image, and per-line pictures are one *per line* -- forty of them for a
-    forty-line set, which is fine to return to a panel that asked for them and
-    not fine to attach to something polling. ``"paying"`` is the middle ground:
-    the lines a reader would actually open.
-    """
+    """Which pictures one check comes back with."""
 
     overlay: bool = True
     """Whether the combined picture of every paying line comes back inline. It
@@ -679,16 +549,7 @@ def _evaluate_set(
     comparer_for: _ComparerFor,
     images: ImageOptions,
 ) -> PaylineCheckResult:
-    """Compare one set of lines against one written split.
-
-    Takes the set rather than reading it, so the same comparison serves a set
-    declared in this repo's game config *and* one assembled from the running
-    game's own ``winGeometry.xml`` (see :mod:`app.services.analyze_spin`). Takes
-    the comparer for the same reason: whether two tiles are one symbol is decided
-    by cosine similarity or by a classifier's codes, and everything below that --
-    the grid geometry, the tiles, the drawing, the files written -- is identical
-    either way. Two copies of this is how the two would drift apart.
-    """
+    """Compare one set of lines against one written split."""
     grid = _grid(config)
 
     split = grid_service.read_split(grid_service.resolve_split(split_name))
@@ -847,14 +708,7 @@ async def check_lines(
     threshold: float | None = None,
     images: ImageOptions | None = None,
 ) -> PaylineCheckResult:
-    """Evaluate a caller-supplied set of lines against one split reel grid.
-
-    The public door for lines that did not come from the active game's
-    ``paylines`` block. The active game still supplies the grid geometry
-    (``reel_bounds``), because that is where the tiles are, not which patterns
-    pay. Compares by cosine similarity: see :func:`check_symbols` for the same
-    door read by a classifier's codes instead.
-    """
+    """Evaluate a caller-supplied set of lines against one split reel grid."""
     return await asyncio.to_thread(
         _check_lines,
         line_set,
@@ -871,30 +725,7 @@ async def check_symbols(
     split: str | None = None,
     images: ImageOptions | None = None,
 ) -> PaylineCheckResult:
-    """Evaluate a set of lines against symbol codes already read off the tiles.
-
-    The classifier's door, and how :mod:`app.services.analyze_spin` reads a spin:
-    ``symbols`` maps a tile position (``r1c1``) to the code a classifier named it
-    with, or to ``None`` for one it was not sure enough of. Two tiles match when
-    their codes are equal, so a run is *named* as well as counted -- which is what
-    lets the caller price it against one paytable row instead of every row that
-    pays at that length.
-
-    **The wild is applied here and nowhere else in the two paths.** The active
-    game's ``wild_card_replacement`` block says what it stands in for, and a line
-    is read with its own symbol carried along it -- so a wild counts as whatever
-    the run is paying as, and ``AA WC BB`` is still a run of two. The result says
-    which code was substituted and for what (``wild_symbol``/``wild_replaces``),
-    and each line says what its run resolved to (``symbol``) and how many of its
-    leading positions were the wild itself (``leading_wilds``), which is the
-    second combo a caller holding the paytable may want to price.
-
-    Nothing here reads a threshold, and the result's ``threshold`` comes back
-    null: two codes are equal or they are not. Everything else about the answer
-    -- the lines, the drawings, the files under the split's own directory -- is
-    what :func:`check_lines` produces, because both go through
-    :func:`_evaluate_set`.
-    """
+    """Evaluate a set of lines against symbol codes already read off the tiles."""
     return await asyncio.to_thread(
         _check_lines,
         line_set,
@@ -953,21 +784,7 @@ async def redraw(
     *,
     file_name: str | None = None,
 ) -> PaylineOverlay:
-    """Draw the combined overlay again, over a chosen subset of the same lines.
-
-    For the caller that can only decide which lines matter *after* the check has
-    run -- :mod:`app.services.analyze_spin` needs the measured pairs before it can
-    read the game's reel stops, and only then knows which runs the paytable
-    actually pays. Rebuilt from the result rather than re-evaluated, so the
-    picture cannot disagree with the numbers it came from, and it goes through
-    the same :func:`_line_drawing` so a redrawn line is drawn identically to a
-    first-pass one, colour included.
-
-    ``file_name`` defaults to the one the check already wrote, which **replaces**
-    it: one picture per (split, set) is the whole convention there, and leaving a
-    superseded overlay beside the current one is how a reader ends up looking at
-    the wrong evidence.
-    """
+    """Draw the combined overlay again, over a chosen subset of the same lines."""
     return await asyncio.to_thread(
         _redraw, result, names, file_name=file_name or result.output_file
     )

@@ -1,6 +1,5 @@
-"""Request correlation, timing and access logging. Raw ASGI (not
-``BaseHTTPMiddleware``) so headers can be injected without buffering the body.
-"""
+"""Request correlation, timing and access logging. Raw ASGI (not ``BaseHTTPMiddleware``)
+so headers can be injected without buffering the body."""
 
 from __future__ import annotations
 

@@ -1,6 +1,5 @@
-"""Game-window input runtime settings: which window to find, and click/verify
-behavior. Aim points and confirm log come from the active game's config.
-"""
+"""Game-window input runtime settings: which window to find, and click/verify behavior.
+Aim points and confirm log come from the active game's config."""
 
 from __future__ import annotations
 

@@ -21,7 +21,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.config.game_config import save_active_game
-from app.core.config import settings
+from app.config.runtime import settings
 from app.services import ideck as ideck_service
 from app.utils import panel_log as panel_log_format
 from app.utils import win32

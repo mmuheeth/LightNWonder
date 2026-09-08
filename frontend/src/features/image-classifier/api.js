@@ -1,9 +1,4 @@
-/**
- * Image classifier client.
- *
- * Two calls here are slow in ways the shared 15s ceiling does not allow for, and
- * each says why it gets its own.
- */
+/** Image classifier client. */
 
 import { routes } from "@/config/env";
 import { apiRequest } from "@/lib/api";
@@ -11,10 +6,8 @@ import { apiRequest } from "@/lib/api";
 const CLASSIFIER_URL = `${routes.API}/image-classifier`;
 
 /**
- * The first status call of a session opens every training image to read its size
- * and opacity, which is about twelve seconds for two hundred files. The backend
- * caches the result on the dataset's fingerprint, so only the first one is slow —
- * but that first one would time out at the default and look like a dead endpoint.
+ * The first status call of a session opens every training image to read its size and
+ * opacity, which is about twelve seconds for two hundred files.
  */
 const STATUS_TIMEOUT_MS = 60_000;
 
@@ -70,14 +63,7 @@ export function cancelTraining() {
   return apiRequest({ method: "POST", url: `${CLASSIFIER_URL}/train/cancel` });
 }
 
-/**
- * Name every tile of a split.
- *
- * Confidences are softmax probabilities over the *trained* symbols only, so a
- * tile showing something the model has no class for cannot come back as "none of
- * these" — it comes back below `min_confidence`, as `symbol: null`, with its
- * ranked candidates still attached.
- */
+/** Name every tile of a split. */
 export function classifyTiles(payload = {}, { signal } = {}) {
   return apiRequest({
     method: "POST",

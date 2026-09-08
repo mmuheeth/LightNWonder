@@ -1,11 +1,4 @@
-"""Per-tile video clips of a winning spin.
-
-One clip per reel position, cut out of frames grabbed from OBS while the win
-presentation plays. The set is reported as a matrix's worth of small files
-rather than as one picture, because the question these answer is what *one*
-symbol did -- which of them animated, and for how long -- and that is lost the
-moment the reels are one video again.
-"""
+"""Per-tile video clips of a winning spin."""
 
 from __future__ import annotations
 
@@ -32,14 +25,7 @@ class TileClip(BaseModel):
 
 
 class TileClipSet(BaseModel):
-    """Every tile's clip from one capture, and how it was taken.
-
-    ``fps`` is measured rather than requested, and that is the field worth
-    reading first: frames are grabbed as fast as OBS answers, so a machine that
-    could not keep up produces a slower clip covering the same wall clock rather
-    than a fast one covering less. ``requested_fps`` beside it is what was asked
-    for, so the gap between the two is visible instead of inferred.
-    """
+    """Every tile's clip from one capture, and how it was taken."""
 
     directory: str | None = Field(
         default=None, description="Where the clips were written. Null when none were."

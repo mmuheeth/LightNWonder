@@ -1,8 +1,5 @@
-"""Read the ``button_targets`` block of a game config: click points as fractions
-of the window client area, same convention as :mod:`app.utils.image_roi`'s
-regions, so a resize needs no re-measurement. A target may also carry a
-``confirm`` event name (from :mod:`app.utils.game_log`) proving the click landed.
-"""
+"""Read a game config's ``button_targets``: click points as fractions of the window
+client area, plus an optional ``confirm`` event name."""
 
 from __future__ import annotations
 
@@ -54,10 +51,7 @@ class ClickTarget:
     def from_value(
         cls, value: Any, *, name: str = "", where: str = "button target"
     ) -> ClickTarget:
-        """Read a target from decoded JSON, in either shorthand or dict form.
-
-        An existing :class:`ClickTarget` passes through unchanged.
-        """
+        """Read a target from decoded JSON, in either shorthand or dict form."""
         if isinstance(value, cls):
             return value
 

@@ -9,13 +9,12 @@ import { apiRequest } from "@/lib/api";
 const CAPTURE_URL = `${routes.API}/event-capture`;
 
 /**
- * Fetch the state of the run in progress. Resolves either way — check `active`
- * rather than catching.
- *
+ * Fetch the state of the run in progress. Resolves either way — check `active` rather
+ * than catching.
  * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<{active: boolean, run_id: string|null, game: string|null,
- *   started_at: string|null, duration_ms: number, event_count: number,
- *   recent_events: Array<object>, errors: string[]}>}
+ *   started_at: string|null, duration_ms: number, event_count: number, recent_events:
+ *   Array<object>, errors: string[]}>}
  */
 export function getCaptureStatus({ signal } = {}) {
   return apiRequest({ method: "GET", url: `${CAPTURE_URL}/status`, signal });
@@ -31,10 +30,9 @@ export function startCapture() {
 
 /**
  * Stop tracking. The resolved value is the finished record, events included.
- *
- * @returns {Promise<{run_id: string, game: string, status: string,
- *   started_at: string, stopped_at: string|null, event_count: number,
- *   log_path: string, events: Array<object>, errors: string[]}>}
+ * @returns {Promise<{run_id: string, game: string, status: string, started_at: string,
+ *   stopped_at: string|null, event_count: number, log_path: string, events:
+ *   Array<object>, errors: string[]}>}
  */
 export function stopCapture() {
   return apiRequest({ method: "POST", url: `${CAPTURE_URL}/stop` });

@@ -1,41 +1,5 @@
-"""Interprets the denomination a cabinet is running: its value, its unit, and
-the multiplier that turns paytable credits into money on the glass.
-
-Deliberately ignorant of where the two inputs came from -- one is the string the
-game's log wrote, the other the paytable id it named -- so the one place a
-denomination is *interpreted* is separate from the places it is *found*. That
-matters more than usual here: the log is only the current source of the value,
-and swapping it for another one should not move any of the arithmetic below.
-
-**The value is a count of cents, and that is measured rather than assumed.** The
-log writes ``current denom[2.000]`` with no unit anywhere on the line, and read as
-money that would be two dollars. Three things say it is two cents:
-
-* the paytable id on the same line is ``FortuneOx-1103AX-2c-90``, and
-  ``gameConfig.cfg`` inside that folder declares ``<MinDenomMultiplier>2</...>``;
-* ``BetChangeMsg ... denom: 2.000 units: 40 totalBetValue: 176.000`` pairs with
-  meter strips captured in the same session reading a bet of ``$1.76`` in cash
-  mode and ``88`` in credits mode -- 88 credits at 2c is 176c is $1.76 -- and that
-  folder's ``<MinTotalBet>88</MinTotalBet>`` confirms 88 was the bet;
-* a second session at ``denom[1.000]`` has a balance of ``99635`` credits against
-  ``$996.35``.
-
-So :data:`CENTS_PER_UNIT` is the whole conversion, and
-:attr:`Denomination.money_per_credit` is the only number anything should multiply
-or divide by. The raw value is carried beside it because it is what the log and
-the operator both say ("a 2c game"), but it is not a rate.
-
-**The unit comes from the paytable id, and is never guessed.** No file states it
-in words. The id's trailing ``-2c-`` does, by convention, and every paytable
-folder on the reference install that ships a ``gameConfig.cfg`` follows it (1c, 2c,
-4c, 5c, 10c, 100c, 200c). An id that does not carry it leaves
-``money_per_credit`` at ``None``, which makes a spin's award verdict
-``indeterminate``. That is on purpose: the cabinet's supported ladder
-(``1,2,5,10,100,200``) looks like conclusive evidence of cents, but a machine
-denominated in whole currency units would print a ladder of the same shape, and a
-wrong multiplier is out by a factor of a hundred while still looking like a
-number -- which reads as a game bug rather than as a parsing assumption.
-"""
+"""Interprets the denomination a cabinet is running: its value, its unit, and the
+multiplier that turns paytable credits into money on the glass."""
 
 from __future__ import annotations
 
@@ -75,12 +39,7 @@ _UNITS: dict[str, str] = {"c": UNIT_CENT}
 
 @dataclass(frozen=True)
 class Denomination:
-    """One resolved denomination, and how it was resolved.
-
-    Carries the evidence as well as the answer, because every field below can
-    disagree with another and only saying so lets a reader tell a stale log from
-    a mis-parsed id.
-    """
+    """One resolved denomination, and how it was resolved."""
 
     value: float
     """The number the source reported, in :attr:`unit` -- ``2.0`` for a 2c game.
@@ -115,11 +74,7 @@ class Denomination:
 
 
 def value_of(denomination: str | None) -> float | None:
-    """A denomination as its source wrote it, or ``None`` when it is unusable.
-
-    Non-positive is unusable as well as unparseable: the value divides a bet, and
-    a zero denomination would raise where a missing one reports honestly.
-    """
+    """A denomination as its source wrote it, or ``None`` when it is unusable."""
     if denomination is None:
         return None
     try:
@@ -145,12 +100,7 @@ def _unit_segment(paytable_id: str | None) -> tuple[int, str] | None:
 
 
 def _label(value: float, unit: str) -> str:
-    """``2c``, or a bare number when the unit is not known.
-
-    The value is formatted with ``%g`` so ``2.000`` reads as ``2`` -- every
-    denomination observed is a whole count of cents, and a trailing ``.000`` on a
-    label an operator reads is noise. A fractional one would still print.
-    """
+    """``2c``, or a bare number when the unit is not known."""
     shown = f"{value:g}"
     return f"{shown}c" if unit == UNIT_CENT else shown
 
@@ -161,13 +111,7 @@ def parse(
     paytable_id: str | None,
     declared_multiplier: int | None = None,
 ) -> Denomination | None:
-    """Resolve a denomination, or ``None`` when there is no usable value.
-
-    ``denomination`` is the value as its source reported it (the game log's
-    ``denom[...]`` today); ``paytable_id`` is what names the unit;
-    ``declared_multiplier`` is ``gameConfig.cfg``'s ``MinDenomMultiplier``, used
-    only to corroborate.
-    """
+    """Resolve a denomination, or ``None`` when there is no usable value."""
     value = value_of(denomination)
     if value is None:
         return None

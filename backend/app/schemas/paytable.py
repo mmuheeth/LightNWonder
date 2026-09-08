@@ -10,11 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class PaytableSource(BaseModel):
-    """How the paytable id being shown was arrived at.
-
-    Reported rather than assumed: a page showing the wrong maths is either a
-    stale log or a hand-typed id, and only saying which lets the reader tell.
-    """
+    """How the paytable id being shown was arrived at."""
 
     origin: str = Field(
         description=(
@@ -51,14 +47,7 @@ class PaytableSource(BaseModel):
 
 
 class SymbolInfo(BaseModel):
-    """One symbol code, what it is called, and what the maths does with it.
-
-    Which codes exist and what they are worth is read from ``math.xml``; only
-    the display name is configured, because the maths files carry no display
-    text in any element. The reel counts are what separate the two: a code the
-    strips never carry is still listed when the config names it, but its zeros
-    say so.
-    """
+    """One symbol code, what it is called, and what the maths does with it."""
 
     code: str = Field(description="Two-letter code as the maths files write it.")
     name: str | None = Field(
@@ -161,13 +150,8 @@ class PaylineComboInfo(BaseModel):
 
 
 class PaylinePayRow(BaseModel):
-    """One row of the paytable poster: symbols that pay the same, and what they
-    pay for each run length.
-
-    Symbols are grouped because a game gives several of them one pay profile --
-    the card ranks, usually -- and four identical rows say less than one row
-    naming four symbols.
-    """
+    """One row of the paytable poster: symbols that pay the same, and what they pay for
+    each run length."""
 
     codes: list[str] = Field(description="Symbols sharing this row, in pay order.")
     names: list[str | None] = Field(description="Those codes' names, in step.")
@@ -328,19 +312,7 @@ class WinGeometryInfo(BaseModel):
 
 
 class BetConfigInfo(BaseModel):
-    """``betPerUnitConfig.xml`` and ``betUnitConfig.xml``: what a spin costs.
-
-    The pair answers what neither ``math.xml`` nor ``gameConfig.cfg`` answers
-    directly. A payline combo's ``value`` is a rate **per bet unit**, so what a
-    line actually awards is ``value x bet_per_unit`` -- 25 becomes 25 at the
-    minimum and 250 at ten. ``unit_cost`` is the other factor: a spin costs
-    ``unit_cost x bet_per_unit`` credits.
-
-    Read as a pair because only these two files separate the factors.
-    ``gameConfig.cfg``'s ``SpecificMaxBets`` carries the *product*
-    (``88 176 264 440 880``), which cannot be divided back into a cost and a
-    ladder without already knowing one of them.
-    """
+    """``betPerUnitConfig.xml`` and ``betUnitConfig.xml``: what a spin costs."""
 
     ladder: list[int] = Field(
         default_factory=list,
@@ -409,15 +381,7 @@ class PaytableIdentityInfo(BaseModel):
 
 
 class DenominationInfo(BaseModel):
-    """The denomination the cabinet is running, interpreted.
-
-    Three fields on this response name a denomination and they are not
-    interchangeable: ``source.denomination`` is the raw string the game's log
-    wrote, ``identity.denominations`` is the loaded folder's own ``DenomConfig``
-    list (which does *not* contain the current one), and this is the
-    interpretation of the first. Anything doing arithmetic wants
-    ``money_per_credit`` from here and nothing else.
-    """
+    """The denomination the cabinet is running, interpreted."""
 
     value: float = Field(
         description=(

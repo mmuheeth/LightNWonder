@@ -34,7 +34,7 @@ from httpx import AsyncClient
 from PIL import Image
 
 from app.config.game_config import save_active_game
-from app.core.config import settings
+from app.config.runtime import settings
 from app.exceptions.base import ObsConnectionError
 from app.schemas.obs import ScreenshotResult
 from app.services import analyze_spin as spin_service

@@ -91,10 +91,6 @@ backend/
     │                         pattern -- the opposite question to log_tail's
     │   ├── game_math.py     reads a paytable folder's math.xml (symbols, reel
     │                         strips, combos) and its gameConfig.cfg identity
-    │   ├── reel_stops.py    turns a spin's logged reel stops plus the strips into
-    │                         the symbols that were on screen. Unread since Analyze
-    │                         Spin started naming tiles from the picture instead --
-    │                         a symbol named from the log agrees with the game
     │   ├── win_geometry.py  reads winGeometry.xml: where each payline runs, and
     │                         converts a line to a game config's [row, column]
     │   ├── image_roi.py     crops a config's named region out of a frame, by
@@ -1066,11 +1062,9 @@ split merely old — split the frame again.
 ## Naming the symbols (image classifier)
 
 The payline check answers *do these two tiles match each other*. It never learns
-what either one **is** -- and `utils/reel_stops.py`, which does name symbols, reads
-the answer out of the game's own log, so it agrees with the game by construction.
-This is the third reading: a network over the tiles themselves, and the only one
-that can disagree. Two are available -- EfficientNet-B0 and ResNet34 -- and both
-can be trained and kept at once.
+what either one **is**. This is the reading that does: a network over the tiles
+themselves, and the only one that can disagree with the game. Two are available
+-- EfficientNet-B0 and ResNet34 -- and both can be trained and kept at once.
 
 It is also no longer only a page of its own. [Analyze Spin](#analyze-spin) reads
 a spin's reels through this, in place of both of the other two: the codes it
@@ -2282,8 +2276,8 @@ Two earlier readings were replaced by that one, and why matters more than what:
 - **the reel stops in the game's own log** (`ReelSet.SetStops(ReelsStopData)` plus
   `math.xml`'s strips) named the symbols by *agreeing with the game*. A reading
   taken out of the log cannot catch a reel drawing the wrong symbol, because it
-  never looked at the reel. `app/utils/reel_stops.py` is still in the tree and no
-  longer read here, as is `ANALYZE_SPIN_REEL_STOP_ANCHOR` — the whole
+  never looked at the reel. That reading has been deleted (`app/utils/reel_stops.py`,
+  `game_log.REEL_STOPS` and `ANALYZE_SPIN_REEL_STOP_ANCHOR`) — the whole
   top/middle/bottom question disappears when the tile itself is what gets named.
 
 #### The wild substitutes along a line, not across a pair

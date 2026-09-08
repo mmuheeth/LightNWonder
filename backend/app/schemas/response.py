@@ -1,6 +1,5 @@
-"""The single response envelope used by every endpoint and every error:
-``{success, message, data, error, meta}``, with ``data`` null on failure and
-``error`` null on success -- both keys always present."""
+"""The one response envelope, for every endpoint and every error: ``{success, message,
+data, error, meta}``, with both keys always present."""
 
 from __future__ import annotations
 

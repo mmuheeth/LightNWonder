@@ -1,15 +1,4 @@
-/**
- * One labelled number, laid out to be scanned as a grid rather than read.
- *
- * Lives here beside `stat-row.jsx` for the same reason it does: this is the app's
- * own convention, not a vendored primitive. `StatRow` is a label and a value on
- * one line, for a list of them down a card; `Figure` is a small block, for a row
- * of them across one.
- *
- * The same component is still copied locally into three cards under
- * `features/analyze-spin/` and `features/paylines/`. This is the shared one; new
- * code should import it rather than adding a fourth copy.
- */
+/** One labelled number, laid out to be scanned as a grid rather than read. */
 export function Figure({ label, value, hint }) {
   return (
     <div className="space-y-0.5">

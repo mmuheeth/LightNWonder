@@ -1,28 +1,4 @@
-"""Readers for the two files that identify and define one paytable folder.
-
-A game ships its maths outside this repo, under ``<game_config>/<paytableId>/``,
-and the game's own log names which of those folders is loaded (see the
-``paytable-changed`` rule in :data:`app.utils.game_log.DEFAULT_RULES`). Two
-files in that folder are worth reading:
-
-``gameConfig.cfg``
-    The folder's identity -- its ``GameId`` (byte-identical to the log's
-    ``paytableId`` and to the folder name), the marketing ``DisplayGameId``,
-    the return percentages, and ``NumberOfLines``, which is the line count the
-    cabinet is configured for and therefore the payline set actually in play.
-
-``math.xml``
-    The maths itself: symbols, reel strips, and the combos that pay. Namespaced
-    (``http://scientificgames.com/slotMathXMLSchema.xsd``) and close to a
-    megabyte, so element lookup here is by local name -- pinning the namespace
-    would make a schema-version bump look like a corrupt file.
-
-Deliberately ignorant of who consumes it, like every other ``app/utils`` format
-reader: nothing here reads the game's screen, its log, or its config JSON.
-:mod:`app.services.paytable` is what joins the three.
-
-Both files are written with a UTF-8 BOM, hence ``utf-8-sig`` throughout.
-"""
+"""Readers for the two files that identify and define one paytable folder."""
 
 from __future__ import annotations
 
@@ -78,11 +54,7 @@ def _child(parent: ElementTree.Element, name: str) -> ElementTree.Element | None
 
 
 def _text(parent: ElementTree.Element, name: str) -> str | None:
-    """Stripped text of a direct child, or ``None`` when absent or empty.
-
-    These files indent some values (``<MinDenomMultiplier> 1 </...>``), so the
-    strip is not optional.
-    """
+    """Stripped text of a direct child, or ``None`` when absent or empty."""
     found = _child(parent, name)
     if found is None or found.text is None:
         return None
@@ -241,11 +213,7 @@ class SymbolSet:
 
 @dataclass(frozen=True)
 class ReelStrip:
-    """One strip: the symbols around a reel, in stop order.
-
-    ``weights`` runs parallel to ``symbols``. It is the *stop* weighting, not a
-    pay value, and is usually uniform -- an unequal one is the interesting case.
-    """
+    """One strip: the symbols around a reel, in stop order."""
 
     identifier: str
     symbol_set_id: str | None
@@ -278,12 +246,7 @@ class ReelStripSet:
 
 @dataclass(frozen=True)
 class PaylineCombo:
-    """One paying pattern along a line, read left to right.
-
-    ``ANY`` in :attr:`symbols` is the trailing wildcard, so a three-of-a-kind is
-    stored as ``[X, X, X, ANY, ANY]``. The leading run is what pays, which is
-    the same rule :mod:`app.services.paylines` reads a split by.
-    """
+    """One paying pattern along a line, read left to right."""
 
     combo_set: str
     combo_id: int | None
@@ -325,13 +288,7 @@ class PaytableRef:
 
 @dataclass(frozen=True)
 class SymbolUsage:
-    """One symbol code as the *reels* have it, rather than as they declare it.
-
-    ``SymbolSetList`` is a declaration and ``ReelStripList`` is the fact: on
-    FortuneOx the former names eighteen codes and only seventeen of them are on
-    a strip at all, so a table built from the declaration lists a symbol that
-    can never land. These counts are what says which is which.
-    """
+    """One symbol code as the *reels* have it, rather than as they declare it."""
 
     code: str
     reel_stops: int
@@ -399,17 +356,7 @@ class GameMath:
     def reel_symbols(
         self, *, base_set_id: str | None = None
     ) -> tuple[SymbolUsage, ...]:
-        """Every symbol code that actually appears on a reel strip, counted.
-
-        Built from ``ReelStripList`` rather than from ``SymbolSetList`` because
-        the strips are what the player can land: a declared code that no strip
-        carries is a row about nothing. ``base_set_id`` names the set whose
-        stops are counted as :attr:`SymbolUsage.reel_stops` -- normally
-        ``defaults.reel_strip_set_id``, the reels the base game spins.
-
-        Ordered by first appearance on the reels, which is the file's own order
-        and the only one that is not an opinion.
-        """
+        """Every symbol code that actually appears on a reel strip, counted."""
         base = self.reel_strip_set(base_set_id)
         base_strips = set(base.strip_ids) if base is not None else set()
 
@@ -439,18 +386,7 @@ class GameMath:
         )
 
     def line_pays(self) -> dict[str, dict[int, float]]:
-        """Line pays as a paytable is actually read: ``{code: {run: value}}``.
-
-        A combo is one symbol repeated with an ``ANY`` tail, so the two numbers
-        that matter are *which* symbol and *how long a run of it* -- and a
-        paytable poster is that pivot, a row per symbol and a column per run
-        length. Reading the combos back in their declared order instead makes
-        the same thing three unordered rows per symbol.
-
-        A mixed combo (two different codes on one line) has no single symbol to
-        credit, so it is left out rather than attributed to whichever code came
-        first. :attr:`payline_combos` still carries it verbatim.
-        """
+        """Line pays as a paytable is actually read: ``{code: {run: value}}``."""
         pays: dict[str, dict[int, float]] = {}
         for combo in self.payline_combos:
             codes = {code for code in combo.symbols if code != ANY_SYMBOL}
@@ -473,17 +409,7 @@ class GameMath:
         }
 
     def roles(self) -> dict[str, str]:
-        """What each symbol code *does*, derived rather than declared.
-
-        ``math.xml`` carries no human-readable symbol names at all -- not in
-        ``SymbolSetList``, not in ``ReelStripList``, nowhere -- but it does say
-        which codes substitute (wild) and which are counted anywhere on screen
-        (scatter). Everything else is a plain line symbol. That structure is the
-        only thing a name can honestly be derived from.
-
-        Covers declared *and* reel-borne codes, since a combo may name a symbol
-        that no base-game strip carries.
-        """
+        """What each symbol code *does*, derived rather than declared."""
         roles: dict[str, str] = {}
         for symbol_set in self.symbol_sets:
             for symbol in symbol_set.symbols:
@@ -587,11 +513,7 @@ def _combo_symbols(element: ElementTree.Element, *, where: str) -> tuple[str, ..
 def _combo_sets(
     root: ElementTree.Element,
 ) -> tuple[tuple[PaylineCombo, ...], tuple[ScatterCombo, ...]]:
-    """Read ``<ComboSetList>`` into line combos and scatter combos.
-
-    Flattened across sets, with the set name carried on each combo: a paytable
-    selects whole sets, and the page showing them wants one sortable table.
-    """
+    """Read ``<ComboSetList>`` into line combos and scatter combos."""
     payline: list[PaylineCombo] = []
     scatter: list[ScatterCombo] = []
 
@@ -682,12 +604,7 @@ def _paytable_refs(root: ElementTree.Element, *, path: Path) -> tuple[PaytableRe
 
 
 def load_game_math(path: Path) -> GameMath:
-    """Read one ``math.xml``.
-
-    Only the blocks a reader of the maths needs: ``BonusInfo``'s weight tables
-    and ``MysteryReplacementInfo`` are left on disk, since neither is a symbol,
-    a strip, or a pay.
-    """
+    """Read one ``math.xml``."""
     root = _parse(path, what="math file")
     if _local(root.tag) != "GameMath":
         raise GameMathError(

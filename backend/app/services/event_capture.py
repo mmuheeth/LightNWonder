@@ -1,17 +1,4 @@
-"""Event Based Capture: follow the game's log, screenshot what happens.
-
-One run at a time. ``start`` opens a directory under the OBS screenshot root,
-follows the active game's log from its current end, and screenshots every line
-whose matched rule marks it ``capture`` -- not every event
-:mod:`app.utils.game_log` knows, which includes noisy ones like credit-meter
-ticks that would bury the interesting moments. The manifest (``run.json``) is
-rewritten atomically after every event, not just at the end, so a crash doesn't
-lose the run. The watcher task belongs to the endpoints, not the app lifespan
-(same reasoning as :mod:`app.services.obs`'s lack of one), and is always
-cancelled *and awaited* by :func:`stop`, :func:`abort`, or :func:`reset`.
-Debounce compares the game's own line timestamps, not the wall clock, so a
-burst of lines read at once collapses the same way a slow trickle would.
-"""
+"""Event Based Capture: follow the game's log, screenshot what happens."""
 
 from __future__ import annotations
 
@@ -25,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
@@ -261,9 +248,7 @@ def _is_repeat(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
 
 
 def _is_unchanged(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
-    """Whether a rule that only fires on a change was handed the old values --
-    e.g. HuffNPuffLink re-logs ``[BetManager.UpdateCurrentBet]`` with an
-    unchanged bet, which debounce (seconds apart) can't catch."""
+    """Whether a rule that only fires on a change was handed the old values -- e.g."""
     if not detected.only_on_change:
         return False
     fields = dict(detected.fields)
@@ -273,9 +258,7 @@ def _is_unchanged(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
 
 
 async def _handle(run: _ActiveRun, raw: str) -> None:
-    """Capture one appended line, if a rule claims it as something to see. Never
-    raises: a failure is recorded on the run and the next line still gets read.
-    Cancellation is a ``BaseException`` and passes straight through."""
+    """Capture one appended line, if a rule claims it as something to see."""
     try:
         line = game_log.parse_line(raw)
         if line is None:

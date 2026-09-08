@@ -1,16 +1,4 @@
-"""Ask a log what it *last* said.
-
-:mod:`app.utils.log_tail` reads forward from a cursor, which is the shape for
-confirming something that is about to happen. "Which paytable is loaded?" is
-the opposite question: the answer was written at some unknown point in a
-six-megabyte file and only the newest one counts. Reading front to back to find
-it throws away the fact that the answer is almost always in the last few
-kilobytes, so :func:`last_match` walks the file backwards a window at a time
-and stops at the first hit.
-
-Like :class:`~app.utils.log_tail.LogTail`, reads never raise -- an absent,
-locked or unreadable log simply has no last line.
-"""
+"""Ask a log what it *last* said."""
 
 from __future__ import annotations
 
@@ -46,12 +34,7 @@ def last_match(
     window_bytes: int = DEFAULT_WINDOW_BYTES,
     max_bytes: int | None = None,
 ) -> LogMatch | None:
-    """Newest line in ``path`` matching ``pattern``, or ``None``.
-
-    ``max_bytes`` bounds how far back the search goes; ``None`` scans the whole
-    file. A file that has rotated since the caller last looked is not a special
-    case here -- the search is anchored to the end, not to a remembered cursor.
-    """
+    """Newest line in ``path`` matching ``pattern``, or ``None``."""
     try:
         size = path.stat().st_size
     except OSError:

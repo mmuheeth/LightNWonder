@@ -4,31 +4,11 @@ import { describe, expect, it } from "vitest";
 import { AwardComparisonCard } from "@/features/analyze-spin/award-comparison-card";
 
 /**
- * The one card that is a check rather than a reading, and the one that has been
- * wrong three times: multiplying the award by the stake per line, multiplying by
- * the denomination instead of by what a credit is worth, and presenting both
- * units as though OCR had read them. So what these tests hold in place is not the
- * layout but the invariants behind it:
- *
- * * **only one unit is ever read.** The meter draws credits or money, so one of
- *   the two "read by OCR" columns is empty for the whole run and the other unit's
- *   figures are calculated from it.
- * * **a pair means a check.** A calculated figure beside a read one in the same
- *   unit is two independent measurements; a lone figure is not, which is why an
- *   opening balance has no calculated counterpart in its own unit.
- * * **every row above the total is a step that actually happened** — on a credit
- *   meter nothing is converted, so no `×` row is drawn at all.
- * * **the verdict is the backend's**, combined here and not recomputed: the
- *   tolerances live there, and two places deciding the same thing is how they
- *   come to disagree.
+ * The one card that is a check rather than a reading, and the one that has been wrong
+ * three times: multiplying the award by the stake per line, multiplying by the
  */
 
-/**
- * A 2c cabinet: 5000 credits on the meter, 88 bet, 50 won, so 4962 at the end.
- *
- * `collected: false` drops the third frame, which is what a losing spin looks
- * like -- take-win is skipped, so the result screenshot is the end of the spin.
- */
+/** A 2c cabinet: 5000 credits on the meter, 88 bet, 50 won, so 4962 at the end. */
 function meter({ mode = "cash", collected = true } = {}) {
   const credits = {
     initial: { balance: 5000, bet: 88, win: null },
@@ -166,7 +146,11 @@ describe("AwardComparisonCard", () => {
   it("says the award needs a stake when none was given", () => {
     render(
       <AwardComparisonCard
-        expected={expected({ bet_per_unit: null, credits: 0, verdict: "indeterminate" })}
+        expected={expected({
+          bet_per_unit: null,
+          credits: 0,
+          verdict: "indeterminate",
+        })}
         meter={meter({ mode: "cash" })}
       />,
     );

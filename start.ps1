@@ -9,28 +9,13 @@ a lower integrity level to a higher one, and the whole cabinet (OledPanelSvc.exe
 the game) is auto-elevated to High here. Confirm from GET /api/ideck/status: "ready"
 means the backend can drive the panel, "access_denied" means it cannot. See
 docs/elevation.md for background.
-
--Elevate and -NoAdmin are deprecated no-op aliases now that elevation is unconditional.
 #>
 
 [CmdletBinding()]
-param(
-    # Deprecated: the backend always starts elevated now.
-    [switch]$Elevate,
-
-    # Deprecated: the backend always starts elevated now.
-    [switch]$NoAdmin
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-
-if ($NoAdmin) {
-    Write-Warning '-NoAdmin is deprecated and has no effect: the backend always starts elevated now. Ignoring it.'
-}
-if ($Elevate) {
-    Write-Warning '-Elevate is deprecated and has no effect: the backend always starts elevated now. Ignoring it.'
-}
 
 # Depended on directly instead of activating the venv, so check it here rather than
 # letting pwsh report a missing relative path from inside a new window.

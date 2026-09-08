@@ -1,14 +1,5 @@
-"""Reads the five values off a cash-meter crop that :mod:`app.services.roi` already cropped.
-
-No endpoint of its own — ROI calls :func:`read` while it holds the crop, so one
-extraction serves both. Never raises: failures come back as ``MeterValues.error``.
-A declared ``meter.band`` wins over fitting one from the frame; fitted bands are
-cached per (game, width, height).
-
-:func:`combine` is the other public door, for a caller reading the same meter off
-several frames -- Analyze Spin reads one strip per screenshot -- and folds their
-modes and currencies into the one answer the machine actually had.
-"""
+"""Reads the five values off a cash-meter crop that :mod:`app.services.roi` already
+cropped."""
 
 from __future__ import annotations
 
@@ -21,7 +12,7 @@ from typing import Any
 from PIL import Image
 
 from app.config.ocr import candidate_executables
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.schemas.meter import (
     MeterField,
@@ -80,19 +71,8 @@ def _classify(fields: dict[str, meter.MeterField]) -> tuple[MeterMode, str | Non
 
 
 def combine(readings: Iterable[MeterValues | None]) -> tuple[MeterMode, str | None]:
-    """One mode and currency for several readings of the *same* meter -- the
-    frames of one spin, say.
-
-    Not a vote, and deliberately not: the two modes are not symmetric evidence.
-    Cash is read positively (a currency symbol, or an amount with a fractional
-    part) while credits is what :func:`_classify` concludes from the absence of
-    both, so a frame whose three cells all happened to be whole numbers and whose
-    symbol did not OCR reads as credits on a cash machine. One frame that saw
-    money therefore settles it, and only frames that all saw none mean credits.
-
-    The currency is the first symbol the engine actually named, so a frame that
-    read ``$`` outranks one that only knew a symbol was there.
-    """
+    """One mode and currency for several readings of the *same* meter -- the frames of
+    one spin, say."""
     read = [values for values in readings if values is not None]
     modes = [values.mode for values in read]
     named = sorted(

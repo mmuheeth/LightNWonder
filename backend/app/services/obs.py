@@ -1,21 +1,4 @@
-"""OBS Studio control over obs-websocket v5.
-
-One long-lived, module-level session, exactly like the other services here hold
-their state in module globals. Every request funnels through :func:`_call`, so
-connection handling and error translation live in a single place.
-
-**Reconnect is lazy.** :func:`_ensure_connected` re-runs the handshake when it
-finds the socket dropped, so a closed-and-reopened OBS heals on the next
-request. There is deliberately no background reconnect task: it would not exist
-under the test transport (which never runs the app lifespan), it could outlive a
-cancelled request, and pytest runs with ``filterwarnings = error``, where a
-stray pending-task warning fails the suite.
-
-Callers use the namespace, not the functions::
-
-    from app.services import obs as obs_service
-    await obs_service.start_recording()
-"""
+"""OBS Studio control over obs-websocket v5."""
 
 from __future__ import annotations
 
@@ -32,7 +15,7 @@ from app.config.game_config import (
     GameConfigError,
     load_game_config,
 )
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
@@ -201,9 +184,8 @@ def _resolve_output_dir(root: Path, output_dir: str | None) -> Path:
 def _resolve_capture_path(
     file_name: str, image_format: str, output_dir: str | None
 ) -> Path:
-    """Resolve a caller-supplied filename inside the screenshot output root —
-    a bare filename only, or the endpoint would let a client write anywhere
-    the OBS process can reach."""
+    """Resolve a caller-supplied filename inside the screenshot root -- a bare filename
+    only, or a client could write anywhere OBS can reach."""
     root = _resolve_output_dir(settings.obs_screenshot_dir, output_dir)
     try:
         return resolve_within(root, file_name, default_suffix=image_format)
@@ -339,10 +321,8 @@ async def _window_source_for_game(scene: str, configured_source: str | None) -> 
 
 
 async def _game_window(source_name: str, process: str) -> tuple[str, str]:
-    """Find OBS's own identifier for the window owned by ``process``, taken from
-    OBS's enumerated window list rather than assembled from the process name --
-    a synthesised ``::game.exe`` matches nothing and fails silently much later
-    as an empty screenshot. Returns the identifier and the window title."""
+    """OBS's own identifier and title for ``process``'s window, taken from its
+    enumerated list -- a synthesised one matches nothing and fails silently."""
     data = await _call(
         "GetInputPropertiesListPropertyItems",
         {"inputName": source_name, "propertyName": _WINDOW_PROPERTY},
@@ -419,9 +399,8 @@ async def _set_record_directory(directory: Path, *, required: bool = False) -> N
 async def _settled_record_status(
     *, active: bool | None = None, paused: bool | None = None
 ) -> ObsRecordStatus:
-    """Read the record status once OBS reflects the change requested -- the
-    first read would still be stale. Falls back to OBS's last word if the flip
-    never lands, rather than hanging."""
+    """Read the record status once OBS reflects the change requested -- the first read
+    would still be stale."""
     remaining = _SETTLE_ATTEMPTS
     while True:
         current = await record_status()
@@ -446,9 +425,7 @@ async def _settled_record_status(
 
 
 async def connect() -> ObsStatus:
-    """Open and identify a session with OBS. Safe to call repeatedly. When
-    ``OBS_SET_RECORD_DIRECTORY`` is on, OBS's recording directory is pointed at
-    the configured root -- this persists in the user's OBS profile afterward."""
+    """Open and identify a session with OBS."""
     global _client
     async with _get_lock():
         if _client is not None and _client.is_identified():
@@ -528,10 +505,7 @@ async def disconnect() -> ObsStatus:
 
 
 async def status() -> ObsStatus:
-    """Report the connection state, plus what OBS says about itself when live.
-
-    Never raises: a closed OBS is a state worth reporting, not a failed request.
-    """
+    """Report the connection state, plus what OBS says about itself when live."""
     client = _client
     if client is None or not client.is_identified():
         return ObsStatus(state=ObsConnectionState.DISCONNECTED, url=settings.obs_url)
@@ -626,9 +600,7 @@ async def start_recording(output_dir: str | None = None) -> ObsRecordStatus:
 
 
 async def stop_recording() -> ObsRecordStatus:
-    """Stop recording and report where the file landed. ``outputPath`` is read
-    defensively and left null when absent -- obs-websocket documents it on the
-    ``RecordStateChanged`` event, not on ``StopRecord``."""
+    """Stop recording and report where the file landed."""
     data = await _call("StopRecord")
     output_path = _as_str(data.get("outputPath"))
     logger.info("OBS recording stopped (output=%s)", output_path or "unreported")

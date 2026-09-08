@@ -1,6 +1,4 @@
-"""OCR status, tuning and reading payloads. Every reading carries its
-confidence and the options that produced it; one region failing to read
-doesn't fail the others in the same request."""
+"""OCR status, tuning and reading payloads."""
 
 from __future__ import annotations
 

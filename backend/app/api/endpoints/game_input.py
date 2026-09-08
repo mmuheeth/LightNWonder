@@ -1,6 +1,4 @@
-"""Game-window click endpoints, thin wrappers over
-:mod:`app.services.game_input`. Click coordinates come only from the active
-game's ``button_targets`` config, never the request body."""
+"""Game-window click endpoints, thin wrappers over :mod:`app.services.game_input`."""
 
 from __future__ import annotations
 

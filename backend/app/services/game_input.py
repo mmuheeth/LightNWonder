@@ -1,26 +1,4 @@
-"""Clicking the game's own window.
-
-Take-win and gamble aren't on the i-deck's fourteen keys -- both arrive as a
-``TouchMsg`` from the glass in the game logs, never an OLED button -- so
-reaching them means clicking the simulator's Unity window directly. There's no
-API to ask instead: Unity implements neither UI Automation nor MSAA, and GDK's
-GAF Thrift server (which does have a real ``SimulateTouch``) isn't started by a
-normal launch. Aim points live in the active game's ``button_targets`` block as
-fractions of the window (:mod:`app.utils.click_target`), so a resized simulator
-needs no re-measurement. A missed click is silent, so each click captures the
-game log's size beforehand and reads only what was appended after: the strong
-proof is the game naming the button hit (a config-declared ``confirm`` event),
-the fallback is :data:`app.utils.game_log.TOUCH_REGISTERED`, which only proves
-input arrived. The two are reported apart, never blurred.
-
-Unity does not react to a posted window message at all -- it reads real OS
-input, so a click here (:func:`_inject_click`) moves the actual cursor and
-injects a real button press (``SendInput``), unlike the i-deck's SDL panel,
-which is happy with a posted message and never touches the cursor. Injected
-input lands on whatever is topmost under the cursor rather than at a specific
-window, so every click brings the game to the front first and refuses to fire
-if something else still covers the target point.
-"""
+"""Clicking the game's own window."""
 
 from __future__ import annotations
 
@@ -37,7 +15,7 @@ from app.config.game_config import (
     GameConfigError,
     load_game_config,
 )
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
@@ -136,10 +114,8 @@ def _resolve_target(name: str) -> ClickTarget:
 
 
 def _confirm_pattern(target: ClickTarget) -> re.Pattern[str] | None:
-    """The log pattern that proves a click on ``target`` hit the right button, or
-    ``None`` when it names no event (or one this game doesn't recognise) --
-    resolved through :func:`app.utils.game_log.resolve_rules` so a game's own
-    ``event_rules`` override is honoured too."""
+    """The log pattern proving a click on ``target`` hit the right button, or ``None``
+    when it names no event this game recognises."""
     if target.confirm is None:
         return None
     game = _game_or_raise()
@@ -236,10 +212,7 @@ async def _await_client_area(hwnd: int) -> win32.WindowInfo | None:
 async def _watch_log(
     tail: LogTail, expected: re.Pattern[str] | None, offset: int
 ) -> tuple[ClickConfirmation | None, str | None, bool]:
-    """Wait for the game to react to a click. Returns the strength of the proof,
-    the line that carried it, and whether a bare touch was seen regardless --
-    that flag is what turns a failure into a diagnosis: touched-but-no-event
-    means a stale coordinate, no touch at all means input never arrived."""
+    """Wait for the game to react to a click."""
     deadline = time.monotonic() + settings.GAME_INPUT_VERIFY_TIMEOUT_SECONDS
     cursor = offset
     touched = False
@@ -266,13 +239,7 @@ so the move has to land before the button does."""
 
 
 async def _inject_click(hwnd: int, x: int, y: int, hold_seconds: float) -> bool:
-    """Click a client-area point as real hardware input. Unity does not react
-    to posted window messages at all -- unlike the i-deck's SDL panel, it
-    reads the OS cursor and ``SendInput``, so landing on it means moving the
-    real cursor and injecting a real press. Returns whether the window could
-    be brought to the foreground first (informational only: a refused
-    foreground change is still worth trying, `_watch_log` is what proves
-    whether the click actually landed)."""
+    """Click a client-area point as real hardware input."""
     screen_x, screen_y = win32.client_to_screen(hwnd, x, y)
     raised = win32.bring_to_front(hwnd)
 
@@ -302,9 +269,8 @@ async def _inject_click(hwnd: int, x: int, y: int, hold_seconds: float) -> bool:
 
 
 def _require_log_for_verification() -> LogTail:
-    """Return the log cursor, failing loudly when there is nothing to read -- a
-    click at a stale coordinate produces no error of its own, so an unread log
-    would make every click an unprovable claim."""
+    """The log cursor, failing loudly when there is nothing to read: an unread log makes
+    every click an unprovable claim."""
     tail = _log()
     if tail is None:
         raise GameInputConfigError(

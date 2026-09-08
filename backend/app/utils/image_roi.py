@@ -1,10 +1,4 @@
-"""Crop a named region out of a captured frame. Regions are fractions
-(``[left, top, right, bottom]`` in ``0.0..1.0``) rather than pixels, so a
-capture-size change costs no re-measurement. :func:`crop`/:meth:`Roi.to_box`
-resolve against the whole frame; :meth:`Roi.to_box_within` resolves against
-the part of a letterboxed frame the game actually fills (see
-:mod:`app.utils.letterbox`), which is what survives the game window resizing.
-"""
+"""Crop a named region out of a captured frame."""
 
 from __future__ import annotations
 
@@ -24,9 +18,8 @@ class RoiError(ValueError):
 
 @dataclass(frozen=True)
 class Roi:
-    """One rectangle, as fractions of the rectangle it will be resolved against
-    (usually the frame via :meth:`to_box`, or the content box via
-    :meth:`to_box_within`). Edges are half-open like Pillow's own box."""
+    """One rectangle, as fractions of the rectangle it will be resolved against (usually
+    the frame via :meth:`to_box`, or the content box via :meth:`to_box_within`)."""
 
     left: float
     top: float
@@ -86,9 +79,7 @@ class Roi:
             ) from exc
 
     def to_box(self, width: int, height: int) -> tuple[int, int, int, int]:
-        """Pixel box for a frame of this size, in the order Pillow wants it.
-        Resolves against the whole frame -- use :meth:`to_box_within` for a
-        letterboxed canvas."""
+        """Pixel box for a frame of this size, in the order Pillow wants it."""
         if width <= 0 or height <= 0:
             raise RoiError("the frame must have a non-zero width and height")
         return self.to_box_within((0, 0, width, height))
@@ -96,10 +87,8 @@ class Roi:
     def to_box_within(
         self, within: tuple[int, int, int, int]
     ) -> tuple[int, int, int, int]:
-        """Pixel box for a rectangle *inside* a frame (``within``, in practice
-        :attr:`app.utils.letterbox.ContentBox.box`), offset back to the frame's
-        own pixels -- this is what lets a region survive the game window being
-        resized, since the fractions track the game, not the fixed canvas."""
+        """Pixel box for a rectangle inside a frame, offset back to the frame's own
+        pixels -- what lets a region survive the window being resized."""
         left_edge, top_edge, right_edge, bottom_edge = within
         width, height = right_edge - left_edge, bottom_edge - top_edge
         if width <= 0 or height <= 0:
@@ -115,9 +104,7 @@ class Roi:
 
 
 def _four_numbers(values: Any, *, where: str) -> tuple[float, float, float, float]:
-    """Narrow a decoded JSON value to the four edges of a box. Shared by both
-    constructors so a bad config and a bad pixel measurement are rejected the
-    same way."""
+    """Narrow a decoded JSON value to the four edges of a box."""
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise RoiError(f"{where} must be an array of four numbers")
     if len(values) != 4:
@@ -136,10 +123,7 @@ def _four_numbers(values: Any, *, where: str) -> tuple[float, float, float, floa
 
 
 def _edges(start: float, end: float, size: int) -> tuple[int, int]:
-    """Round one axis of a region to pixel edges, keeping at least one pixel.
-    Rounding (not truncating) keeps a crop proportional across resolutions; a
-    zero-width result is avoided since it would surface as a confusing empty
-    image far from the mistake."""
+    """Round one axis of a region to pixel edges, keeping at least one pixel."""
     low = min(max(round(start * size), 0), size)
     high = min(max(round(end * size), 0), size)
     if high <= low:
@@ -160,10 +144,7 @@ def crop_file(
     *,
     destination: Path | None = None,
 ) -> Image.Image:
-    """Crop a region out of an image file, optionally writing it back out. The
-    file is read fully and closed before returning, so the caller holds an
-    image rather than a handle on a file something else may still be writing.
-    """
+    """Crop a region out of an image file, optionally writing it back out."""
     try:
         with Image.open(source) as image:
             image.load()

@@ -7,10 +7,9 @@ const GAMES_URL = `${routes.API}/games`;
 
 /**
  * Fetch available game configs and the current selection.
- *
  * @param {{signal?: AbortSignal}} [options]
- * @returns {Promise<{active_game: string, games: Array<{game: string,
- *   label: string, process: string|null}>}>}
+ * @returns {Promise<{active_game: string, games: Array<{game: string, label: string,
+ *   process: string|null}>}>}
  */
 export function getGameCatalog({ signal } = {}) {
   return apiRequest({ method: "GET", url: `${GAMES_URL}/`, signal });
@@ -18,7 +17,6 @@ export function getGameCatalog({ signal } = {}) {
 
 /**
  * Change the active game for this backend process.
- *
  * @param {string} game
  * @returns {Promise<{game: string, label: string, process: string|null,
  *   obs_window_selected: boolean|null}>}

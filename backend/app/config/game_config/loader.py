@@ -26,10 +26,7 @@ def _object(raw: Any, *, where: str) -> Mapping[str, Any]:
 
 
 def _ocr(raw: Any, *, path: Path) -> dict[str, Mapping[str, Any]]:
-    """Read the optional ``ocr`` block: option overrides per named region.
-
-    Validated here so a bad option is reported at config-load time, not read time.
-    """
+    """Read the optional ``ocr`` block: option overrides per named region."""
     block = _object(raw, where=f"'ocr' in {path}")
     overrides: dict[str, Mapping[str, Any]] = {}
     for region, values in block.items():
@@ -61,10 +58,7 @@ def _fractions(raw: Any, *, where: str) -> tuple[float, float]:
 
 
 def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
-    """Read the optional ``meter`` block: how to read the cash meter strip.
-
-    Validated here so a bad band is a load-time error, not a silent misread later.
-    """
+    """Read the optional ``meter`` block: how to read the cash meter strip."""
     block = _object(raw, where=f"'meter' in {path}")
     parsed: dict[str, Any] = {}
     if "band" in block:
@@ -86,12 +80,7 @@ def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
 
 
 def _path(raw: Any, *, where: str) -> Path | None:
-    """Read an optional absolute path to something the game installed.
-
-    Not checked for existence here: the game's own install is not part of this
-    repo and a config that names it stays valid on a machine without it. The
-    service that reads the file is where a missing one becomes an error.
-    """
+    """Read an optional absolute path to something the game installed."""
     if raw is None:
         return None
     if not isinstance(raw, str):
@@ -101,15 +90,7 @@ def _path(raw: Any, *, where: str) -> Path | None:
 
 
 def _symbols(raw: Any, *, path: Path) -> dict[str, str]:
-    """Read the optional ``symbols`` block: display name per symbol code.
-
-    The one thing about a game's maths that is declared rather than read, and
-    only because the maths files contain no display text at all. Codes are
-    upper-cased on the way in so a config written ``wc`` still matches the
-    ``WC`` the maths writes; a blank name is dropped rather than kept, since the
-    block is written with every code as a checklist and an empty entry means
-    "not named yet", not "named the empty string".
-    """
+    """Read the optional ``symbols`` block: display name per symbol code."""
     block = _object(raw, where=f"'symbols' in {path}")
     names: dict[str, str] = {}
     for code, label in block.items():
@@ -121,16 +102,8 @@ def _symbols(raw: Any, *, path: Path) -> dict[str, str]:
 
 
 def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
-    """Read the optional ``wild_card_replacement`` block: the symbol codes the
-    wild stands in for.
-
-    A flat list rather than a mapping because a game in this family has one wild
-    and it is always :data:`app.utils.paylines.WILD_SYMBOL`; what differs between
-    games is which symbols it may be read as. Codes are upper-cased on the way in
-    for the same reason ``symbols`` are, and the wild's own code is *rejected*
-    rather than dropped: a wild standing in for itself reads as a rule and is
-    none, and a config carrying it would look correct.
-    """
+    """Read the optional ``wild_card_replacement`` block: the symbol codes the wild
+    stands in for."""
     if raw is None:
         return ()
     where = f"'wild_card_replacement' in {path}"
@@ -156,10 +129,7 @@ def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
 
 
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
-    """Read the optional ``events`` block: extra rules, and defaults to drop.
-
-    Compiled here so a pattern typo is a load-time error, not a mid-run one.
-    """
+    """Read the optional ``events`` block: extra rules, and defaults to drop."""
     block = _object(raw, where=f"'events' in {path}")
 
     disable = block.get("disable")

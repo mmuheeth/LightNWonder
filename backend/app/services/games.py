@@ -12,7 +12,7 @@ from app.config.game_config import (
     save_active_game,
 )
 from app.config.ideck import normalize_game_name
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import GameConfigInvalidError, GameNotFoundError
 from app.schemas.games import ActiveGame, GameCatalog, GameOption

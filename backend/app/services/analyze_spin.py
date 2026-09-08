@@ -1,86 +1,4 @@
-"""Analyze Spin: drives one spin end to end, then validates what it produced.
-
-Every piece of this already existed -- OBS records and screenshots, the i-deck
-presses, the game log names events, ROI reads the meter, the grid splits the
-reels, the payline service compares tiles, the paytable service joins a running
-game to its maths. This module is the *order* they go in, and nothing else. It
-owns no image handling, no XML, no win32.
-
-Five things about the sequence are worth knowing before reading it:
-
-**A losing spin is proven by silence.** The game logs a win meter count-up
-(``win-collected``) when there is something to collect and logs nothing at all
-when there is not, so "no win" is the absence of a line within
-``ANALYZE_SPIN_WIN_WAIT_SECONDS``. That wait is therefore paid in full on every
-losing spin, and setting it too short reports a win as a loss -- the one
-mis-tuning here that produces a confidently wrong answer rather than a timeout.
-
-**A confirmed press is not a spin.** :mod:`app.services.ideck` proves the panel
-registered the key; the deck's layout belongs to the cabinet, so a key the
-panel confirms may be one this game binds nothing to. The spin step therefore
-waits for the game's own ``SpinButtonMsg`` as well, and says which half failed.
-
-**The steps exist before they run.** A run is created with its whole sequence
-``pending``, so a failure on step four leaves the six steps after it visibly
-unreached rather than simply absent -- and take-win on a losing spin is
-``skipped``, which is a different fact from not having got there.
-
-**An empty frame is caught, not accepted.** OBS renders nothing for a moment
-after its window-capture source is re-pointed, and reports a perfectly
-successful write of the black frame that comes out. So a capture is read back
-rather than trusted, retried, and then reported -- a blank frame fails its own
-step without ending the run, because every reading taken off it is meaningless
-rather than merely dark.
-
-**Cancellation is cooperative, not a task cancellation.** Every wait polls, and
-every poll checks the flag, so a cancelled run unwinds through its own code:
-the recording gets stopped, the manifest gets written, and no ``finally`` has to
-run under a pending ``CancelledError``. The cost is that a cancel lands only
-once whatever call is in flight returns (a Tesseract read, an OBS request).
-
-The two validations at the end are deliberately independent of each other and
-neither can fail the other: a machine with no OCR engine still gets its payline
-check, and a machine without the game installed still gets its meter arithmetic.
-
-**The payline half reads one source: the picture, named by the image
-classifier.** :func:`_read_reels` splits the result screenshot and hands the
-tiles to :mod:`app.services.image_classifier`, which returns a symbol code per
-tile; :func:`app.services.paylines.check_symbols` then reads each line as the
-leading run of equal codes, and the paytable prices that run. So a run is
-*named* as well as counted, and an award is one combo and one number.
-
-Two earlier readings were replaced by that one, and knowing why matters more
-than knowing what:
-
-* **cosine similarity between the split's tiles** said which tiles were alike
-  and could never say which symbol they were, so an award was narrowed to every
-  paytable row paying at that run length rather than priced. It is still in
-  :mod:`app.services.paylines` (and still what the standalone payline panel
-  uses); nothing here calls it.
-* **the reel stops in the game's own log** named the symbols by *agreeing with
-  the game*. A reading taken out of the log cannot catch a reel drawing the wrong
-  symbol, because it never looked at the reel. :mod:`app.utils.reel_stops` is
-  likewise still in the tree and no longer read here.
-
-The cost of the swap, stated once: the classifier's confidence floor is set above
-where its classes separate, so a tile it is only fairly sure of comes back
-unnamed -- and a line through an unnamed tile stops there. A spin that plainly
-paid and reports no run is a floor question first, which is why
-``unnamed_positions`` travels on the validation. There is deliberately no
-fallback to similarity: a run measured one way and priced as if measured the
-other is worse than a run reported short.
-
-**The meter half reports its units, and one answer for the run rather than one
-per frame.** Whether the glass was counting money or credits -- and in cash mode
-which currency -- is :func:`app.services.meter.combine` over every frame's own
-classification, because a cabinet does not change denomination between the
-screenshots of one spin and because the two modes are not symmetric evidence:
-money is read positively (a symbol, or a fractional amount) and credits is the
-absence of both, so a frame whose cells all happened to be whole reads as credits
-on a cash machine. It matters beyond display -- :func:`_expected` divides the
-meter's bet by the denomination to reach credits, which is arithmetic that only
-holds on a cash meter -- so ``meter.mode`` is where a reader checks that first.
-"""
+"""Analyze Spin: drives one spin end to end, then validates what it produced."""
 
 from __future__ import annotations
 
@@ -94,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
-from app.core.config import settings
+from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
@@ -350,10 +268,7 @@ def _active_config() -> tuple[str, GameConfig]:
 
 
 def _log_for(name: str, config: GameConfig) -> Path:
-    """The game's log, checked to be there. Refused up front rather than
-    mid-spin: without it there is no way to know the reels ever stopped, and a
-    run that pressed spin and then gave up is worse than one that never
-    pressed."""
+    """The game's log, checked to be there."""
     if config.log_path is None:
         raise SpinAnalysisUnavailableError(
             f"The game config for {name!r} declares no 'log' path, so a spin "
@@ -371,19 +286,7 @@ def _log_for(name: str, config: GameConfig) -> Path:
 
 
 class _LogReader:
-    """A one-way read over the game's log, from where the run opened it.
-
-    Buffers whole lines rather than handing back the first match in a chunk: one
-    read can carry the reels stopping *and* the win counting up, and returning
-    at the first while advancing the cursor past the second is exactly how a
-    winning spin would come back as a loss.
-
-    Reads the log only for *when* things happened -- the spin published, the
-    reels settled, the win counted up. Nothing about what landed comes out of
-    here: the reel stops the game logs used to be picked up on the way past and
-    are deliberately not any more, because a symbol named from the log agrees
-    with the game by construction. See the module docstring.
-    """
+    """A one-way read over the game's log, from where the run opened it."""
 
     def __init__(
         self,
@@ -445,12 +348,7 @@ def _lean_paylines(paylines: SpinPaylineValidation) -> SpinPaylineValidation:
 
 
 def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
-    """The record both the manifest and the API return.
-
-    ``images`` is what separates the progress stream from the report: a snapshot
-    goes out on every step transition and every recognised log line, and forty
-    line pictures per push would make the stream the slowest part of a spin.
-    """
+    """The record both the manifest and the API return."""
     finished = run.finished_at or datetime.now()
     meter = run.meter
     reels = run.reels
@@ -506,9 +404,7 @@ def _snapshot(run: _ActiveRun | None, *, images: bool) -> SpinAnalysisState:
 
 
 def _offer(queue: asyncio.Queue[SpinAnalysisState], state: SpinAnalysisState) -> None:
-    """Hand one snapshot to one subscriber, dropping the oldest if it is behind.
-    A subscriber only ever wants the newest state, so a full queue is a reason
-    to discard history rather than to block the run."""
+    """Hand one snapshot to one subscriber, dropping the oldest if it is behind."""
     while True:
         try:
             queue.put_nowait(state)
@@ -586,17 +482,7 @@ def _finish_step(step: _StepRecord, state: SpinStepState) -> None:
 
 @contextlib.asynccontextmanager
 async def _step(run: _ActiveRun, key: str) -> AsyncIterator[_StepRecord]:
-    """Run one step of the sequence, recording how it went either way.
-
-    The body sets :attr:`_StepRecord.detail` to whatever it found; everything
-    else -- timing, state, the error and its code, the progress push -- happens
-    here so no step can forget it.
-
-    A body that sets :attr:`_StepRecord.error` without raising is recorded as
-    failed and lets the run carry on. That is for the step that did its work and
-    knows the result is unusable -- a screenshot OBS wrote empty -- where
-    aborting would throw away the eight things that would still have worked.
-    """
+    """Run one step of the sequence, recording how it went either way."""
     _check_cancelled(run)
     step = run.steps[key]
     step.state = SpinStepState.RUNNING
@@ -657,13 +543,7 @@ async def _wait_for(
     *,
     timeout: float,
 ) -> game_log.DetectedEvent | None:
-    """Wait for the game to log one of ``wanted``, or give up.
-
-    Everything recognised on the way is recorded on the run, so the timeline
-    shows what the game *was* doing while a wait ran out -- which is the
-    difference between "the reels never stopped" and "the reels stopped and a
-    bonus took over".
-    """
+    """Wait for the game to log one of ``wanted``, or give up."""
     deadline = time.monotonic() + timeout
     while True:
         _check_cancelled(run)
@@ -681,14 +561,7 @@ async def _wait_for(
 
 
 async def _prepare(run: _ActiveRun) -> None:
-    """Get OBS pointed at the game, and read the maths this spin will play by.
-
-    The paytable is read *before* the spin on purpose: it is what the game had
-    loaded when the reels turned, and a denomination change mid-run would
-    otherwise have the validation grading a spin against the wrong maths. Its
-    failure is carried rather than raised -- the game not being installed on
-    this machine costs the payline validation, not the spin.
-    """
+    """Get OBS pointed at the game, and read the maths this spin will play by."""
     async with _step(run, STEP_PREPARE) as step:
         await obs_service.connect()
         # Worth trying, not worth failing for -- the scene may already be right.
@@ -726,9 +599,7 @@ async def _prepare(run: _ActiveRun) -> None:
 
 
 async def _start_recording(run: _ActiveRun) -> None:
-    """Begin the video of the spin. A no-op when this run did not ask to
-    record -- the step does not exist on a run like that, so there is nothing
-    to skip and nothing to show."""
+    """Begin the video of the spin."""
     if not run.record:
         return
     async with _step(run, STEP_RECORD_START) as step:
@@ -738,9 +609,8 @@ async def _start_recording(run: _ActiveRun) -> None:
 
 
 async def _stop_recording(run: _ActiveRun) -> None:
-    """End the video. Idempotent, so the same call serves the happy path and the
-    tidy-up after a failure -- a run that died mid-spin must not leave OBS
-    recording."""
+    """End the video. Idempotent, so the same call serves the happy path and the tidy-up
+    after a failure -- a run that died mid-spin must not leave OBS recording."""
     if not run.record:
         return
     if run.steps[STEP_RECORD_STOP].state is not SpinStepState.PENDING:
@@ -757,9 +627,7 @@ async def _stop_recording(run: _ActiveRun) -> None:
 
 
 async def _stop_recording_quietly(run: _ActiveRun) -> None:
-    """Stop the recording without letting the attempt raise. For the paths where
-    the run is already over -- a failure, a cancel, a shutdown -- and leaving
-    OBS running is the worse of the two outcomes."""
+    """Stop the recording without letting the attempt raise."""
     if not run.record:
         return
     if run.steps[STEP_RECORD_STOP].state is not SpinStepState.PENDING:
@@ -785,13 +653,7 @@ async def _stop_recording_quietly(run: _ActiveRun) -> None:
 
 
 async def _capture(run: _ActiveRun, key: str, step_key: str) -> None:
-    """Take one screenshot of this moment.
-
-    Written into the dashboard's own screenshot directory rather than a
-    per-run one, because that is where :mod:`app.services.roi` and
-    :mod:`app.services.grid` read a frame *by name* -- putting them anywhere
-    else would mean neither validation could open them.
-    """
+    """Take one screenshot of this moment."""
     async with _step(run, step_key) as step:
         sequence = len(run.frames) + 1
         attempts = 0
@@ -848,11 +710,7 @@ async def _capture(run: _ActiveRun, key: str, step_key: str) -> None:
 
 
 async def _spin(run: _ActiveRun) -> _LogReader:
-    """Press the spin key, and wait for the game to agree that it spun.
-
-    The reader is opened *before* the press so its cursor predates it; a reader
-    opened after would start reading past the very line it is waiting for.
-    """
+    """Press the spin key, and wait for the game to agree that it spun."""
     reader = _LogReader(
         run.log_path, run.rules, poll_seconds=settings.ANALYZE_SPIN_POLL_SECONDS
     )
@@ -896,11 +754,7 @@ async def _wait_reels(run: _ActiveRun, reader: _LogReader) -> None:
 
 
 async def _detect_win(run: _ActiveRun, reader: _LogReader) -> None:
-    """Decide whether this spin paid, by whether the win meter counts up.
-
-    There is no line saying a spin lost, so the absence of one is the answer --
-    which is why this step reports the wait it made rather than only its verdict.
-    """
+    """Decide whether this spin paid, by whether the win meter counts up."""
     wait = settings.ANALYZE_SPIN_WIN_WAIT_SECONDS
     async with _step(run, STEP_WIN_DETECT) as step:
         detected = await _wait_for(run, reader, _WIN_COUNTED, timeout=wait)
@@ -916,28 +770,7 @@ async def _detect_win(run: _ActiveRun, reader: _LogReader) -> None:
 
 
 async def _record_tile_clips(run: _ActiveRun) -> None:
-    """Film each reel position on its own for a few seconds after a win lands.
-
-    **Deliberately not a step**, and this is the one thing to preserve about it.
-    Every entry in ``_SEQUENCE`` is either something the spin needed to happen or
-    a reading the run is graded by; this is neither. It produces no number, no
-    verdict and no input to anything below it -- it is a record of what the
-    presentation looked like, tile by tile, which is the one question a single
-    result screenshot cannot answer. So it reports through ``run.errors`` when it
-    goes wrong and leaves the thirteen-row sequence exactly as long as it was.
-
-    Two conditions, both narrow on purpose. It runs only on a run that is
-    **already recording** -- the video of the spin is what these clips are a
-    close-up of, and a caller who did not ask for one did not ask for fifteen --
-    and only on a spin that **won**, because a losing spin's reels do nothing
-    worth fifteen files.
-
-    It sits after the result screenshot rather than before it so that nothing
-    the validations read moves: the outcome frame is still taken at the moment it
-    always was, and the clips start about a second later, while the win
-    presentation is still running. They also finish before take-win is clicked,
-    which is the point -- collecting clears the presentation these are of.
-    """
+    """Film each reel position on its own for a few seconds after a win lands."""
     if not run.record or not settings.ANALYZE_SPIN_TILE_CLIPS:
         return
     _check_cancelled(run)
@@ -989,9 +822,7 @@ def _balance(reading_cash: float | None, reading_credits: float | None) -> float
 def _units(
     mode: MeterMode, currency: str | None, denomination: DenominationInfo | None
 ) -> str:
-    """What the step's own one-line detail calls the numbers it read. The units
-    belong on the step because every figure under it is ambiguous without them --
-    ``1250`` is a credit count or an amount of money, and only this says which."""
+    """What the step's own one-line detail calls the numbers it read."""
     if mode is not MeterMode.CASH:
         read = mode.value
     elif currency is None or currency == meter_service.UNNAMED_SYMBOL:
@@ -1002,9 +833,8 @@ def _units(
 
 
 async def _read_meter(frame: SpinFrame) -> SpinMeterReading:
-    """Read the meter off one frame. Never raises for a bad *reading* -- ROI
-    carries that as ``meter.error`` -- only for a frame or region it cannot
-    reach at all."""
+    """Read the meter off one frame. Never raises for a bad *reading* -- ROI carries
+    that as ``meter.error`` -- only for a frame or region it cannot reach at all."""
     result = await roi_service.extract(
         RoiExtractRequest(region=_METER_REGION, file_name=frame.file_name)
     )
@@ -1044,16 +874,7 @@ def _scaled(figures: SpinMeterFigures, factor: float | None) -> SpinMeterFigures
 def _in_both_units(
     reading: SpinMeterReading, mode: MeterMode, rate: float | None
 ) -> SpinMeterReading:
-    """The reading's three numbers in credits *and* in money.
-
-    The run's ``mode`` decides which side the strip was drawing rather than the
-    frame's own, because it is the more reliable of the two -- a frame whose cells
-    all happened to be whole reads as credits on a cash machine, and
-    :func:`app.services.meter.combine` is what settles that. An unknown mode
-    leaves both sides empty: without knowing which unit was read there is nothing
-    to convert *from*, and filling either would be a guess about what the figures
-    already there mean.
-    """
+    """The reading's three numbers in credits *and* in money."""
     if mode is MeterMode.UNKNOWN:
         return reading
     drawn = SpinMeterFigures(balance=reading.balance, win=reading.win, bet=reading.bet)
@@ -1085,6 +906,16 @@ def _tolerance(unit: SpinMeterUnit) -> float:
 def _close(left: float, right: float, tolerance: float) -> bool:
     """Whether two amounts are the same number to the precision they were read at."""
     return abs(left - right) <= tolerance
+
+
+def _plus(left: float | None, right: float | None) -> float | None:
+    """Sum of two amounts, or ``None`` when either could not be read."""
+    return None if left is None or right is None else left + right
+
+
+def _minus(left: float | None, right: float | None) -> float | None:
+    """Difference of two amounts, or ``None`` when either could not be read."""
+    return None if left is None or right is None else left - right
 
 
 def _amount(value: float | None) -> str:
@@ -1132,92 +963,67 @@ def _relation(
 def _unit_checks(
     by_frame: dict[str, SpinMeterReading], unit: SpinMeterUnit
 ) -> list[SpinMeterCheck]:
-    """The balance arithmetic over one unit's figures.
-
-    Each relation is stated as arithmetic over two readings rather than as a
-    rule about the game, because that is what a reader can check by eye against
-    the crops beside it: the bet leaves the balance when the reels turn, and the
-    win joins it when it is collected.
-
-    Nothing at all when this unit has no figures -- which is a meter with no
-    denomination to convert by, not a failure -- because a table of indeterminate
-    rows about numbers that were never going to exist says less than its absence.
-    """
+    """The balance arithmetic over one unit's figures."""
     initial = by_frame.get(FRAME_INITIAL)
     outcome = by_frame.get(FRAME_OUTCOME)
     collected = by_frame.get(FRAME_COLLECTED)
-    known = [
-        _figures(reading, unit)
-        for reading in by_frame.values()
-        if _figures(reading, unit).balance is not None
-        or _figures(reading, unit).bet is not None
-    ]
-    if not known:
+    figures = [_figures(reading, unit) for reading in by_frame.values()]
+    if not any(f.balance is not None or f.bet is not None for f in figures):
         return []
 
     tolerance = _tolerance(unit)
-    suffix = unit.value
     named = "credits" if unit is SpinMeterUnit.CREDITS else "money"
     checks: list[SpinMeterCheck] = []
 
-    if initial is not None and outcome is not None:
-        before, after = _figures(initial, unit), _figures(outcome, unit)
+    def add(
+        key: str,
+        label: str,
+        expected: float | None,
+        actual: float | None,
+        detail: str,
+    ) -> None:
         checks.append(
             _relation(
-                f"bet-stable-{suffix}",
-                f"The bet is unchanged by the spin ({named})",
-                unit=unit,
-                expected=before.bet,
-                actual=after.bet,
-                tolerance=tolerance,
-                detail=(
-                    f"bet was {_amount(before.bet)} before the spin and "
-                    f"{_amount(after.bet)} after it"
-                ),
-            )
-        )
-        expected = (
-            None
-            if before.balance is None or before.bet is None
-            else before.balance - before.bet
-        )
-        checks.append(
-            _relation(
-                f"bet-deducted-{suffix}",
-                f"The bet came off the balance ({named})",
+                f"{key}-{unit.value}",
+                f"{label} ({named})",
                 unit=unit,
                 expected=expected,
-                actual=after.balance,
+                actual=actual,
                 tolerance=tolerance,
-                detail=(
-                    f"{_amount(before.balance)} - {_amount(before.bet)} = "
-                    f"{_amount(expected)}, and the balance reads "
-                    f"{_amount(after.balance)}"
-                ),
+                detail=detail,
             )
+        )
+
+    if initial is not None and outcome is not None:
+        before, after = _figures(initial, unit), _figures(outcome, unit)
+        add(
+            "bet-stable",
+            "The bet is unchanged by the spin",
+            before.bet,
+            after.bet,
+            f"bet was {_amount(before.bet)} before the spin and "
+            f"{_amount(after.bet)} after it",
+        )
+        deducted = _minus(before.balance, before.bet)
+        add(
+            "bet-deducted",
+            "The bet came off the balance",
+            deducted,
+            after.balance,
+            f"{_amount(before.balance)} - {_amount(before.bet)} = "
+            f"{_amount(deducted)}, and the balance reads {_amount(after.balance)}",
         )
 
     if outcome is not None and collected is not None:
         after, end = _figures(outcome, unit), _figures(collected, unit)
-        expected = (
-            None
-            if after.balance is None or after.win is None
-            else after.balance + after.win
-        )
-        checks.append(
-            _relation(
-                f"win-collected-{suffix}",
-                f"The win went onto the balance ({named})",
-                unit=unit,
-                expected=expected,
-                actual=end.balance,
-                tolerance=tolerance,
-                detail=(
-                    f"{_amount(after.balance)} + {_amount(after.win)} = "
-                    f"{_amount(expected)}, and the balance reads "
-                    f"{_amount(end.balance)}"
-                ),
-            )
+        paid = _plus(after.balance, after.win)
+        add(
+            "win-collected",
+            "The win went onto the balance",
+            paid,
+            end.balance,
+            f"{_amount(after.balance)} + {_amount(after.win)} = "
+            f"{_amount(paid)}, and the balance reads {_amount(end.balance)}",
         )
         # Deliberately no "the win meter cleared" check: these games leave the
         # last win on the WIN cell after it has been collected, so an empty one
@@ -1229,37 +1035,22 @@ def _unit_checks(
         # one *pair* of frames, so a compensating misread in the middle frame
         # cancels out across them and only this notices.
         before = _figures(initial, unit) if initial is not None else SpinMeterFigures()
-        reconciled = (
-            None
-            if before.balance is None or before.bet is None or after.win is None
-            else before.balance - before.bet + after.win
-        )
-        checks.append(
-            _relation(
-                f"balance-reconciled-{suffix}",
-                f"The whole spin adds up ({named})",
-                unit=unit,
-                expected=reconciled,
-                actual=end.balance,
-                tolerance=tolerance,
-                detail=(
-                    f"{_amount(before.balance)} - {_amount(before.bet)} bet + "
-                    f"{_amount(after.win)} won = {_amount(reconciled)}, and the "
-                    f"balance ends at {_amount(end.balance)}"
-                ),
-            )
+        reconciled = _plus(_minus(before.balance, before.bet), after.win)
+        add(
+            "balance-reconciled",
+            "The whole spin adds up",
+            reconciled,
+            end.balance,
+            f"{_amount(before.balance)} - {_amount(before.bet)} bet + "
+            f"{_amount(after.win)} won = {_amount(reconciled)}, and the "
+            f"balance ends at {_amount(end.balance)}",
         )
 
     return checks
 
 
 def _win_registered(run: _ActiveRun, outcome: SpinMeterReading) -> SpinMeterCheck:
-    """Whether the WIN cell agrees with what the game's log said.
-
-    Unit-free, and the only check here that is: whether an amount was drawn at all
-    is the same question in credits and in money, and asking it twice would be
-    asking it twice.
-    """
+    """Whether the WIN cell agrees with what the game's log said."""
     won = run.outcome is SpinOutcome.WIN
     registered = outcome.win is not None and outcome.win > 0
     if outcome.error is not None:
@@ -1283,25 +1074,7 @@ def _win_registered(run: _ActiveRun, outcome: SpinMeterReading) -> SpinMeterChec
 def _settle_mode(
     run: _ActiveRun, mode: MeterMode, readings: list[SpinMeterReading]
 ) -> tuple[MeterMode, str | None]:
-    """Decide which unit the strip drew, using what the cabinet may be bet at.
-
-    :func:`app.services.meter.combine` reads the *shape* of the numbers -- a
-    currency symbol or a fractional amount means money, and credits is what is
-    left when neither appears. That is all it can do, and it is thin: a credits
-    cabinet whose strip happens to OCR one stray decimal reads as cash, and then
-    every figure on the run is divided by the denomination a second time. An 88
-    credit bet becomes 8800 credits, no rung of any ladder, and the award falls
-    to nothing.
-
-    The paytable knows better, and independently. A spin costs ``unit_cost``
-    credits a rung, so the bet drawn on the strip is one of ``88, 176, 264, 440,
-    880`` if it is credits and one of ``0.88 ... 8.80`` if it is money. Those two
-    sets do not overlap, so the bet alone says which unit was drawn -- evidence
-    of a different kind from a decimal point, and better.
-
-    Only when exactly one of the two matches. At a $1 denomination the two sets
-    are the same and the bet says nothing, so the classification stands.
-    """
+    """Decide which unit the strip drew, using what the cabinet may be bet at."""
     bet = None if run.paytable is None else run.paytable.bet_config
     denomination = None if run.paytable is None else run.paytable.denomination
     rate = None if denomination is None else denomination.money_per_credit
@@ -1338,18 +1111,7 @@ def _settle_mode(
 def _derive_bet_per_unit(
     run: _ActiveRun, readings: list[SpinMeterReading]
 ) -> int | None:
-    """Work out what was staked on each bet unit from the bet the meter drew.
-
-    ``bet_credits / unit_cost``: the cabinet stakes ``unit_cost`` credits a spin
-    at one credit a unit -- 88 on FortuneOx's 40-line paytables -- so a bet of
-    880 is its top rung of ten. This is what "depending on the bet size" means,
-    and it is why nothing has to be told what the player had selected: the meter
-    already read it, and the paytable already says what one unit costs.
-
-    Rounded to a whole rung and checked against the ladder when there is one,
-    because a bet OCR'd a digit wrong should come back as nothing rather than as
-    a fractional stake that would misprice every line on the run.
-    """
+    """Work out what was staked on each bet unit from the bet the meter drew."""
     bet = None if run.paytable is None else run.paytable.bet_config
     if bet is None or not bet.unit_cost:
         return None
@@ -1380,19 +1142,7 @@ def _derive_bet_per_unit(
 def _meter_checks(
     run: _ActiveRun, readings: list[SpinMeterReading]
 ) -> list[SpinMeterCheck]:
-    """Every relation between the frames' meters, checked in both units.
-
-    Both, because the cabinet draws one and the paytable speaks the other: a
-    reader comparing an award against the glass needs the arithmetic in whichever
-    of the two they are holding. The pair is the same equation scaled, so a
-    genuine discrepancy shows in both -- what differs is the precision each was
-    read at, and one holding in money while being a whole credit out is a
-    statement about the OCR.
-
-    ``win-registered`` is assembled here rather than in :func:`_unit_checks`
-    because it needs the ``run``: what the game's *log* said it won is not a
-    relation between two frames, which is all `_unit_checks` can see.
-    """
+    """Every relation between the frames' meters, checked in both units."""
     by_frame = {reading.frame: reading for reading in readings}
     outcome = by_frame.get(FRAME_OUTCOME)
     checks: list[SpinMeterCheck] = []
@@ -1404,9 +1154,8 @@ def _meter_checks(
 
 
 def _verdict_of(verdicts: list[SpinVerdict]) -> SpinVerdict:
-    """The worst of several verdicts, with 'failed' ranking below
-    'indeterminate' -- a real discrepancy is not softened by an unreadable
-    neighbour."""
+    """The worst of several verdicts, with 'failed' ranking below 'indeterminate' -- a
+    real discrepancy is not softened by an unreadable neighbour."""
     if not verdicts:
         return SpinVerdict.INDETERMINATE
     if SpinVerdict.FAILED in verdicts:
@@ -1417,14 +1166,8 @@ def _verdict_of(verdicts: list[SpinVerdict]) -> SpinVerdict:
 
 
 async def _validate_meter(run: _ActiveRun) -> None:
-    """Read the meter off every screenshot the run took, and check the
-    arithmetic between them. Never fails the run: the payline validation before
-    it is independent, and a machine with no OCR engine should still get one.
-
-    Reads last now, which is what lets it also say whether the meter agrees
-    with what the paylines step already priced off the picture -- see the
-    ``expected`` attachment below.
-    """
+    """Read the meter off every screenshot the run took, and check the arithmetic
+    between them."""
     tolerance = settings.ANALYZE_SPIN_METER_TOLERANCE
     try:
         async with _step(run, STEP_METER) as step:
@@ -1498,14 +1241,7 @@ async def _validate_meter(run: _ActiveRun) -> None:
 
 
 def _reading(result: ClassifyResult) -> SpinReelReading:
-    """The classifier's answer, as this feature's record of what landed.
-
-    Copied field by field rather than embedded whole: the classification carries
-    a per-tile picture and a ranked candidate list per tile, and a spin's record
-    is written to disk and pushed over a socket on every step. What is kept is
-    what a reader needs to argue with the verdict -- the code, the leading
-    candidate whether or not it cleared the floor, and its probability.
-    """
+    """The classifier's answer, as this feature's record of what landed."""
     return SpinReelReading(
         split=result.split,
         architecture=result.model.architecture,
@@ -1543,20 +1279,7 @@ def _reading(result: ClassifyResult) -> SpinReelReading:
 
 
 async def _read_reels(run: _ActiveRun) -> None:
-    """Split the result screenshot and name every tile of it.
-
-    Its own step, before the payline one, for two reasons. It fails for its own
-    reasons -- no torch, no trained checkpoint, an unreadable frame -- and
-    "the model is not there" is a different fact from "the lines do not pay".
-    And its answer is worth having on its own: a grid of codes beside the reels
-    is readable evidence even on a run whose paytable never loaded.
-
-    Never fails the run, like the two validations after it. A failure here does
-    leave the payline step with nothing to read, which it says; there is
-    deliberately no fallback to cosine similarity, because a run measured by
-    likeness and priced as if it had been named is worse than a run not measured
-    at all.
-    """
+    """Split the result screenshot and name every tile of it."""
     try:
         async with _step(run, STEP_CLASSIFY) as step:
             frame = run.frame(FRAME_OUTCOME)
@@ -1603,17 +1326,7 @@ async def _read_reels(run: _ActiveRun) -> None:
 
 
 def _geometry_line_set(view: PaytableView) -> payline_config.PaylineSet:
-    """The lines the running game actually plays, as the payline service wants them.
-
-    ``winGeometry.xml`` writes a line as ``[reel, position]`` 0-indexed and the
-    payline service reads ``[row, column]`` 1-indexed;
-    :meth:`app.utils.win_geometry.Payline.grid` has already converted, and the
-    paytable response carries both. Going back through
-    :func:`app.utils.paylines.read_set` rather than building the dataclasses
-    directly is deliberate: that is where a line is checked to run left to
-    right, and a line that backtracks would otherwise compare a tile with
-    itself and score a perfect match.
-    """
+    """The lines the running game actually plays, as the payline service wants them."""
     set_id = view.win_geometry.payline_set_id or "lines"
     name = f"geometry-{set_id}"
     block = {
@@ -1626,12 +1339,7 @@ def _geometry_line_set(view: PaytableView) -> payline_config.PaylineSet:
 
 
 def _combo_for(view: PaytableView, symbol: str, pays: int) -> PaylineComboInfo | None:
-    """The ``math.xml`` combo a run of ``pays`` of ``symbol`` matches.
-
-    This is the "match it against the combo" step: a line combo is one symbol
-    repeated with an ``ANY`` tail, so a run matches when the combo's own match
-    length is the run's and every symbol it names is that one.
-    """
+    """The ``math.xml`` combo a run of ``pays`` of ``symbol`` matches."""
     for combo in view.math.payline_combos:
         if combo.match_length != pays:
             continue
@@ -1642,11 +1350,7 @@ def _combo_for(view: PaytableView, symbol: str, pays: int) -> PaylineComboInfo |
 
 
 def _row_pay(view: PaytableView, symbol: str, pays: int) -> float | None:
-    """What the pivoted paytable pays that symbol at that run length.
-
-    The fallback for a run no single combo matched -- the pivot merges symbols
-    paying alike, so it answers where a one-to-one combo lookup does not.
-    """
+    """What the pivoted paytable pays that symbol at that run length."""
     lengths = view.math.pay_lengths
     if pays not in lengths:
         return None
@@ -1660,25 +1364,14 @@ def _row_pay(view: PaytableView, symbol: str, pays: int) -> float | None:
 def _priced(
     view: PaytableView, symbol: str, pays: int
 ) -> tuple[PaylineComboInfo | None, float | None]:
-    """The combo a run of ``pays`` of ``symbol`` matches, and what it is worth.
-
-    One lookup with a fallback, in one place, because a wild-led line has to be
-    priced twice -- once as the symbol the wilds stood in for and once as the
-    wild's own shorter combo -- and doing it twice by hand is how the two would
-    come to disagree about what "worth" means.
-    """
+    """The combo a run of ``pays`` of ``symbol`` matches, and what it is worth."""
     combo = _combo_for(view, symbol, pays)
     value = combo.value if combo is not None else _row_pay(view, symbol, pays)
     return combo, value
 
 
 def _min_pay_length(view: PaytableView, symbol: str) -> int | None:
-    """Shortest run this symbol pays at, or ``None`` if it never pays on a line.
-
-    What a cancelled run is measured against: the reels can land two of a symbol
-    whose paytable row starts at three, and saying "pays from 3" is the
-    difference between a verdict and a bare refusal.
-    """
+    """Shortest run this symbol pays at, or ``None`` if it never pays on a line."""
     lengths = [
         length
         for index, length in enumerate(view.math.pay_lengths)
@@ -1696,50 +1389,7 @@ def _award(
     elements: dict[str, list[list[int]]],
     bet_per_unit: int | None,
 ) -> list[SpinLineAward]:
-    """Price every line the reels were read against.
-
-    Three judgements, kept separate on purpose:
-
-    * **what landed** -- ``pays``, the leading run of positions the classifier
-      named with one code (the wild read as whatever the run pays as), with those
-      codes on ``steps``. Read off the picture and nowhere else. Taking it from
-      the game's log would make the check agree with the game by construction,
-      which is the one thing a checker must not do.
-    * **whether it pays** -- ``awarded``, the paytable's answer and nobody
-      else's. A run of two of a symbol that pays from three is a real run and no
-      win, and reporting it as a win because the tiles matched is the mistake
-      this separation prevents. :mod:`app.services.paylines` deliberately stops
-      at "two or more"; this is the module that has the paytable.
-    * **what it is worth** -- ``credits``, which is the paytable's figure times
-      ``bet_per_unit``. A combo's value is a rate *per bet unit*, not a flat
-      amount, so a line reading "pays 25" is worth 25 at one credit a unit and
-      250 at ten. The paytable says the rate and the player says how many units;
-      only the product is an award, which is why ``combo_value`` is carried
-      beside it rather than replaced by it.
-
-    That third one is the only judgement here that is not read off something.
-    ``bet_per_unit`` is an input the run was given, so without it a line still
-    knows what it landed and what the maths would pay for it, and simply cannot
-    say what that came to -- ``awarded`` stays true, ``credits`` is null, and the
-    verdict above says indeterminate.
-
-    **The wild adds a fourth question and it belongs here, not in the check.** A
-    run that leads with wilds is two combos, and which one a cabinet pays is the
-    paytable's business: ``WC WC WC WC AA`` is five Ox at 50 a bet unit or four
-    wilds at 100, and the game pays 100. :mod:`app.services.paylines` deliberately
-    does not know that -- it substitutes, reports what the run resolved to and how
-    many of its leading positions were wild, and stops. This is the module holding
-    the paytable, so this is where the two are priced and the better taken;
-    ``combo_pays`` then says how many positions the combo that *paid* covers,
-    which is shorter than ``pays`` exactly when the wild's own combo won.
-
-    What has gone is a judgement in the middle. The run used to be measured by
-    cosine similarity, which cannot name a symbol, so an award was every paytable
-    row paying at that length until the game's logged reel stops narrowed it --
-    and only then, from a source that agreed with the game. Now the run and its
-    symbol come out of one reading of one picture, so an award is one combo and
-    one number.
-    """
+    """Price every line the reels were read against."""
     labels = {symbol.code: symbol.name for symbol in view.math.symbols}
     wild = check.wild_symbol
 
@@ -1841,27 +1491,7 @@ def _award(
 
 
 def _summarise_awards(awards: list[SpinLineAward]) -> str:
-    """What the spin is owed, in one sentence.
-
-    Written here rather than reused from the payline check, because that check
-    reports the runs it *found* and only the paytable knows which of them pay --
-    a summary reading "Line 2 pays 2" for a run the maths awards nothing for is
-    the confusion this replaces.
-
-    "Pays" is credits throughout, never the run length: the two are different
-    numbers and a sentence that used the word for both is exactly how a run of
-    five gets read as five credits. The run length is ``pays`` on the line and is
-    spoken of as *matching*.
-
-    Cancelled runs are counted on ``runs_found``/``awarded_lines`` and explained
-    on their own line's ``note``; they are deliberately not in this sentence,
-    which is about what the spin owes.
-
-    An awarded line with no ``credits`` is the run that was never told what a bet
-    unit cost. It says the paytable's own figure and names the multiplier it is
-    missing, rather than printing that figure as though it were the award --
-    which is the same mistake as reading a rate for a total, one step earlier.
-    """
+    """What the spin is owed, in one sentence."""
     paid = [award for award in awards if award.awarded]
     if not paid:
         return "No line pays"
@@ -1878,38 +1508,7 @@ def _summarise_awards(awards: list[SpinLineAward]) -> str:
 def _expected(
     run: _ActiveRun, view: PaytableView, awards: list[SpinLineAward]
 ) -> SpinExpectedAward:
-    """What the paytable says this spin owed, and whether the meter agrees.
-
-    **The award is two multiplications, and only one happens here.** Each line
-    was already priced ``combo_value x bet_per_unit`` in :func:`_award`, because
-    a paytable combo's value is a rate per bet unit; by this point ``credits`` is
-    just their sum. What is left is ``credits x money_per_credit``, into money.
-
-    The measurement that used to be quoted here -- a captured win reading ``75``
-    on a credit meter and ``$0.75`` on a cash one against a bet of ``88`` at 1c
-    -- is still exactly right, and is a spin at *one* credit a bet unit: 88 is
-    the ``MinTotalBet``, which is the unit cost times the first rung. It is
-    consistent with the multiplier and was never evidence against one; what it
-    ruled out was scaling by the stake spread over a *line*, which for FortuneOx
-    is 88/40 = 2.2 and is not a rung of any ladder.
-
-    ``bet_per_unit`` is not read off the meter either: it is worked out from
-    the bet, once, at the meter step. ``bet_credits`` is reported beside the
-    award as context and prices nothing.
-
-    Two things about the denomination are load-bearing, and both used to be wrong
-    here. The game's log reports it as a **count of cents**, so what money divides
-    by is ``money_per_credit`` from :mod:`app.utils.denomination` and never the
-    logged value -- dividing by the value gave a bet of 0.88 credits where the
-    cabinet says 88. And the meter is not always drawing money: in credits mode it
-    is already counting the thing the paytable is denominated in, so the win it
-    shows is compared against ``credits`` directly and no rate takes part.
-
-    One total rather than a range, because every awarded line names its symbol
-    and so resolves to one paytable value. This used to be a span, and the span
-    was never a statement about the maths -- it was the width of what the picture
-    had failed to identify.
-    """
+    """What the paytable says this spin owed, and whether the meter agrees."""
     paying = [award for award in awards if award.awarded]
     credits = sum(award.credits or 0.0 for award in paying)
 
@@ -2049,9 +1648,8 @@ async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValid
     geometry = view.win_geometry
 
     def unchecked(reason: str) -> SpinPaylineValidation:
-        """The validation as it reads when the lines could not be checked --
-        still naming which paytable and which set, since that is usually where
-        the reason is."""
+        """The validation as it reads when the lines could not be checked, still naming
+        which paytable and which set."""
         return SpinPaylineValidation(
             frame=frame.file_name,
             paytable_id=view.paytable_id,
@@ -2139,12 +1737,7 @@ async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValid
 
 
 async def _validate_paylines(run: _ActiveRun) -> None:
-    """Check the lines the running game declares against the symbols that landed.
-
-    Never fails the run for the same reason the meter step does not: the two
-    validations answer different questions and a machine that can only do one of
-    them should still get that one.
-    """
+    """Check the lines the running game declares against the symbols that landed."""
     try:
         async with _step(run, STEP_PAYLINES) as step:
             frame = run.frame(FRAME_OUTCOME)
@@ -2275,28 +1868,7 @@ def _summary(run: _ActiveRun) -> str:
 async def start(
     *, record: bool | None = None, architecture: str | None = None
 ) -> SpinAnalysisState:
-    """Drive one spin, and validate it.
-
-    Returns as soon as the run is under way: the whole point is the sequence,
-    and it is followed over :func:`subscribe` (or polled from :func:`state`)
-    rather than awaited. Only the two cheap local preconditions -- the game
-    config parsing, and its log existing -- are checked here, so they come back
-    as a refused request; everything else is a step, where a failure says which
-    part of the machine was not ready.
-
-    ``record`` is the caller's per-run choice of whether to also make a video;
-    ``None`` (a caller that left it out) falls back to ``ANALYZE_SPIN_RECORD``.
-    When it comes out false, the two recording steps are left off the run's
-    sequence entirely rather than added and immediately skipped, so a run that
-    was not asked to record shows nothing about recording anywhere.
-
-    ``architecture`` is the same shape of choice for *which trained network names
-    the tiles*, falling back to ``ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE`` and then
-    to the classifier's own default. It is resolved here rather than in the
-    classify step so an unknown name is a refused request -- a spin driven to its
-    result and then graded by nothing is the worst way to find out about a typo.
-
-    """
+    """Drive one spin, and validate it."""
     global _run
     record_enabled = settings.ANALYZE_SPIN_RECORD if record is None else record
     chosen = classifier_service.resolve_architecture(
@@ -2352,13 +1924,7 @@ async def start(
 
 
 async def cancel() -> SpinAnalysisState:
-    """Ask the run in progress to stop.
-
-    Cooperative: the flag is checked between steps and between slices of every
-    wait, so the run stops itself -- tidying up its recording and sealing its
-    record on the way -- rather than being torn down mid-call. A cancel
-    therefore lands once whatever call is in flight returns.
-    """
+    """Ask the run in progress to stop."""
     run = _run
     if run is None or run.state is not SpinRunState.RUNNING:
         raise SpinAnalysisNotRunningError(
@@ -2371,25 +1937,12 @@ async def cancel() -> SpinAnalysisState:
 
 
 def frame_path(file_name: str) -> Path:
-    """One of a run's screenshots, resolved for serving.
-
-    Delegated to :func:`app.services.roi.resolve_frame` rather than re-derived:
-    a run writes its frames into the dashboard's screenshot directory precisely
-    so ROI and the reel grid can read them, and that function already owns
-    resolving an untrusted name inside it -- along with the 400 for a name that
-    escapes it and the 404 for one that is not there.
-    """
+    """One of a run's screenshots, resolved for serving."""
     return roi_service.resolve_frame(file_name)
 
 
 def clip_path(run_id: str, file_name: str) -> Path:
-    """One run's per-tile clip, resolved for serving.
-
-    Not delegated the way :func:`frame_path` is: a clip lives in the run's own
-    directory rather than in the shared screenshot one, because it is a record
-    of that spin and nothing else reads it by name. Both halves come off the
-    wire, so both go through the path guards.
-    """
+    """One run's per-tile clip, resolved for serving."""
     try:
         root = resolve_subdirectory(
             settings.obs_capture_dir, settings.ANALYZE_SPIN_DIR_NAME
@@ -2408,22 +1961,12 @@ def clip_path(run_id: str, file_name: str) -> Path:
 
 
 def state(*, images: bool = False) -> SpinAnalysisState:
-    """The run in progress, or the last one that finished. Never fails.
-
-    ``images`` asks for the meter crops, the annotated reels and the paying
-    lines' own pictures as data URIs -- everything the progress stream leaves
-    out. It is the report, so it is a separate ask rather than the default.
-    """
+    """The run in progress, or the last one that finished. Never fails."""
     return _snapshot(_run, images=images)
 
 
 async def abort() -> None:
-    """End any run because the process is shutting down.
-
-    Asks first and cancels hard only if that does not take, because the one
-    thing worth getting right here is OBS not being left recording -- which
-    means this has to run before the OBS session is closed.
-    """
+    """End any run because the process is shutting down."""
     run = _run
     if run is None or run.state is not SpinRunState.RUNNING:
         return
@@ -2438,12 +1981,7 @@ async def abort() -> None:
 
 
 async def reset() -> None:
-    """Drop all state, including the lock bound to this loop. Tests only.
-
-    Async, like :func:`app.services.event_capture.reset`, because ending the run
-    means awaiting its cancellation -- a task cancelled but never awaited is the
-    pending-task warning that ``filterwarnings = error`` turns into a failure.
-    """
+    """Drop all state, including the lock bound to this loop. Tests only."""
     global _run, _lock
     run, _run = _run, None
     if run is not None:

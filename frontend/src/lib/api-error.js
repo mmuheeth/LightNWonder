@@ -52,10 +52,6 @@ export class ApiError extends Error {
 
   /**
    * Field-level problems keyed by field name, for binding to form inputs.
-   *
-   * The backend prefixes paths with their location (`body.name`,
-   * `query.page_size`); that prefix is stripped so keys match input names.
-   *
    * @returns {Record<string, string>}
    */
   get fieldErrors() {
@@ -71,7 +67,6 @@ export class ApiError extends Error {
 
   /**
    * Build an ApiError from anything axios rejects with.
-   *
    * @param {unknown} error
    * @returns {ApiError}
    */

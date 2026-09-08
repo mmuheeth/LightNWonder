@@ -1,9 +1,5 @@
-"""Paytable lookup settings: how far back to read the log for the loaded
-paytable id, and how much of a reel strip to send.
-
-Where the maths lives is per game (the ``game_config`` block of a game config),
-not per environment, so nothing here names a path.
-"""
+"""Paytable lookup settings: how far back to read the log for the loaded paytable id,
+and how much of a reel strip to send."""
 
 from __future__ import annotations
 

@@ -1,6 +1,4 @@
-"""ROI extraction endpoints, thin wrappers over :mod:`app.services.roi`.
-Regions come from the active game's config; a request only says which one to
-cut out, and off which frame."""
+"""ROI extraction endpoints, thin wrappers over :mod:`app.services.roi`."""
 
 from __future__ import annotations
 
@@ -28,9 +26,8 @@ BAD_CONFIG: ResponseSpec = {500: {"description": "The game config is unreadable"
     responses={**NOT_FOUND, **BAD_FRAME, **BAD_CONFIG},
 )
 async def get_regions() -> ApiResponse[RoiCatalog]:
-    """Every region the active game declares, and the frame they'd be cut
-    from. A region with unusable numbers is listed with its ``error`` set
-    rather than omitted."""
+    """Every region the active game declares, and the frame they'd be cut from. A region
+    with unusable numbers is listed with its ``error`` set rather than omitted."""
     catalog = await roi_service.catalog()
     return ApiResponse[RoiCatalog].ok(
         data=catalog,

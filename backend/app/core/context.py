@@ -1,6 +1,5 @@
-"""Per-request context: the request id lives in a ContextVar so response
-builders, loggers and exception handlers can reach it without an extra argument.
-"""
+"""Per-request context: the request id lives in a ContextVar so response builders,
+loggers and exception handlers can reach it without an extra argument."""
 
 from __future__ import annotations
 

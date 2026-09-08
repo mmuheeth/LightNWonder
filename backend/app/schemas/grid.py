@@ -1,6 +1,4 @@
-"""Reel grid payloads. Tiles are row-major with a shared pixel size and a
-post-inset ``roi``; ``GridSplitResult``/``GridTile`` report their rectangles
-in different reference frames (frame vs. reels crop), so are never confused."""
+"""Reel grid payloads."""
 
 from __future__ import annotations
 

@@ -18,10 +18,8 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * Every step wears its state, and the four non-running ones are visually
- * distinct on purpose: unreached, deliberately not run, done, and failed are
- * four different facts about a spin, and a timeline that only distinguished
- * done-from-not would make a skipped take-win look like a broken one.
+ * Every step wears its state, and the four non-running ones are visually distinct on
+ * purpose: unreached, deliberately not run, done, and failed are four different facts
  */
 const LOOKS = {
   pending: {
@@ -95,15 +93,7 @@ function Step({ step }) {
   );
 }
 
-/**
- * The sequence one spin goes through, live.
- *
- * The whole plan is on screen from the first frame — the backend sends every
- * step `pending` — so a run that dies on the press shows the eight things that
- * never happened rather than simply stopping. The game-log lines it read on the
- * way sit under a dropdown: they are what tells "the reels never stopped" from
- * "the reels stopped and a bonus took over", and noise otherwise.
- */
+/** The sequence one spin goes through, live. */
 export function SpinTimeline({ run }) {
   const events = run.events ?? [];
 

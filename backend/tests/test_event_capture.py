@@ -22,7 +22,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.config.game_config import save_active_game
-from app.core.config import settings
+from app.config.runtime import settings
 from app.exceptions.base import ObsConnectionError
 from app.schemas.event_capture import CaptureRunState
 from app.schemas.obs import ScreenshotRequest, ScreenshotResult
