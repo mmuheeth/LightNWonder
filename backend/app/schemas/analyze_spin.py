@@ -381,6 +381,68 @@ class SpinSymbolReading(BaseModel):
     known: bool = Field(description="Whether it cleared the floor.")
 
 
+class SpinScatterReading(BaseModel):
+    """One scatter that landed, and what is printed on it.
+
+    An orb carries either a prize figure (`value`) or a jackpot tier name
+    (`prize_label`), and both are real readings; a feature scatter carries
+    neither.
+
+    Its own model rather than fields on :class:`SpinSymbolReading`, because a
+    scatter is answered by a second reader: the classifier names the artwork, and
+    OCR reads the prize printed over it. A tile with no scatter code has neither
+    question asked of it.
+    """
+
+    name: str = Field(description="Grid position, e.g. 'r2c3'.")
+    row: int = Field(ge=1)
+    column: int = Field(ge=1)
+    symbol: str = Field(description="The scatter's code, e.g. 'SC' or 'FG'.")
+    label: str = Field(description="Its display name from the game config.")
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="The classifier's probability for that code on this tile.",
+    )
+    value: float | None = Field(
+        default=None,
+        description=(
+            "The number printed on the tile, or null when it carries none. An "
+            "orb printed with a jackpot tier instead reports that in "
+            "`prize_label`, and a feature scatter has neither -- a free-games "
+            "tile is drawn without a figure, so nothing was there to read."
+        ),
+    )
+    prize_label: str | None = Field(
+        default=None,
+        description=(
+            "The jackpot tier printed on the orb where it carries a word instead "
+            "of a figure -- 'MAJOR', 'MINI', whatever the game draws. Null when "
+            "the orb carries a number (then `value` holds it) or nothing at all. "
+            "Not matched against a list of known tiers: whichever word the orb "
+            "is printed with is reported as read."
+        ),
+    )
+    text: str | None = Field(
+        default=None,
+        description=(
+            "Everything OCR read off the crop, kept beside `value` so a misread "
+            "is diagnosable rather than only wrong. Null when OCR did not run."
+        ),
+    )
+    ocr_confidence: float | None = Field(
+        default=None,
+        description="OCR's own mean word confidence, 0-100 as the engine reports it.",
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Why this tile could not be read at all -- no engine installed, or "
+            "the crop was missing. Different from a tile that read as no digits."
+        ),
+    )
+
+
 class SpinReelReading(BaseModel):
     """What landed, read off the picture by the image classifier."""
 
@@ -420,6 +482,21 @@ class SpinReelReading(BaseModel):
     named: int = Field(default=0, ge=0, description="Tiles that cleared the floor.")
     unknown: int = Field(default=0, ge=0, description="Tiles that did not.")
     summary: str = Field(default="", description="The reading in one line.")
+    scatters: list[SpinScatterReading] = Field(
+        default_factory=list,
+        description=(
+            "Every scatter on the grid, in reading order -- the codes the game "
+            "config's `scatter_symbols` names. Empty both when none landed and "
+            "when the game declares none, which the summary tells apart."
+        ),
+    )
+    scatter_summary: str = Field(
+        default="",
+        description=(
+            "The scatters in one line, e.g. 'SC x2 (12, 50), FG x1'. Empty when "
+            "the game declares no scatter codes."
+        ),
+    )
     output_dir: str | None = Field(
         default=None, description="Directory the ringed reels were written to."
     )

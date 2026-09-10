@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from PIL import Image
+
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
 from app.config.runtime import settings
 from app.core.logging import get_logger
@@ -39,6 +41,7 @@ from app.schemas.analyze_spin import (
     SpinReelReading,
     SpinRun,
     SpinRunState,
+    SpinScatterReading,
     SpinStep,
     SpinStepState,
     SpinSymbolReading,
@@ -58,11 +61,13 @@ from app.services import ideck as ideck_service
 from app.services import image_classifier as classifier_service
 from app.services import meter as meter_service
 from app.services import obs as obs_service
+from app.services import ocr as ocr_service
 from app.services import paylines as paylines_service
 from app.services import paytable as paytable_service
 from app.services import roi as roi_service
 from app.services import tile_clips as tile_clips_service
 from app.utils import game_log
+from app.utils import ocr as ocr_util
 from app.utils import paylines as payline_config
 from app.utils.game_math import ANY_SYMBOL
 from app.utils.log_tail import LogTail
@@ -1278,6 +1283,205 @@ def _reading(result: ClassifyResult) -> SpinReelReading:
     )
 
 
+def _scatter_codes(config: GameConfig) -> tuple[str, ...]:
+    """The codes this game pays by counting across the grid, as the config declares
+    them. Empty for a game that declares none, which is not a failure -- it means
+    there is nothing extra to report about what landed."""
+    return tuple(config.scatter_symbols)
+
+
+def _scatter_figure(value: float) -> str:
+    """A number off a scatter tile for a detail line. Not `_amount`, which formats a
+    *cash* meter to two places: what is printed on an orb is a prize figure the
+    game drew as whole digits, so a trailing `.00` would be this module's
+    invention rather than what the tile said."""
+    return f"{value:g}"
+
+
+def _summarise_scatters(scatters: list[SpinScatterReading]) -> str:
+    """The scatters in one line, grouped by code and carrying whatever each orb
+    said: ``SC x3 (12, 50, MAJOR), FG x1``.
+
+    A jackpot tier is listed beside the figures rather than in a group of its
+    own, because it is the same question answered -- what is printed on this orb
+    -- and reading the line should not require knowing which orbs carry words.
+    """
+    if not scatters:
+        return "no scatters landed"
+    parts: list[str] = []
+    for code in dict.fromkeys(one.symbol for one in scatters):
+        landed = [one for one in scatters if one.symbol == code]
+        printed = [
+            _scatter_figure(one.value) if one.value is not None else one.prize_label
+            for one in landed
+            if one.value is not None or one.prize_label
+        ]
+        figures = f" ({', '.join(printed)})" if printed else ""
+        parts.append(f"{code} x{len(landed)}{figures}")
+    return ", ".join(parts)
+
+
+# What one scatter crop reads as. Named
+# because it is returned through `asyncio.to_thread`, which infers the callable's
+# type from the annotation rather than widening the returns to match it.
+# `(value, prize_label, text, ocr_confidence, error)`.
+_ScatterValue = tuple[float | None, str | None, str | None, float | None, str | None]
+
+
+def _read_scatter_value(
+    crop: Image.Image, *, executable: Path, options: ocr_util.OcrOptions
+) -> _ScatterValue:
+    """OCR one scatter's crop for the prize printed on it, as
+        ``(value, text, confidence, error)``.
+
+        Every scatter is read, not only the codes known to carry a figure: whether a
+        tile is drawn with a number is a property of the tile, and a feature scatter
+        simply comes back with no digits in it -- which is ``value=None`` and no
+        error. Only being unable to read the crop at all is an error.
+
+    :func:`app.services.ocr.read_tile` reads the crop several ways and returns a
+        figure only where the readings support one, so a tile carrying no number and a
+        tile whose number could not be made out both arrive as ``value=None`` with no
+        error. The best rejected candidate is still passed through as ``text`` -- a
+        refused reading should be visible as something read and refused, not as
+        silence."""
+    try:
+        reading = ocr_service.read_tile(crop, executable=executable, options=options)
+    except ocr_util.OcrError as exc:
+        failed: _ScatterValue = (None, None, None, None, str(exc))
+        return failed
+    if reading.text is None:
+        # A jackpot orb carries a tier name where a prize orb carries a figure.
+        # That is a reading of what the orb says, so it is reported rather than
+        # dropped for not being a number.
+        if reading.label is not None:
+            tier: _ScatterValue = (
+                None,
+                reading.label,
+                reading.label,
+                reading.confidence,
+                None,
+            )
+            return tier
+        # No figure the evidence supports. The best candidate is still reported as
+        # `text` so a rejected reading is visible as something read and refused
+        # rather than as silence -- but it is not a value.
+        rejected = reading.candidates[0][0] if reading.candidates else None
+        unread: _ScatterValue = (None, None, rejected, None, None)
+        return unread
+    read: _ScatterValue = (
+        float(reading.text),
+        None,
+        reading.text,
+        reading.confidence,
+        None,
+    )
+    return read
+
+
+async def _read_scatters(
+    config: GameConfig, split_dir: Path, reading: SpinReelReading
+) -> tuple[list[SpinScatterReading], str]:
+    """Every scatter on the grid, with the number on it where it carries one.
+
+    Reads the tiles back off the split the classify step just wrote rather than
+    re-cropping the frame, so the pixels OCR sees are exactly the ones the
+    classifier named the code from."""
+    codes = _scatter_codes(config)
+    if not codes:
+        return [], ""
+
+    landed = [tile for tile in reading.tiles if tile.known and tile.symbol in codes]
+    if not landed:
+        return [], _summarise_scatters([])
+
+    # Resolved once for the whole grid, not per tile: a missing Tesseract is one
+    # fact about the run and not five identical ones.
+    try:
+        executable = await ocr_service.engine_for_reading()
+        options = ocr_service.read_tile_options(config)
+    except (AppException, ocr_util.OcrOptionsError) as exc:
+        message = exc.message if isinstance(exc, AppException) else str(exc)
+        unread = [
+            SpinScatterReading(
+                name=tile.name,
+                row=tile.row,
+                column=tile.column,
+                symbol=str(tile.symbol),
+                label=tile.label,
+                confidence=tile.confidence,
+                error=message,
+            )
+            for tile in landed
+        ]
+        return unread, _summarise_scatters(unread)
+
+    try:
+        split = await asyncio.to_thread(grid_service.read_split, split_dir)
+    except AppException as exc:
+        tiles: dict[str, Image.Image] = {}
+        crop_error: str | None = exc.message
+    else:
+        tiles = dict(split.tiles)
+        crop_error = None
+
+    scatters: list[SpinScatterReading] = []
+    async def read_one(tile: SpinSymbolReading) -> _ScatterValue:
+        """One tile's reading, or the reason there isn't one."""
+        crop = tiles.get(tile.name)
+        if crop is None:
+            missing: _ScatterValue = (
+                None,
+                None,
+                None,
+                crop_error or f"the split holds no {tile.name} tile to read",
+            )
+            return missing
+        return await asyncio.to_thread(
+            _read_scatter_value, crop, executable=executable, options=options
+        )
+
+    # Concurrently, not one after another: reading a tile is several Tesseract
+    # subprocesses and the tiles are independent, so a five-scatter grid that
+    # takes ~15s in sequence takes about as long as its slowest tile instead.
+    # One tile at a time, deliberately. Reading them concurrently is *slower*:
+    # PaddleOCR inference is CPU-bound and serialized on its own engine lock, so
+    # the threads queue on that lock while still competing for cores. Measured on
+    # five scatter tiles: 51.0s sequential against 56.8s through `asyncio.gather`.
+    reads = [await read_one(tile) for tile in landed]
+
+    for tile, read in zip(landed, reads, strict=True):
+        value, prize_label, text, ocr_confidence, error = read
+        scatters.append(
+            SpinScatterReading(
+                name=tile.name,
+                row=tile.row,
+                column=tile.column,
+                symbol=str(tile.symbol),
+                label=tile.label,
+                confidence=tile.confidence,
+                value=value,
+                prize_label=prize_label,
+                text=text,
+                ocr_confidence=ocr_confidence,
+                error=error,
+            )
+        )
+    summary = _summarise_scatters(scatters)
+    # Which engine read the orbs, said once per spin rather than per tile. Worth
+    # a line because Tesseract is still identified before this loop for the
+    # fallback, so its "OCR engine: tesseract" line otherwise reads as if it were
+    # the one that answered.
+    logger.info(
+        "Read %d scatter(s) of %s with %s: %s",
+        len(scatters),
+        config.name,
+        "PaddleOCR" if ocr_service.orb_engine_is_paddle() else "Tesseract",
+        summary,
+    )
+    return scatters, summary
+
+
 async def _read_reels(run: _ActiveRun) -> None:
     """Split the result screenshot and name every tile of it."""
     try:
@@ -1309,9 +1513,22 @@ async def _read_reels(run: _ActiveRun) -> None:
                     include_overlay=True,
                 )
             )
-            run.reels = _reading(result)
+            reading = _reading(result)
+            # Scatters are read here rather than in a step of their own because
+            # they are part of *what landed*: the same split, annotated by a
+            # second reader. A game declaring no scatter codes leaves both
+            # fields empty and the step reads exactly as it did before.
+            _, config = _active_config()
+            scatters, scatter_summary = await _read_scatters(
+                config, Path(split.output_dir), reading
+            )
+            run.reels = reading.model_copy(
+                update={"scatters": scatters, "scatter_summary": scatter_summary}
+            )
             run.symbols = {tile.name: tile.symbol for tile in result.tiles}
             step.detail = f"{result.model.label}: {result.summary}"
+            if scatters:
+                step.detail += f" | scatters: {scatter_summary}"
     except _Cancelled:
         raise
     except AppException as exc:
