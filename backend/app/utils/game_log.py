@@ -489,6 +489,14 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         pattern=re.compile(r"\[\w*WinBangDone\]"),
         summary="Win meter finished counting up",
     ),
+    EventRule(
+        event="spin-with-stops",
+        pattern=re.compile(
+            r"ButtonPanelState transitioned from \[PanelStateTouchToStart\] "
+            r"to \[PanelStateSpinWithStops\]"
+        ),
+        summary="Spin with stops",
+    ),
     # --- what the player set ----------------------------------------------
     EventRule(
         event="bet-changed",
@@ -511,6 +519,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         pattern=PAYTABLE_LOADED,
         summary="Paytable is now {paytable}",
         only_on_change=True,
+        capture=False,
     ),
     EventRule(
         event="credits-changed",
@@ -518,6 +527,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
             f"{_message('CreditMeterSetMsg')}|{_message('BalanceNotificationMsg')}"
         ),
         summary="Credit meter set",
+        capture=False,
     ),
     # --- gamble -----------------------------------------------------------
     EventRule(
@@ -548,6 +558,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
             r"msg\[RED_BLACK_(?P<pick>[A-Z]+)_CARD\]"
         ),
         summary="Gamble pick: {pick}",
+            capture=False,
     ),
     EventRule(
         event="gamble-result",

@@ -101,12 +101,11 @@ def _symbols(raw: Any, *, path: Path) -> dict[str, str]:
     return names
 
 
-def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
-    """Read the optional ``wild_card_replacement`` block: the symbol codes the wild
-    stands in for."""
+def _symbol_codes(raw: Any, *, where: str) -> tuple[str, ...]:
+    """Narrow a decoded JSON value to an ordered, de-duplicated list of symbol
+    codes -- the shape both ``wild_card_replacement`` and ``scatter_symbols`` take."""
     if raw is None:
         return ()
-    where = f"'wild_card_replacement' in {path}"
     if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
         raise GameConfigError(f"{where} must be an array of symbol codes")
     codes: list[str] = []
@@ -116,16 +115,30 @@ def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
                 f"{where} must contain only symbol codes, got {entry!r}"
             )
         code = entry.strip().upper()
-        if not code:
-            continue
-        if code == payline_config.WILD_SYMBOL:
-            raise GameConfigError(
-                f"{where} lists {code!r}, which is the wild itself -- the block "
-                "is what the wild stands in for, not what stands in for it"
-            )
-        if code not in codes:
+        if code and code not in codes:
             codes.append(code)
     return tuple(codes)
+
+
+def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
+    """Read the optional ``wild_card_replacement`` block: the symbol codes the wild
+    stands in for."""
+    where = f"'wild_card_replacement' in {path}"
+    codes = _symbol_codes(raw, where=where)
+    if payline_config.WILD_SYMBOL in codes:
+        raise GameConfigError(
+            f"{where} lists {payline_config.WILD_SYMBOL!r}, which is the wild "
+            "itself -- the block is what the wild stands in for, not what stands "
+            "in for it"
+        )
+    return codes
+
+
+def _scatter_symbols(raw: Any, *, path: Path) -> tuple[str, ...]:
+    """Read the optional ``scatter_symbols`` block: the codes this game pays by
+    counting across the grid. Checked against ``wild_card_replacement`` by the
+    caller, which is the only place both are in hand."""
+    return _symbol_codes(raw, where=f"'scatter_symbols' in {path}")
 
 
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
@@ -185,6 +198,21 @@ def load_game_config(path: Path) -> GameConfig:
     if obs_window_source is not None and not isinstance(obs_window_source, str):
         raise GameConfigError(f"'obs.window_source' in {path} must be a string")
 
+    wild_card_replacement = _wild_card_replacement(
+        document.get("wild_card_replacement"), path=path
+    )
+    scatter_symbols = _scatter_symbols(document.get("scatter_symbols"), path=path)
+    # The two blocks are complements: a scatter is exactly what the wild must not
+    # be read as. A code in both makes the payline check and the scatter report
+    # disagree about the same tile, which is worth refusing at load time.
+    both = [code for code in scatter_symbols if code in wild_card_replacement]
+    if both:
+        raise GameConfigError(
+            f"'scatter_symbols' in {path} lists {', '.join(both)}, which "
+            "'wild_card_replacement' also lists -- a scatter is what the wild "
+            "must not stand in for"
+        )
+
     return GameConfig(
         name=name,
         path=path,
@@ -198,9 +226,8 @@ def load_game_config(path: Path) -> GameConfig:
             document.get("win_geometry"), where=f"'win_geometry' in {path}"
         ),
         symbols=freeze_mapping(_symbols(document.get("symbols"), path=path)),
-        wild_card_replacement=_wild_card_replacement(
-            document.get("wild_card_replacement"), path=path
-        ),
+        wild_card_replacement=wild_card_replacement,
+        scatter_symbols=scatter_symbols,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
         reel_bounds=freeze_mapping(
             _object(document.get("reel_bounds"), where=f"'reel_bounds' in {path}")

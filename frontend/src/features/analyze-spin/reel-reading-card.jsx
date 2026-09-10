@@ -1,4 +1,4 @@
-import { ChevronRight, Eye, TriangleAlert } from "lucide-react";
+import { ChevronRight, Eye, Sparkles, TriangleAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -74,6 +74,91 @@ function Rejected({ tiles, floor }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** A number read off a scatter tile, at the precision the tile was drawn with. */
+function figure(value) {
+  return typeof value === "number" ? String(value) : null;
+}
+
+/**
+ * The scatters that landed. Rendered as its own block rather than as marks on the
+ * grid above, because what there is to say differs per scatter: a feature scatter
+ * has only a position, while a prize orb also carries the number OCR read off it.
+ */
+function Scatters({ scatters }) {
+  if (!scatters?.length) return null;
+
+  return (
+    <div className="border-t pt-3 space-y-1.5">
+      <p className="flex items-center gap-1.5 text-[0.6rem] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+        <Sparkles className="size-3.5 shrink-0" />
+        Scatters
+        <Badge variant="secondary" className="font-mono text-[0.65rem] tracking-normal">
+          {scatters.length}
+        </Badge>
+      </p>
+      <ul className="space-y-1">
+        {scatters.map((scatter) => {
+          const value = figure(scatter.value);
+          return (
+            <li
+              key={scatter.name}
+              className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
+            >
+              <Badge variant="outline" className="font-mono text-[0.65rem]">
+                {scatter.symbol}
+              </Badge>
+              <span>{scatter.label}</span>
+              <span className="text-muted-foreground font-mono">
+                at {scatter.name} (row {scatter.row}, col {scatter.column})
+              </span>
+              {/* Only the tiles that carry a figure get one. A free-games scatter
+                  is drawn without a number, so "—" would suggest a failed read
+                  where there was nothing to read. */}
+              {value ? (
+                <span className="font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">
+                  value {value}
+                </span>
+              ) : null}
+              {scatter.error ? (
+                <span className="flex items-baseline gap-1 text-amber-600 dark:text-amber-500">
+                  <TriangleAlert className="size-3 shrink-0 translate-y-0.5" />
+                  {scatter.error}
+                </span>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      {/* What the engine actually read, kept out of the line above but reachable:
+          a value that looks wrong is only diagnosable beside the raw text. */}
+      <details className="group">
+        <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-1.5 text-[0.65rem] select-none">
+          <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
+          What OCR read
+        </summary>
+        <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+          {scatters.map((scatter) => (
+            <li
+              key={scatter.name}
+              className="flex items-baseline gap-1.5 font-mono text-[0.65rem]"
+            >
+              <span className="text-muted-foreground">{scatter.name}</span>
+              <span className="break-all">
+                {scatter.text ? JSON.stringify(scatter.text) : "no text"}
+              </span>
+              {typeof scatter.ocr_confidence === "number" ? (
+                <span className="text-muted-foreground tabular-nums">
+                  {scatter.ocr_confidence.toFixed(0)}%
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }
@@ -155,6 +240,8 @@ export function ReelReadingCard({ reels }) {
         </div>
 
         <Rejected tiles={reels.tiles} floor={reels.min_confidence} />
+
+        <Scatters scatters={reels.scatters} />
 
         <AllConfidences tiles={reels.tiles} />
 

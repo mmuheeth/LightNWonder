@@ -166,6 +166,13 @@ are the scatters and feature symbols the game pays by counting across the grid,
 so a wild beside two orbs is not three orbs. Omitting the block substitutes
 nothing, which is exactly what every config did before it existed.
 
+A fifth, `scatter_symbols`, is the other side of that same coin: the codes the
+game pays by counting anywhere on the grid. **The loader refuses a code listed
+in both blocks**, since a scatter is exactly what the wild must not stand in for,
+and the two answers about one tile would otherwise disagree. It is read by
+`analyze_spin`'s classify step (below) and nothing else; both blocks are parsed
+by one `_symbol_codes` helper, so they accept the same shape.
+
 **Foreign formats get their own `app/utils` module**, deliberately ignorant of
 who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
 log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
@@ -509,6 +516,54 @@ block, for display names, falling back to bare codes for a game declaring none.
 grid, copied field by field by `analyze_spin._reading()` rather than a second
 answer to compare it against. The log-derived counterpart it used to sit beside is
 gone from that payload.
+
+**Scatters are the one thing a second reader answers about a tile.** The classify
+step in `analyze_spin` follows the classifier with `_read_scatters`: for every
+tile whose code is in the config's `scatter_symbols`, it reads that tile back out
+of the split just written — not a fresh crop of the frame, so OCR sees exactly
+the pixels the code was named from — and OCRs it for the prize figure a tile may
+be drawn with. The result is `SpinReelReading.scatters`/`scatter_summary`.
+
+**Every scatter is read, not a declared subset**: whether a tile carries a number
+is a property of the *tile*, so a free-games scatter simply comes back with no
+digits, which is `value: null` and **no error** — an error means the crop could
+not be read at all.
+
+**The tile options are the OCR service's, not this module's.**
+`ocr.read_tile_options()` layers them over the environment's defaults, and a game
+overrides them under an `ocr.symbol_tile` key. That key is not an `roi` region,
+so it stays out of `ocr.regions()` and the region catalogue while sharing the
+block's shape. `ocr.read_crop()` / `ocr.engine_for_reading()` exist so a caller
+holding its own crop has a door in that does not re-derive either —
+`analyze_spin` still owns no image handling.
+
+**`psm 8` is what reads a prize tile, and `psm 11` is the trap.** A figure on an
+orb is one run of large gold digits, so "treat the crop as a single word" reads
+it: measured against the written FortuneOx tiles, 8 reads 600/300/240/150/100/50
+with **no thresholding at all** and holds across every upscale. `psm` 11 ("sparse
+text"), the intuitive choice for digits floating over artwork, reads most of those
+same tiles as the empty string — which is what the first cut of this shipped and
+what "no text" in the UI meant. Don't change it back. There is no `threshold`
+either: gold on a light orb has no grey level that separates them, and 8 does not
+need one.
+
+**Because `psm 8` is told the crop is a word, it always answers with one** — so a
+tile carrying no figure comes back as a stray digit off the artwork, and a
+misclassified Ox reads as a one-digit prize. `ocr.TILE_MIN_DIGITS` (2) is the cut,
+and **it is a digit count, not a confidence floor — a floor cannot work here.**
+Measured over every written split: all 16 misreads are a *single* digit
+(`1`,`7`,`3`,`0`,`4`) and all 21 genuine figures are two or three (50 … 600),
+while the two groups' confidences **overlap outright** — a stray `1` scores 40.0
+against a true `150` at 17.8 and a true `100` at 19.1. So any threshold both
+rejects real prizes and admits noise, whereas digit count separates that sample
+perfectly. This was shipped as a confidence floor first and it silently dropped
+the `100` off a three-orb spin; don't reintroduce one. A prize is never one digit.
+
+A rejected reading keeps its raw `text` and `ocr_confidence` on the payload rather
+than vanishing, because a dropped number should be visible as something read and
+refused — that pair is what the card's "What OCR read" panel exists to show, and
+it is how the dropped `100` was caught. `ocr_confidence` is reported but
+**deliberately not used as a gate**, per the overlap above.
 
 **`services/analyze_spin.py` is orchestration and nothing else.** It owns no
 image handling, no XML, no win32 — it is the *order* the other services go in

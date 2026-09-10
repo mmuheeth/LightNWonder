@@ -2,6 +2,15 @@
   "name": "FortuneOx",
   "process": "FortuneOx.exe",
   "log": "C:\\logs\\Game\\FortuneOx\\Logs\\FortuneOx_Client.log",
+  "events": {
+    "rules": [
+      {
+        "event": "spin-with-stops",
+        "pattern": "ButtonPanelState transitioned from \\[PanelStateTouchToStart\\] to \\[PanelStateSpinWithStops\\]",
+        "summary": "Spin with stops"
+      }
+    ]
+  },
   "game_config" : "C:\\re\\games\\FortuneOx\\GameConfig",
   "win_geometry" : "C:\\re\\games\\FortuneOx\\GameConfig\\winGeometry.xml",
   "symbols": {
@@ -24,6 +33,7 @@
     "FO": "FO (feature)",
     "SO": "SO (feature)"
   },
+  "scatter_symbols" : ["SC", "FG","SF"],
   "roi": {
     "cash_meter": [0.000000, 0.844468, 1.000000, 0.884554],
     "cyclic_message": [0.000000, 0.848000, 0.180000, 0.867000],
