@@ -247,6 +247,36 @@ class EventCaptureRunNotFoundError(AppException):
     message = "The requested capture run was not found"
 
 
+# --- Cyclic Messages ------------------------------------------------------
+# Its own codes rather than event capture's: the two features run independently
+# and a frontend showing "a run is already in progress" must be able to say
+# *which* one, since stopping the other would not help.
+
+
+class CyclicMessagesAlreadyRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CYCLIC_MESSAGES_ALREADY_RUNNING"
+    message = "A cyclic message run is already in progress"
+
+
+class CyclicMessagesNotRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CYCLIC_MESSAGES_NOT_RUNNING"
+    message = "No cyclic message run is in progress"
+
+
+class CyclicMessagesLogUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CYCLIC_MESSAGES_LOG_UNAVAILABLE"
+    message = "The active game's log is not available to follow"
+
+
+class CyclicMessagesRunNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "CYCLIC_MESSAGES_RUN_NOT_FOUND"
+    message = "The requested cyclic message run was not found"
+
+
 # --- OCR ------------------------------------------------------------------
 # 409: no Tesseract install (a Retry button would be a lie). 404: region not
 # declared by the active game (a typo, not an unreadable meter). 502: no frame

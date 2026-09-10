@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
 from app.services import analyze_spin as analyze_spin_service
+from app.services import cyclic_messages as cyclic_messages_service
 from app.services import event_capture as event_capture_service
 from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
@@ -92,6 +93,15 @@ async def _clean_event_capture_state() -> AsyncIterator[None]:
     await event_capture_service.reset()
     yield
     await event_capture_service.reset()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_cyclic_messages_state() -> AsyncIterator[None]:
+    """Cancel any cyclic message watcher a test left running, and drop its lock.
+    Async for the same reason as its event-capture sibling above."""
+    await cyclic_messages_service.reset()
+    yield
+    await cyclic_messages_service.reset()
 
 
 @pytest.fixture(autouse=True)

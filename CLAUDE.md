@@ -194,9 +194,15 @@ no longer what `analyze_spin` reads a spin by),
 with the reel background the cut-outs ship without put back — torch-free on
 purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
 its transforms, the training loop and a checkpoint),
-`tile_video.py` (the only module that imports cv2: buffers tile crops and writes
-one short video per reel position, probing its codec by writing a frame because
-OpenCV reports a writer as open for an encoder that then fails to initialise),
+`tile_video.py` (one of the two modules that import cv2 — the writing one:
+buffers tile crops and writes one short video per reel position, probing its
+codec by writing a frame because OpenCV reports a writer as open for an encoder
+that then fails to initialise),
+`video_frames.py` (the reading one: a recorded clip back as still frames at a
+fixed interval, decoding *forward* with `grab()`/`retrieve()` rather than
+seeking — `CAP_PROP_POS_FRAMES` lands on the preceding keyframe and decodes
+forward anyway, so seeking each sample re-decodes most of the clip once per
+sample and measured 12x slower over a 90s file),
 `symbol_overlay.py` (draws
 rings the cells that were named, over the reels -- no
 text on it, because the codes and confidences are a table beside it and drawing

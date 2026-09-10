@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 __all__ = [
+    "CYCLIC_MESSAGE_RULES",
     "DEFAULT_RULES",
     "PAYTABLE_LOADED",
     "TOUCH_REGISTERED",
@@ -280,6 +281,162 @@ PAYTABLE_LOADED = re.compile(
     r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
     r" current paytableId\[(?P<paytable>[^\]]+)\]"
     r"(?: current supported denoms\[(?P<supported>[^\]]*)\])?"
+)
+
+
+# --- the cyclic message strip ---------------------------------------------
+# The strip under the reels rotates two *unrelated* families of message, and the
+# whole difficulty of this rule set is that the game logs them very differently:
+#
+# 1. **The idle strip** ("PLAY 40 LINES", "GOOD LUCK") is driven by
+#    ``AttractStateMachine``, which logs a line every time it puts a new message
+#    up. One event per message, so one screenshot per message.
+# 2. **The win strip** ("GAME PAYS 168", then "LINE 3 PAYS 20", ...) is driven by
+#    the results cycle, which logs only where it *starts* and where its first
+#    pass *ends* -- measured on FortuneOx, the client log is completely silent
+#    for the 6.5-7.3s in between. Boundaries, not messages.
+#
+# In neither family is the strip's *text* ever logged -- not by these state
+# machines, not by ``LocalizationManager``, nowhere in the client or the server
+# log. So every rule here says **when** the strip changed and the screenshot is
+# what says *what* it changed to. For family 2 the boundaries are all the log
+# offers, which is why :mod:`app.services.cyclic_messages` samples frames
+# between them rather than waiting for a per-message line that does not exist.
+#
+# --- family 1: one idle loop, as the game writes it ---
+#
+#     AttractEnabledMsg              attract armed
+#     ...~10s...                     stateSequenceStartDelay
+#     AttractStartDelayCompleted
+#     AttractStartedMsg              <- the loop begins
+#       -> stateDisplayAttract       <- message 1 on screen
+#       ...~8s...
+#       AttractSingleDisplayCompleted    message 1 ends
+#       -> stateDisplayAttract       <- message 2 on screen
+#       ...~8s...   (3 messages per loop, measured)
+#       AttractSingleDisplayCompleted    message 3 ends
+#     AttractSequenceEndCompleted    <- the loop is complete
+#
+# The trigger is deliberately the transition *into* ``stateDisplayAttract``
+# rather than ``AttractSingleDisplayCompleted``. The two fire the same number
+# of times but are offset by one: a completion marks a message *ending*, so
+# following it would miss the first message of every loop and spend its last
+# shot on the post-loop idle screen. Entering the display state is exactly
+# "a new message is now up", for the first message and every one after it.
+#
+# --- family 2: one win presentation, as the game writes it ---
+#
+#     -> PanelStatePreRackUp             the spin has stopped
+#     -> PanelStateRackUp                the win meter starts counting
+#     OnGameStateResults ...=False:16800 <- "GAME PAYS 168" (16800 cents / denom 100)
+#     ...~1.6s, the count-up...
+#     WinBangDone                        <- meter done; the line messages begin
+#     ...~6.5-7.3s of SILENCE, the line messages cycling...
+#     FirstCycleResultsIterationFinished <- one full pass through them is done
+#     ...the cycle repeats until the next spin...
+#     CycleResultsStoppedMsg             <- the strip stops cycling results
+#     GameOverMsg                        <- "GAME OVER"
+#
+# ``OnGameStateResults`` is the one line in either log that carries the amount
+# the strip is about to display, which is why it -- and not the ``PanelState``
+# transitions 8ms either side of it -- is the rule that takes the "GAME PAYS"
+# frame. The other two are kept as ``capture=False`` structure so a reader can
+# see the rack-up bracket without paying for two near-identical screenshots.
+CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
+    # --- family 1: the idle strip ---
+    EventRule(
+        event="cyclic-message-shown",
+        pattern=re.compile(
+            _state(
+                "AttractStateMachine",
+                frm=r"(?P<from_state>[^\]]+)",
+                to="stateDisplayAttract",
+            )
+        ),
+        summary="Cyclic message shown",
+        # The transition lands before the strip has drawn the new text.
+        delay_ms=400,
+    ),
+    EventRule(
+        event="cyclic-cycle-started",
+        pattern=re.compile(_message("AttractStartedMsg")),
+        summary="Cyclic message loop started",
+        # Recorded as a boundary in the timeline, not screenshotted: it lands in
+        # the same millisecond as the first message's own rule above, which is
+        # the one carrying the frame.
+        capture=False,
+    ),
+    EventRule(
+        event="cyclic-cycle-completed",
+        pattern=re.compile(_message("AttractSequenceEndCompleted")),
+        summary="Cyclic message loop completed",
+        capture=False,
+    ),
+    # --- family 2: the win strip ---
+    EventRule(
+        event="cyclic-rackup-started",
+        pattern=re.compile(
+            r"ButtonPanelState transitioned from \[PanelStateSpinWithStops\]"
+            r" to \[PanelStatePreRackUp\]"
+        ),
+        summary="Win rack-up starting",
+        # Structure only: the amount arrives 8ms later on its own line, which is
+        # the rule that pays for a frame.
+        capture=False,
+    ),
+    EventRule(
+        event="cyclic-game-pays",
+        # The only line in either log carrying what the strip is about to show.
+        # ``Zero()=True`` is the losing spin and deliberately not matched -- the
+        # strip shows no "GAME PAYS" at all, so there is nothing to screenshot.
+        pattern=re.compile(
+            r"SpinBufferManager\.OnGameStateResults"
+            r" resultsStateEvent\.totalWin\.Zero\(\)=False:(?P<win_cents>[\d.]+)"
+        ),
+        # The service rewrites this once it knows the denomination, since
+        # "GAME PAYS 168" is the cents over the denom and a summary cannot divide.
+        summary="Game pays {win_cents} cents",
+        # The banner draws a beat after the state change, and the win meter is
+        # counting up behind it -- far enough in to have text, early enough to
+        # still be the GAME PAYS message rather than the first line message.
+        delay_ms=500,
+    ),
+    EventRule(
+        event="cyclic-win-presented",
+        # The count-up has finished, so this frame is the last one that is
+        # certainly still "GAME PAYS": the line messages start from here.
+        # The dispatch and the publish land in the same millisecond, so both
+        # forms are accepted and the debounce collapses them into one event.
+        pattern=re.compile(
+            rf"InputManager - dispatchMessage: WinBangDone|{_message('WinBangDone')}"
+        ),
+        summary="Win rack-up finished; line messages begin",
+        delay_ms=200,
+    ),
+    EventRule(
+        event="cyclic-line-pays-cycle-finished",
+        pattern=re.compile(_message("FirstCycleResultsIterationFinishedMsg")),
+        summary="Line message cycle completed one full pass",
+    ),
+    EventRule(
+        event="cyclic-results-cycle-stopped",
+        # ``\w*`` for the game's own suffix: FortuneOx publishes this as
+        # ``CycleResultsStoppedMsg_BaseGame``, and a free-spin variant would
+        # carry its own -- the bare name matches no line at all.
+        pattern=re.compile(_message(r"CycleResultsStoppedMsg\w*")),
+        summary="Results cycling stopped",
+        # Fires as the next spin clears the strip, so the frame it would take is
+        # of the spin that replaced it, not of a message.
+        capture=False,
+    ),
+    EventRule(
+        event="cyclic-game-over",
+        # ``GameOverMsg`` alone: ``GameEndMsg`` publishes in the same
+        # millisecond and would double every one of these.
+        pattern=re.compile(_message("GameOverMsg")),
+        summary="Game over",
+        delay_ms=400,
+    ),
 )
 
 

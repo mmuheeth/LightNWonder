@@ -105,8 +105,13 @@ def _identify(executable: Path) -> _Engine:
     return engine
 
 
-async def _engine_for_reading() -> Path:
-    """The engine, identified once so a broken install fails before any cropping."""
+async def engine_for_reading() -> Path:
+    """The engine, identified once so a broken install fails before any cropping.
+
+    Public because this module owns the question of *which* Tesseract, the way
+    ``roi.py`` owns "the latest screenshot" -- a second caller resolving it
+    again could disagree about whether OCR is available at all.
+    """
     executable = _executable()
     try:
         return (await asyncio.to_thread(_identify, executable)).executable
@@ -145,11 +150,15 @@ def _request_overrides(overrides: OcrOptionOverrides | None) -> Mapping[str, Any
     return overrides.model_dump(exclude_unset=True)
 
 
-def _options_for(
-    config: GameConfig, region: str, overrides: OcrOptionOverrides | None
+def options_for(
+    config: GameConfig, region: str, overrides: OcrOptionOverrides | None = None
 ) -> ocr.OcrOptions:
     """Resolve the options one region is read with: environment, then the game
-    config's ``ocr`` block, then the request."""
+    config's ``ocr`` block, then the request.
+
+    Public for the same reason as :func:`engine_for_reading`: the precedence is
+    this module's to state, and a caller rebuilding it would be a second answer.
+    """
     resolved = _defaults().merged(config.ocr.get(region), where=f"ocr.{region}")
     try:
         return resolved.merged(_request_overrides(overrides), where="options")
@@ -413,9 +422,9 @@ async def read(request: OcrReadRequest) -> OcrReadResult:
     # Resolved before anything expensive happens, so a bad override is a 400
     # rather than a screenshot followed by a 400.
     options = {
-        region: _options_for(config, region, request.options) for region in wanted
+        region: options_for(config, region, request.options) for region in wanted
     }
-    executable = await _engine_for_reading()
+    executable = await engine_for_reading()
 
     if request.run_id is not None:
         if not request.file_name:

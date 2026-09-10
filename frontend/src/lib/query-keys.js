@@ -45,6 +45,12 @@ export const queryKeys = Object.freeze({
     runs: () => [...queryKeys.eventCapture.all, "runs"],
     run: (runId) => [...queryKeys.eventCapture.all, "run", runId],
   }),
+  cyclicMessages: Object.freeze({
+    all: ["cyclic-messages"],
+    status: () => [...queryKeys.cyclicMessages.all, "status"],
+    runs: () => [...queryKeys.cyclicMessages.all, "runs"],
+    run: (runId) => [...queryKeys.cyclicMessages.all, "run", runId],
+  }),
   imageClassifier: Object.freeze({
     all: ["image-classifier"],
     status: () => [...queryKeys.imageClassifier.all, "status"],
