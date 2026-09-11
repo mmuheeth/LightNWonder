@@ -5,9 +5,9 @@
   "events": {
     "rules": [
       {
-        "event": "spin-with-stops",
-        "pattern": "ButtonPanelState transitioned from \\[PanelStateTouchToStart\\] to \\[PanelStateSpinWithStops\\]",
-        "summary": "Spin with stops"
+        "event": "hns-only-result",
+        "pattern": "(?:\\[(?:MessageQueue|SyncMessagePublisher)\\.Publish\\] msg\\[(?:[\\w.]+\\.)?HNSOnlyResultMsg\\]|transitioned from \\[[^\\]]+\\] to \\[[^\\]]+\\] on event \\[(?:[\\w.]+\\.)?HNSOnlyResultMsg\\])",
+        "summary": "HNS only result"
       }
     ]
   },

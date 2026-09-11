@@ -374,6 +374,22 @@ class SpinClipNotFoundError(AppException):
     message = "No such tile clip"
 
 
+# --- Evaluate screen ------------------------------------------------------
+# Holds no run, so there is nothing to be in the wrong state about: the only
+# failure of its own is being unable to get a frame to read at all. Everything
+# else fails as the service it came from -- an undeclared region is still
+# `ROI_REGION_NOT_FOUND`, and an unreadable grid or meter is not an HTTP failure
+# at all but an error carried on the result beside the reading that did work.
+
+
+class ScreenEvaluationFailedError(AppException):
+    """No frame to read, so there is nothing to evaluate."""
+
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "SCREEN_EVALUATION_FAILED"
+    message = "The screen could not be captured for evaluation"
+
+
 # --- Image classifier -----------------------------------------------------
 # Training is one process-wide run, like a spin analysis, so its failures split
 # the same way: 409 when the machine or the run is not in the state the caller

@@ -1283,6 +1283,18 @@ def _reading(result: ClassifyResult) -> SpinReelReading:
     )
 
 
+def reading(result: ClassifyResult) -> SpinReelReading:
+    """The classifier's answer as a reading, for a caller outside this module.
+
+    Public alongside :func:`read_scatters` because **what landed is not a fact
+    about a spin**: it is a fact about a grid of tiles, and Evaluate Screen asks
+    the same question of a screen nobody spun. Sharing these two is what keeps
+    that feature from growing its own copy of the reading types and drifting from
+    this one.
+    """
+    return _reading(result)
+
+
 def _scatter_codes(config: GameConfig) -> tuple[str, ...]:
     """The codes this game pays by counting across the grid, as the config declares
     them. Empty for a game that declares none, which is not a failure -- it means
@@ -1480,6 +1492,16 @@ async def _read_scatters(
         summary,
     )
     return scatters, summary
+
+
+async def read_scatters(
+    config: GameConfig, split_dir: Path, grid: SpinReelReading
+) -> tuple[list[SpinScatterReading], str]:
+    """Every scatter on a named grid, with the figure printed on it -- see
+    :func:`_read_scatters`. Public for the same reason as :func:`reading`: an orb
+    carries what it carries whether or not a spin put it there, and Evaluate
+    Screen reads it off a screen nobody spun."""
+    return await _read_scatters(config, split_dir, grid)
 
 
 async def _read_reels(run: _ActiveRun) -> None:

@@ -20,7 +20,7 @@ from app.schemas.meter import (
     MeterUnmapped,
     MeterValues,
 )
-from app.utils import meter, ocr
+from app.utils import meter, meter_paddle, ocr, paddle_ocr
 
 logger = get_logger("meter")
 
@@ -32,10 +32,34 @@ UNNAMED_SYMBOL = "?"
 # Fitted row bands, keyed by (game, strip width, strip height). Cleared by reset().
 _bands: dict[tuple[str, int, int], meter.Band] = {}
 
+# The same, for the PaddleOCR reader. Separate on purpose: which rows read best is
+# a judgement the *engine* makes, so a band fitted by Tesseract is not a fact
+# Paddle may reuse.
+_paddle_bands: dict[tuple[str, int, int], meter.Band] = {}
+
 
 def reset() -> None:
     """Drop the fitted bands. Tests, and after a game config change."""
     _bands.clear()
+    _paddle_bands.clear()
+
+
+def _paddle_options() -> paddle_ocr.PaddleOptions:
+    """How a meter cell is read by Paddle, from the environment.
+
+    Shares the orb reader's settings block: both are "read the digits drawn on a
+    small crop of game artwork", and a host that tuned upscale or the confidence
+    floor for one meant it for the other. ``min_digits`` is the one departure --
+    a meter cell is legitimately one digit (a bet of ``5``, a win of ``0``) where
+    a prize on an orb never is.
+    """
+    return paddle_ocr.PaddleOptions(
+        language=settings.OCR_ORB_PADDLE_LANGUAGE,
+        upscale=settings.OCR_ORB_PADDLE_UPSCALE,
+        min_confidence=settings.OCR_ORB_PADDLE_MIN_CONFIDENCE,
+        min_digits=1,
+        timeout_seconds=settings.OCR_ORB_PADDLE_TIMEOUT_SECONDS,
+    )
 
 
 def _executable() -> Path:
@@ -159,6 +183,70 @@ def read(
             duration_ms=_elapsed_ms(started),
         )
 
+    return _assemble(scan, game=game, started=started, engine="tesseract")
+
+
+def read_paddle(
+    strip: Image.Image,
+    *,
+    game: str,
+    profile: Mapping[str, Any] | None = None,
+) -> MeterValues:
+    """Read the five values off a cash-meter crop with PaddleOCR instead of
+    Tesseract. Same contract as :func:`read` -- never raises, a declared band in
+    ``profile`` wins, and the reading comes back in the same ``MeterValues``.
+
+    Used by Evaluate Screen. Analyze Spin stays on :func:`read`: the two engines
+    do not read a strip identically and that feature's validations were measured
+    against Tesseract, so this is a choice per feature rather than a switch for
+    the project.
+
+    The fitted band is cached **separately** from :func:`read`'s, under its own
+    key: which rows read best is a judgement the engine makes, so a band fitted
+    by one reader is not a fact the other one may reuse.
+    """
+    started = time.perf_counter()
+    block: Mapping[str, Any] = profile or {}
+    windows = _declared_windows(block)
+    try:
+        if not paddle_ocr.available():
+            raise meter.MeterError(
+                "PaddleOCR is not installed, so the cash meter cannot be read "
+                "with it. Install paddleocr (it needs Python 3.13 or lower)"
+            )
+        options = _paddle_options()
+        key = (game, strip.width, strip.height)
+        band = _declared_band(block, strip.height) or _paddle_bands.get(key)
+        if band is None:
+            band, scan = meter_paddle.fit_band(strip, options=options, windows=windows)
+            _paddle_bands[key] = band
+            logger.info(
+                "Fitted meter band %s for %s at %dx%d with PaddleOCR",
+                band,
+                game,
+                strip.width,
+                strip.height,
+            )
+        else:
+            scan = meter_paddle.extract(
+                strip, band=band, options=options, windows=windows
+            )
+    except (meter.MeterError, ocr.OcrError) as exc:
+        return MeterValues(
+            mode=MeterMode.UNKNOWN,
+            error=str(exc),
+            duration_ms=_elapsed_ms(started),
+        )
+
+    return _assemble(scan, game=game, started=started, engine="PaddleOCR")
+
+
+def _assemble(
+    scan: meter.MeterScan, *, game: str, started: float, engine: str
+) -> MeterValues:
+    """One scan as the API reports it, whichever engine produced it. Shared so the
+    two readers cannot disagree about what a scan *means* -- only about how the
+    digits were recognised."""
     mode, currency = _classify(scan.fields)
     balance = scan.fields.get("cash", meter.MeterField()).value
     values = MeterValues(
@@ -192,8 +280,10 @@ def read(
             [round(item.centre, 3) for item in values.unmapped],
         )
     logger.info(
-        "Read meter of %s: mode=%s cash=%s credits=%s win=%s bet=%s (%d engine calls)",
+        "Read meter of %s with %s: mode=%s cash=%s credits=%s win=%s bet=%s "
+        "(%d engine calls)",
         game,
+        engine,
         values.mode.value,
         values.cash,
         values.credits,

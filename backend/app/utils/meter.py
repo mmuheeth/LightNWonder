@@ -21,8 +21,10 @@ __all__ = [
     "MeterField",
     "MeterScan",
     "Unmapped",
+    "cell_crop",
     "extract",
     "fit_band",
+    "reportable_span",
     "row_bands",
 ]
 
@@ -383,16 +385,38 @@ def _padded(crop: Image.Image, margin: int | None = None) -> Image.Image:
     return ImageOps.expand(crop, border=pad, fill=fill)
 
 
+def cell_crop(image: Image.Image, box: Band, band: Band) -> Image.Image:
+    """The picture of one cell, ready to be read: ``box`` widened by
+    :data:`CLUSTER_PAD`, the band grown onto whichever glyph edge runs into it
+    (:func:`_grown`), and any clearance the strip could not supply synthesised
+    (:func:`_padded`).
+
+    Public because **which engine reads a cell is a separate question from where
+    the cell is**: every correction here is for how the game draws a meter, not
+    for how Tesseract reads one, so :mod:`app.utils.meter_paddle` prepares its
+    crops through this rather than repeating the three steps and drifting from
+    them.
+    """
+    columns = (max(0, box[0] - CLUSTER_PAD), min(image.width, box[1] + CLUSTER_PAD))
+    top, bottom = _grown(image, columns, band)
+    return _padded(
+        image.crop((columns[0], top, columns[1], bottom)),
+        _margin(band[1] - band[0]),
+    )
+
+
+def reportable_span(spans: dict[str, tuple[float, float]]) -> tuple[float, float]:
+    """The span of the strip a stray value is worth reporting from. Public for the
+    same reason as :func:`cell_crop`: it is a property of the declared windows,
+    which both readers file their readings into."""
+    return _reportable(spans)
+
+
 def read_group(
     image: Image.Image, box: Band, band: Band, *, executable: Path
 ) -> MeterField:
     """Read one number, escalating only while the reading is unconvincing."""
-    columns = (max(0, box[0] - CLUSTER_PAD), min(image.width, box[1] + CLUSTER_PAD))
-    top, bottom = _grown(image, columns, band)
-    crop = _padded(
-        image.crop((columns[0], top, columns[1], bottom)),
-        _margin(band[1] - band[0]),
-    )
+    crop = cell_crop(image, box, band)
     best = MeterField(box=box)
     calls = 0
     for rung in LADDER:

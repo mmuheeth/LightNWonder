@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     analyze_spin,
+    evaluate_screen,
     event_capture,
     game_input,
     games,
@@ -37,4 +38,7 @@ api_router.include_router(paylines.router, prefix="/paylines", tags=["paylines"]
 api_router.include_router(paytable.router, prefix="/paytable", tags=["paytable"])
 api_router.include_router(
     analyze_spin.router, prefix="/analyze-spin", tags=["analyze-spin"]
+)
+api_router.include_router(
+    evaluate_screen.router, prefix="/evaluate-screen", tags=["evaluate-screen"]
 )

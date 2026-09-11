@@ -333,12 +333,9 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         summary="Win meter finished counting up",
     ),
     EventRule(
-        event="spin-with-stops",
-        pattern=re.compile(
-            r"ButtonPanelState transitioned from \[PanelStateTouchToStart\] "
-            r"to \[PanelStateSpinWithStops\]"
-        ),
-        summary="Spin with stops",
+        event="hns-only-result",
+        pattern=re.compile(_message("HNSOnlyResultMsg")),
+        summary="HNS only result",
     ),
     # --- what the player set ----------------------------------------------
     EventRule(

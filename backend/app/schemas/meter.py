@@ -20,6 +20,20 @@ class MeterMode(StrEnum):
     """Nothing was read, so there is nothing to judge."""
 
 
+class MeterEngine(StrEnum):
+    """Which OCR engine reads the strip.
+
+    Both stay available on purpose. Tesseract is what Analyze Spin's meter
+    validations were measured against; PaddleOCR reads a cell in one call rather
+    than an escalating ladder of subprocesses, and scores every reading it
+    returns. They do not read a strip identically, so this is a choice per
+    caller rather than a setting for the project.
+    """
+
+    TESSERACT = "tesseract"
+    PADDLE = "paddle"
+
+
 class MeterField(BaseModel):
     """One number read off the strip, with how sure the engine was; carried
     per field since one average would hide a confident balance beside a bad bet."""
