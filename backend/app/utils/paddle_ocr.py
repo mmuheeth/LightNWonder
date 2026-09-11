@@ -31,12 +31,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import numpy as np
 
 __all__ = [
+    "PaddleLineOptions",
     "PaddleOptions",
     "PaddleResult",
     "PaddleWord",
     "available",
     "engine_version",
+    "prepare",
+    "prepare_line",
     "read_image",
+    "read_line",
     "read_number",
     "read_prize",
     "reset",
@@ -83,8 +87,7 @@ class PaddleOptions:
             )
         if not 0.0 <= self.min_confidence <= 1.0:
             raise OcrError(
-                "min_confidence must be between 0 and 1, got "
-                f"{self.min_confidence}"
+                f"min_confidence must be between 0 and 1, got {self.min_confidence}"
             )
         if self.min_digits < 1:
             raise OcrError(f"min_digits must be at least 1, got {self.min_digits}")
@@ -140,13 +143,20 @@ _engine: Any | None = None
 _version: str | None = None
 _lock = threading.Lock()
 
+# The recognise-only reader is its own cached object, not a mode of the one
+# above: they load different models and are wanted at the same time.
+_recognizer: Any | None = None
+_recognizer_model: str | None = None
+
 
 def reset() -> None:
-    """Drop the cached engine. Tests, and after a settings change."""
-    global _engine, _version
+    """Drop the cached engines. Tests, and after a settings change."""
+    global _engine, _version, _recognizer, _recognizer_model
     with _lock:
         _engine = None
         _version = None
+        _recognizer = None
+        _recognizer_model = None
 
 
 def _import_paddleocr() -> tuple[Any, str]:
@@ -230,6 +240,158 @@ def _cached_engine(options: PaddleOptions) -> Any:
         if _engine is None:
             _engine = _build(options)
         return _engine
+
+
+def prepare(options: PaddleOptions = DEFAULT_OPTIONS) -> str:
+    """Build the recogniser now, and report the version that will do the reading.
+
+    :func:`available` answers "is it installed", which is an import; this
+    answers "will it run", which is the model load. The two are worth keeping
+    apart for a caller reading *many* crops in a row: a build that fails inside
+    a per-crop loop is indistinguishable from a crop with no text on it, so one
+    broken install comes back as a hundred blank frames instead of one error.
+    Cheap to call again -- the engine is cached, so every read after the first
+    is this same object.
+
+    Raises the same two exceptions a read does:
+    :class:`app.utils.ocr.OcrUnavailableError` when Paddle is not installed and
+    :class:`app.utils.ocr.OcrError` when it is and will not start.
+    """
+    _, version = _import_paddleocr()
+    _cached_engine(options)
+    return _version or version
+
+
+# --- recognising a crop that is already one line --------------------------
+
+
+@dataclass(frozen=True)
+class PaddleLineOptions:
+    """How one crop that is *known* to be a single line of text is read."""
+
+    # The recognition model, and **the setting that decides whether reading a
+    # clip fits in one request**. Measured on this machine against a
+    # caption-sized crop (194x37), reading the same string correctly each time:
+    #
+    #   PP-OCRv6_medium_rec (Paddle's default)  1.468 s/frame  @0.991
+    #   PP-OCRv4_mobile_rec                     0.166 s/frame  @0.979
+    #   PP-OCRv5_mobile_rec                     0.081 s/frame  @0.881
+    #   en_PP-OCRv5_mobile_rec                  0.064 s/frame  @0.974
+    #
+    # 23x between the ends of that list, which over the ~90 frames of a 90s
+    # clip is 132s against 6s -- the difference between a request that answers
+    # and one that times out. The English model is the pick because a caption
+    # is English words and it is both the fastest and, of the two mobile
+    # models, the more confident. A game that draws its strip in another
+    # language wants another model here, not another engine.
+    model_name: str = "en_PP-OCRv5_mobile_rec"
+
+    # Left at 1x for the reason the orb reader's is: Paddle resizes internally.
+    upscale: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not self.model_name.strip():
+            raise OcrError("model_name must name a PaddleOCR recognition model")
+        if not 0 < self.upscale <= 10:
+            raise OcrError(
+                f"upscale must be greater than 0 and at most 10, got {self.upscale}"
+            )
+
+
+DEFAULT_LINE_OPTIONS = PaddleLineOptions()
+
+
+def _build_recognizer(options: PaddleLineOptions) -> Any:
+    """The recogniser, built once and kept.
+
+    No ``enable_mkldnn=False`` here, unlike :func:`_build`: that is required to
+    keep the *detector* from dying on this machine, and there is no detector on
+    this path. Paddle's own defaults (oneDNN, 10 of 12 threads) read a caption
+    correctly and are what the timings above were taken with.
+    """
+    paddleocr, _ = _import_paddleocr()
+    try:
+        return paddleocr.TextRecognition(model_name=options.model_name)
+    except Exception as exc:  # paddle raises bare Exception
+        raise OcrError(
+            f"PaddleOCR could not start the recognition model "
+            f"{options.model_name!r}: {exc}"
+        ) from exc
+
+
+def _cached_recognizer(options: PaddleLineOptions) -> Any:
+    """The shared recogniser, rebuilt when the model asked for changes."""
+    global _recognizer, _recognizer_model
+    with _lock:
+        if _recognizer is None or _recognizer_model != options.model_name:
+            _recognizer = _build_recognizer(options)
+            _recognizer_model = options.model_name
+        return _recognizer
+
+
+def prepare_line(options: PaddleLineOptions = DEFAULT_LINE_OPTIONS) -> str:
+    """Build the recogniser now, and report the model that will read.
+
+    The recognise-only counterpart of :func:`prepare`, and there for the same
+    reason: a build that fails inside a per-crop loop is indistinguishable from
+    a crop with no text on it.
+    """
+    _import_paddleocr()
+    _cached_recognizer(options)
+    return options.model_name
+
+
+def _line_words(pages: Any) -> tuple[PaddleWord, ...]:
+    """The recognised string out of what ``TextRecognition`` returns: a list of
+    dicts carrying ``rec_text``/``rec_score``, one per image given."""
+    words: list[PaddleWord] = []
+    for page in pages or ():
+        if not isinstance(page, dict):
+            continue
+        text = str(page.get("rec_text") or "").strip()
+        if text:
+            words.append(
+                PaddleWord(text=text, confidence=float(page.get("rec_score") or 0.0))
+            )
+    return tuple(words)
+
+
+def read_line(
+    image: Image.Image, *, options: PaddleLineOptions = DEFAULT_LINE_OPTIONS
+) -> PaddleResult:
+    """Read a crop that is already cut down to one line of text.
+
+    Skips detection, which is not an optimisation so much as the removal of a
+    step that had nothing to do: the caller cropped a named region whose whole
+    content is the caption, so asking Paddle to *find* text inside it is asking
+    it to rediscover the rectangle it was handed. The same reasoning puts
+    Tesseract on ``psm 7`` ("a single text line") for these crops. Detection
+    still earns its place on an orb, where the figure sits somewhere inside a
+    tile that is mostly artwork.
+
+    Returns the same :class:`PaddleResult` a detected read does, with the whole
+    line as one "word", so a caller handles either the same way. Raises the
+    same two exceptions.
+    """
+    prepared = image if image.mode == "RGB" else image.convert("RGB")
+    if options.upscale != 1.0:
+        width = max(1, round(prepared.width * options.upscale))
+        height = max(1, round(prepared.height * options.upscale))
+        prepared = prepared.resize((width, height), Image.Resampling.LANCZOS)
+
+    recognizer = _cached_recognizer(options)
+    try:
+        pages = recognizer.predict(_as_array(prepared))
+    except Exception as exc:  # paddle raises bare Exception
+        raise OcrError(f"PaddleOCR failed to read the line: {exc}") from exc
+
+    words = _line_words(pages)
+    return PaddleResult(
+        text=" ".join(word.text for word in words),
+        words=words,
+        confidence=max((word.confidence for word in words), default=None),
+        size=prepared.size,
+    )
 
 
 def preprocess(

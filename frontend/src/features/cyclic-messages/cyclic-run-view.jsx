@@ -174,9 +174,9 @@ function formatOffset(seconds) {
 /**
  * The messages read out of one clip, and the button that asks for them.
  *
- * A button rather than an automatic fetch: the backend decodes ~180 frames and
- * runs Tesseract on each, so it is tens of seconds of work that nobody should
- * pay for by opening a page.
+ * A button rather than an automatic fetch: the backend decodes a frame a
+ * second and runs OCR on each, which is minutes of work for a long clip and
+ * nobody should pay for it by opening a page.
  */
 function ClipMessages({ runId, clip }) {
   const read = useReadCyclicText(runId);
@@ -196,7 +196,7 @@ function ClipMessages({ runId, clip }) {
         </Button>
         {read.isPending ? (
           <span className="text-muted-foreground text-xs">
-            A frame every half second, each one OCR'd — about a minute for a
+            A frame a second, each one OCR'd — around three minutes for a
             90-second clip. Leave the tab open.
           </span>
         ) : null}
@@ -206,9 +206,13 @@ function ClipMessages({ runId, clip }) {
 
       {reading ? (
         <div className="space-y-2">
+          {/* The engine is named because it is a per-host setting and the two
+              disagree about a caption — without it, two readings of one clip
+              look like the same reading changing its mind. */}
           <p className="text-muted-foreground text-xs">
-            {reading.messages.length} messages from {reading.frames_sampled} frames
-            at {reading.interval_seconds}s
+            {reading.captions.length} captions over {reading.messages.length}{" "}
+            showings, from {reading.frames_sampled} frames at{" "}
+            {reading.interval_seconds}s, read by {reading.engine}
           </p>
 
           {/* The one thing that makes a plausible-looking reading untrustworthy,
@@ -218,39 +222,48 @@ function ClipMessages({ runId, clip }) {
               <TriangleAlert className="mt-0.5 size-3 shrink-0" />
               <span>
                 {reading.frames_unreadable} of {reading.frames_sampled} frames
-                came back below the confidence floor. That is the recording, not
-                the reader — a caption the encoder smeared still OCRs to
-                something plausible, so treat the greyed rows as unreliable and
-                raise the OBS recording quality.
+                came back below the confidence floor. That is usually the
+                recording rather than the reader — a caption the encoder smeared
+                still OCRs to something plausible, so treat the greyed rows as
+                unreliable and raise the OBS recording quality.
               </span>
             </p>
           ) : null}
 
-          {reading.messages.length === 0 ? (
+          {/* `captions`, not `messages`: the strip loops, so the chronological
+              list says "Line 1 Pays 250" once per time round. The repeats are
+              counted on the row instead — the timeline is still on the
+              response for anyone who needs when rather than what. */}
+          {reading.captions.length === 0 ? (
             <p className="text-muted-foreground text-xs">
               No text was found on any frame of this clip.
             </p>
           ) : (
             <ol className="divide-y rounded-md border text-sm">
-              {reading.messages.map((message, index) => (
+              {reading.captions.map((caption, index) => (
                 <li
-                  key={`${message.first_seen}-${index}`}
+                  key={`${caption.first_seen}-${index}`}
                   className={`flex items-baseline gap-3 px-3 py-1.5 ${
-                    message.reliable ? "" : "text-muted-foreground"
+                    caption.reliable ? "" : "text-muted-foreground"
                   }`}
                 >
                   <span className="font-mono text-xs">
-                    {formatOffset(message.first_seen)}
+                    {formatOffset(caption.first_seen)}
                   </span>
-                  <span className={message.reliable ? "font-medium" : "italic"}>
-                    {message.text}
+                  <span className={caption.reliable ? "font-medium" : "italic"}>
+                    {caption.text}
                   </span>
+                  {caption.showings > 1 ? (
+                    <span className="text-muted-foreground font-mono text-xs">
+                      &times;{caption.showings}
+                    </span>
+                  ) : null}
                   <span
                     className={`ml-auto font-mono text-xs ${
-                      message.reliable ? "text-muted-foreground" : "text-destructive"
+                      caption.reliable ? "text-muted-foreground" : "text-destructive"
                     }`}
                   >
-                    {Math.round(message.confidence)}%
+                    {Math.round(caption.confidence)}%
                   </span>
                 </li>
               ))}

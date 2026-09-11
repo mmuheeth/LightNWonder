@@ -100,9 +100,7 @@ ATTRACT_ENDED = (
     "09/08/26 15:55:33.051 00 FortuneOx:12980 DBG: [MessageQueue.Publish] "
     "msg[GDK.Common.ServerAPI.AttractSequenceEndCompleted]"
 )
-NOISE = (
-    "09/08/26 16:36:37.093 00 FortuneOx:12980 DBG: coin value: 200"
-)
+NOISE = "09/08/26 16:36:37.093 00 FortuneOx:12980 DBG: coin value: 200"
 
 
 def at(line: str, time: str) -> str:
@@ -223,7 +221,9 @@ def fake_obs(
         assert payload.file_name is not None
         assert payload.output_dir is not None
         target = (
-            settings.obs_screenshot_dir / payload.output_dir / f"{payload.file_name}.png"
+            settings.obs_screenshot_dir
+            / payload.output_dir
+            / f"{payload.file_name}.png"
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -927,9 +927,7 @@ async def test_runs_are_listed_and_fetched_back(
 
     fetched = assert_success((await client.get(f"{API}/runs/{detail.run_id}")).json())
     assert fetched["message_count"] == detail.message_count
-    assert any(
-        event["event"] == "cyclic-game-pays" for event in fetched["events"]
-    )
+    assert any(event["event"] == "cyclic-game-pays" for event in fetched["events"])
 
 
 async def test_an_unknown_run_is_a_404(client: AsyncClient, capture_root: Path) -> None:
@@ -943,9 +941,7 @@ async def test_a_traversing_file_name_is_refused(
 ) -> None:
     """Both halves of the URL came off the wire, so both go through the guards."""
     detail = await cyclic_service.stop()
-    response = await client.get(
-        f"{API}/runs/{detail.run_id}/files/..%2F..%2Frun.json"
-    )
+    response = await client.get(f"{API}/runs/{detail.run_id}/files/..%2F..%2Frun.json")
     assert response.status_code == 404
 
 
@@ -958,9 +954,7 @@ async def test_a_captured_frame_is_served_back(
 
     (pays,) = events_named(detail, "cyclic-game-pays")
     assert pays.screenshot is not None
-    response = await client.get(
-        f"{API}/runs/{detail.run_id}/files/{pays.screenshot}"
-    )
+    response = await client.get(f"{API}/runs/{detail.run_id}/files/{pays.screenshot}")
     assert response.status_code == 200
     assert response.content.startswith(b"\x89PNG")
 

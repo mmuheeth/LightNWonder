@@ -122,7 +122,7 @@ async def get_run(run_id: str) -> ApiResponse[CyclicRunDetail]:
     responses={
         **RUN_NOT_FOUND,
         400: {"description": "The run has several clips and none was named"},
-        409: {"description": "Tesseract is not installed or OCR is disabled"},
+        409: {"description": "The OCR engine is not installed or OCR is disabled"},
     },
 )
 async def read_text(
@@ -142,16 +142,18 @@ async def read_text(
         le=10,
         description=(
             "Gap between sampled frames. Defaults to "
-            "CYCLIC_MESSAGES_TEXT_INTERVAL_SECONDS, which is deliberately "
-            "shorter than a message dwells -- raising it past ~1.3s starts "
-            "dropping messages without saying so."
+            "CYCLIC_MESSAGES_TEXT_INTERVAL_SECONDS (1.0s), which is shorter "
+            "than a message dwells -- raising it past ~1.3s starts dropping "
+            "messages without saying so."
         ),
     ),
 ) -> ApiResponse[CyclicTextReading]:
     """Cut the clip into frames, crop the caption out of each and read it.
 
-    Slow by nature -- a 90s clip is ~180 frames and as many Tesseract calls --
-    so this is a request that takes tens of seconds rather than milliseconds.
+    Slow by nature -- at one frame a second a 90s clip is ~90 frames and as
+    many OCR passes -- so this is a request that takes tens of seconds rather
+    than milliseconds. Which engine reads is CYCLIC_MESSAGES_TEXT_ENGINE, and
+    the reading says which one did.
     """
     reading = await cyclic_text_service.read_run(
         run_id, cycle=cycle, interval_seconds=interval_seconds

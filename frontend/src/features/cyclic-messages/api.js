@@ -62,15 +62,20 @@ export function getCyclicRun(runId, { signal } = {}) {
  * How long to allow the clip reading, overriding the client's global
  * `VITE_API_TIMEOUT_MS` (15s) for this one call.
  *
- * It is the only request in the app that is *supposed* to take a minute: a 90s
- * clip is ~180 frames and as many Tesseract subprocesses, measured at 46s with
- * six running at once. Four minutes is ~5x that headroom, and deliberately
- * *under* the 300s `requestTimeout` Node gives the Vite dev proxy — past that
- * the proxy cuts the connection first and the reason arrives as a bare network
- * error instead of this timeout. A clip long enough to need more than this
- * wants a bigger `interval_seconds`, not a bigger number here.
+ * It is the only request in the app that is *supposed* to take minutes. At one
+ * frame a second a 90s clip is ~90 OCR passes, and the default engine
+ * (PaddleOCR, recognise-only) reads them one at a time against a single
+ * in-process model: **measured at 188s for a 95.4s clip**, reading plus
+ * decoding. Tesseract, still selectable, is far quicker but reads this artwork
+ * worse.
+ *
+ * So this is ~1.5x the measured worst case, and deliberately *under* the 300s
+ * `requestTimeout` Node gives the Vite dev proxy — past that the proxy cuts the
+ * connection first and the reason arrives as a bare network error instead of
+ * this timeout. There is no more room to take: a clip long enough to need more
+ * than this wants a bigger `interval_seconds`, not a bigger number here.
  */
-const READ_TIMEOUT_MS = 240_000;
+const READ_TIMEOUT_MS = 290_000;
 
 /**
  * Read the messages out of one win's clip: the backend cuts it into frames,

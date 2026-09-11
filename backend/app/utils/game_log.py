@@ -558,7 +558,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
             r"msg\[RED_BLACK_(?P<pick>[A-Z]+)_CARD\]"
         ),
         summary="Gamble pick: {pick}",
-            capture=False,
+        capture=False,
     ),
     EventRule(
         event="gamble-result",

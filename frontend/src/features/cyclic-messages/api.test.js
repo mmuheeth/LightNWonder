@@ -20,9 +20,10 @@ afterEach(() => {
 
 describe("readCyclicText", () => {
   it("allows minutes rather than the client's global 15s timeout", async () => {
-    // The regression this guards: reading a 90s clip is ~180 Tesseract calls
-    // and measured 46s, so the default timeout failed it every time with
-    // "The request timed out" and no reading at all.
+    // The regression this guards: reading a 90s clip is ~90 OCR calls, and on
+    // Tesseract at twice the sampling rate that measured 46s, so the default
+    // 15s timeout failed it every time with "The request timed out" and no
+    // reading at all.
     const request = respond({ messages: [] });
 
     await readCyclicText("2026-09-09_22-12-53");

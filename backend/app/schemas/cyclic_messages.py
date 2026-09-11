@@ -233,13 +233,26 @@ class CyclicTextFrame(BaseModel):
     )
     frame_index: int = Field(ge=0, description="0-based position in the clip.")
     text: str = Field(description="What the engine read, verbatim and uncorrected.")
+    repaired: str = Field(
+        default="",
+        description=(
+            "The same reading with its number slots and vocabulary put right "
+            "against the strip's known wording -- what the messages were "
+            "grouped by. Kept beside the raw text rather than replacing it: a "
+            "repair moves a character to the class the grammar demands, so it "
+            "can be confidently wrong about which digit, and the only way to "
+            "notice is to see both."
+        ),
+    )
     confidence: float = Field(
         ge=0,
         le=100,
         description=(
-            "Lowest per-word confidence on the frame. The lowest, not the mean: "
-            "one mangled word is what makes a caption wrong, and averaging hides "
-            "it behind the words that read cleanly."
+            "Lowest per-word confidence on the frame, 0-100. The lowest, not "
+            "the mean: one mangled word is what makes a caption wrong, and "
+            "averaging hides it behind the words that read cleanly. Paddle's "
+            "own 0-1 score is scaled onto this range, and a 'word' there is "
+            "one region its detector found rather than one word of English."
         ),
     )
     reliable: bool = Field(
@@ -254,12 +267,21 @@ class CyclicTextFrame(BaseModel):
 class CyclicTextMessage(BaseModel):
     """One message the strip displayed, from the run of frames showing it.
 
-    Consecutive frames reading identically are one message: the frames are
-    deliberately taken ~3x faster than the strip changes, so how many frames a
-    message spans is how long it was up rather than how many times it appeared.
+    Consecutive frames reading the same caption are one message: the frames are
+    taken faster than the strip changes, so how many frames a message spans is
+    how long it was up rather than how many times it appeared. "The same
+    caption" ignores case, spacing and punctuation but never a differing
+    character -- see ``cyclic_text._key`` for why that line is drawn there.
     """
 
-    text: str = Field(description="The reading these frames agreed on.")
+    text: str = Field(
+        description=(
+            "The best-scoring of the readings that formed this message. Not "
+            "necessarily the first: grouping tolerates spacing and punctuation, "
+            "so the frames need not agree character for character, and the one "
+            "the engine was surest of is the better bet."
+        )
+    )
     first_seen: float = Field(
         ge=0, description="Offset into the clip of the first frame reading this."
     )
@@ -280,6 +302,30 @@ class CyclicTextMessage(BaseModel):
         return self.last_seen - self.first_seen
 
 
+class CyclicTextCaption(BaseModel):
+    """One caption the strip showed, however many times it showed it.
+
+    The strip *loops*: a win presentation walks Line 1 to Line 40 and then
+    starts again, so the chronological list has the same caption in it several
+    times over. That repetition is a true fact about the strip and a poor way
+    to read one, so it is counted here rather than listed -- ``showings`` is
+    how many separate times the caption came up, and the timeline it was
+    counted from is still on ``messages``.
+    """
+
+    text: str = Field(description="The best-scoring reading of this caption.")
+    showings: int = Field(ge=1, description="Separate times the strip displayed it.")
+    frames: int = Field(
+        ge=1, description="Sampled frames it was on screen for, across them all."
+    )
+    first_seen: float = Field(ge=0, description="Offset it first appeared at.")
+    last_seen: float = Field(ge=0, description="Offset it was last on screen at.")
+    confidence: float = Field(
+        ge=0, le=100, description="Best confidence any frame of it managed."
+    )
+    reliable: bool = Field(description="Whether any frame of it cleared the floor.")
+
+
 class CyclicTextReading(BaseModel):
     """Every message recovered from one run's clip."""
 
@@ -291,6 +337,14 @@ class CyclicTextReading(BaseModel):
     )
     region: str = Field(
         description="Named game-config region the caption was cropped from."
+    )
+    engine: str = Field(
+        description=(
+            "Which OCR engine read the frames -- 'paddle' or 'tesseract'. On "
+            "the reading rather than inferred from the settings, because the "
+            "two are selectable per host and disagree about a caption: two "
+            "readings of one clip are only comparable if each says who made it."
+        )
     )
     interval_seconds: float = Field(
         gt=0, description="Gap between sampled frames, as asked for."
@@ -307,8 +361,22 @@ class CyclicTextReading(BaseModel):
             "on CYCLIC_MESSAGES_TEXT_MIN_CONFIDENCE."
         ),
     )
+    captions: list[CyclicTextCaption] = Field(
+        default_factory=list,
+        description=(
+            "Each caption once, in the order the strip first showed it, with "
+            "the repeats counted rather than listed. This is the answer to "
+            "'what did the strip say'; `messages` is the answer to 'when'."
+        ),
+    )
     messages: list[CyclicTextMessage] = Field(
-        default_factory=list, description="Distinct messages, in the order shown."
+        default_factory=list,
+        description=(
+            "Every showing in order, repeats included -- the strip loops, so a "
+            "caption appears once per time round. Kept beside `captions` "
+            "because when a line came up is a different question from whether "
+            "it did."
+        ),
     )
     frames: list[CyclicTextFrame] = Field(
         default_factory=list,

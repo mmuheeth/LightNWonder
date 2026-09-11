@@ -129,6 +129,37 @@ async def engine_for_reading() -> Path:
         ) from exc
 
 
+async def paddle_line_engine_for_reading(options: paddle_ocr.PaddleLineOptions) -> str:
+    """PaddleOCR's line recogniser, built before any cropping, reporting the
+    model that will read.
+
+    The Paddle counterpart of :func:`engine_for_reading` and public for the
+    same reason: this module owns *which* engine, so a caller does not resolve
+    one for itself and reach a different answer about whether OCR is available
+    at all. Both raise the same 409 rather than each having their own way of
+    saying "no engine".
+
+    Deliberately no fallback to Tesseract, unlike :func:`read_tile`'s orb
+    reader. One orb falling back is one tile read by the other engine; a clip
+    falling back is a hundred frames silently read by a different engine at a
+    confidence floor that was not measured for it.
+    """
+    if not settings.OCR_ENABLED:
+        raise OcrEngineUnavailableError(
+            "OCR is disabled; set OCR_ENABLED=true to turn it on"
+        )
+    try:
+        model = await asyncio.to_thread(paddle_ocr.prepare_line, options)
+    except ocr.OcrUnavailableError as exc:
+        raise OcrEngineUnavailableError(str(exc)) from exc
+    except ocr.OcrError as exc:
+        raise OcrEngineUnavailableError(
+            f"PaddleOCR is installed but would not start: {exc}"
+        ) from exc
+    logger.info("OCR engine: PaddleOCR line recogniser %s", model)
+    return model
+
+
 # --- options --------------------------------------------------------------
 
 
@@ -560,9 +591,7 @@ def _prepared_variant(crop: Image.Image, target_height: int) -> Image.Image:
         (round(crop.width * scale), round(crop.height * scale)),
         Image.Resampling.LANCZOS,
     )
-    return ImageOps.expand(
-        ImageOps.autocontrast(resized), border=_TILE_PAD, fill=255
-    )
+    return ImageOps.expand(ImageOps.autocontrast(resized), border=_TILE_PAD, fill=255)
 
 
 @dataclass(frozen=True)
@@ -606,9 +635,7 @@ def orb_engine_is_paddle() -> bool:
     return settings.OCR_ORB_PADDLE_ENABLED and paddle_ocr.available()
 
 
-def _read_tile_paddle(
-    tile: Image.Image, *, min_digits: int
-) -> TileReading | None:
+def _read_tile_paddle(tile: Image.Image, *, min_digits: int) -> TileReading | None:
     """Read the figure on one orb with PaddleOCR, or ``None`` when Paddle cannot
     answer and Tesseract should be asked instead.
 
@@ -732,13 +759,10 @@ def read_tile(
     best = max(support, key=lambda text: (support[text], weighted[text]))
     # Strongest first, so a caller reporting a refused reading names the figure
     # that came closest rather than whichever variant happened to run first.
-    ranked = tuple(
-        sorted(candidates, key=lambda entry: entry[1], reverse=True)
-    )
+    ranked = tuple(sorted(candidates, key=lambda entry: entry[1], reverse=True))
     if peak[best] < _MIN_PEAK_CONFIDENCE or support[best] < _MIN_SUPPORT:
         return TileReading(text=None, confidence=None, candidates=ranked)
     return TileReading(text=best, confidence=peak[best], candidates=ranked)
-
 
 
 def read_tile_options(config: GameConfig, region: str = _TILE_REGION) -> ocr.OcrOptions:
@@ -748,12 +772,6 @@ def read_tile_options(config: GameConfig, region: str = _TILE_REGION) -> ocr.Ocr
     change, exactly as it can for a named screen region."""
     base = _defaults().merged(_TILE_OPTIONS, where="ocr.tile defaults")
     return base.merged(config.ocr.get(region), where=f"ocr.{region}")
-
-
-async def engine_for_reading() -> Path:
-    """The Tesseract executable, identified once. Public because a caller reading
-    many crops wants to fail before the first of them rather than per crop."""
-    return await _engine_for_reading()
 
 
 def read_crop(

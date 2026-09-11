@@ -384,6 +384,7 @@ def test_missing_paddle_is_unavailable_not_a_crash(
 ) -> None:
     """Not installed is a state with an actionable message, and the message says
     what to install and why 3.14 will not do."""
+
     def absent() -> tuple[Any, str]:
         raise ocr.OcrUnavailableError("PaddleOCR is not installed")
 
@@ -420,9 +421,7 @@ def test_the_install_message_names_the_command() -> None:
 
 def tile_options() -> ocr.OcrOptions:
     """The Tesseract options an orb would otherwise be read with."""
-    config = load_game_config(
-        Path("app/config/game_config/games/FortuneOx.json")
-    )
+    config = load_game_config(Path("app/config/game_config/games/FortuneOx.json"))
     return ocr_service.read_tile_options(config)
 
 
@@ -477,9 +476,7 @@ def test_read_tile_falls_back_when_paddle_is_missing(
 
     def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
         calls.append(image)
-        return ocr.OcrResult(
-            text="50", words=(), confidence=80.0, size=image.size
-        )
+        return ocr.OcrResult(text="50", words=(), confidence=80.0, size=image.size)
 
     monkeypatch.setattr(ocr, "read_image", tesseract)
     reading = ocr_service.read_tile(
@@ -501,9 +498,7 @@ def test_read_tile_falls_back_when_paddle_errors(
     monkeypatch.setattr(paddle_ocr, "read_number", broken)
 
     def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
-        return ocr.OcrResult(
-            text="300", words=(), confidence=75.0, size=image.size
-        )
+        return ocr.OcrResult(text="300", words=(), confidence=75.0, size=image.size)
 
     monkeypatch.setattr(ocr, "read_image", tesseract)
     reading = ocr_service.read_tile(
@@ -525,9 +520,7 @@ def test_read_tile_uses_tesseract_when_paddle_is_switched_off(
     monkeypatch.setattr(paddle_ocr, "read_number", unreachable)
 
     def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
-        return ocr.OcrResult(
-            text="600", words=(), confidence=70.0, size=image.size
-        )
+        return ocr.OcrResult(text="600", words=(), confidence=70.0, size=image.size)
 
     monkeypatch.setattr(ocr, "read_image", tesseract)
     reading = ocr_service.read_tile(
@@ -612,7 +605,10 @@ def test_the_real_engine_reads_an_orb_tesseract_cannot() -> None:
         tile = image.copy()
 
     options = ocr.OcrOptions(
-        psm=8, char_whitelist="0123456789", upscale=4.0, grayscale=True,
+        psm=8,
+        char_whitelist="0123456789",
+        upscale=4.0,
+        grayscale=True,
         autocontrast=True,
     )
     plain = ocr.read_image(tile, executable=executable, options=options)
