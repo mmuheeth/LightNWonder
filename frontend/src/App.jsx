@@ -8,6 +8,7 @@ import { DashboardPage } from "@/pages/dashboard-page";
 import { EvaluateScreenPage } from "@/pages/evaluate-screen-page";
 import { GameConfigPage } from "@/pages/game-config-page";
 import { NotFoundPage } from "@/pages/not-found-page";
+import { ScatterValueValidationPage } from "@/pages/scatter-value-validation-page";
 
 /** Route table. Add pages under the shared layout. */
 export default function App() {
@@ -20,6 +21,10 @@ export default function App() {
         <Route path="game-config" element={<GameConfigPage />} />
         <Route path="analyze-spin" element={<AnalyzeSpinPage />} />
         <Route path="evaluate-screen" element={<EvaluateScreenPage />} />
+        <Route
+          path="scatter-value-validation"
+          element={<ScatterValueValidationPage />}
+        />
         <Route path="image-classifier" element={<ImageClassifierPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

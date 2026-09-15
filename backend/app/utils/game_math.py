@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
@@ -10,7 +11,10 @@ __all__ = [
     "ANY_SYMBOL",
     "GameMath",
     "GameMathError",
+    "JackpotTier",
     "MathDefaults",
+    "OrbValueTable",
+    "OrbValueWeight",
     "PaylineCombo",
     "PaytableIdentity",
     "PaytableRef",
@@ -23,6 +27,15 @@ __all__ = [
     "load_game_math",
     "load_paytable_identity",
 ]
+
+# "BG_SCPearlCredit_88", "HNS_NonSCPearlCredit_264" -- the orb value tables this
+# file carries under other names for other mechanics (e.g. "BG_SplitPearl_0"),
+# so a table is claimed by this feature only when its identifier matches.
+_ORB_VALUE_TABLE = re.compile(
+    r"^(?P<context>[A-Za-z0-9]+)_(?P<kind>SC|NonSC)PearlCredit_(?P<bet>\d+)$"
+)
+# "Jackpots_3" -- the credit tables ValueTableList carries per jackpot level.
+_JACKPOT_VALUE_TABLE = re.compile(r"^Jackpots_(?P<level>\d+)$")
 
 # Trailing wildcard in a combo's symbol list: "and anything after this".
 ANY_SYMBOL = "ANY"
@@ -46,6 +59,17 @@ def _local(tag: object) -> str:
 def _children(parent: ElementTree.Element, name: str) -> list[ElementTree.Element]:
     """Direct children with this local name, in document order."""
     return [child for child in parent if _local(child.tag) == name]
+
+
+def _find(root: ElementTree.Element, name: str) -> ElementTree.Element | None:
+    """First element anywhere under ``root`` with this local name.
+
+    Every other top-level list here (``ReelStripList``, ``ComboSetList``, ...)
+    is a direct child of ``<GameMath>`` on every file this project has seen, so
+    ``_child`` is enough for those. ``WeightedTableList``/``ValueTableList`` are
+    not: FortuneOx nests both inside a ``<BonusInfo>`` wrapper, so this looks
+    anywhere in the document rather than assuming one more fixed level."""
+    return next((el for el in root.iter() if _local(el.tag) == name), None)
 
 
 def _child(parent: ElementTree.Element, name: str) -> ElementTree.Element | None:
@@ -279,6 +303,62 @@ class ScatterCombo:
 
 
 @dataclass(frozen=True)
+class OrbValueWeight:
+    """One outcome an orb can land on: a credit amount, or a jackpot code."""
+
+    value: int
+    """Credits when positive. A negative code (``-3`` .. ``-6``) names a
+    jackpot level instead -- see :class:`JackpotTier`."""
+
+    weight: int
+
+    @property
+    def is_jackpot(self) -> bool:
+        return self.value < 0
+
+
+@dataclass(frozen=True)
+class OrbValueTable:
+    """A weighted table of everything one orb symbol can show, in one game
+    context, at one bet. ``WeightedTableList`` carries several of these per
+    symbol kind -- one per context (``BG``/``HNS``/``FF``) and bet rung -- plus
+    unrelated tables (``BG_SplitPearl_0`` and the like) this ignores."""
+
+    identifier: str
+    context: str
+    """Which part of the game this table applies to: ``BG``, ``HNS``, ``FF``."""
+
+    symbol_kind: str
+    """``SC`` or ``NonSC`` -- the scatter orb, or every other orb code."""
+
+    bet: int
+    """The bet-per-unit rung this table's credit amounts are priced at."""
+
+    weights: tuple[OrbValueWeight, ...]
+
+    @property
+    def total_weight(self) -> int:
+        return sum(item.weight for item in self.weights)
+
+
+@dataclass(frozen=True)
+class JackpotTier:
+    """One jackpot level a negative orb code can mean."""
+
+    code: int
+    """The negative value an ``OrbValueWeight`` carries for this tier."""
+
+    reset_value: int | None
+    """This level's own ``Jackpots_N`` table: the credits it resets to."""
+
+    type_label: str | None
+    """``Jackpots_Type``'s label for this level (e.g. ``JP5``), when the file
+    carries one. Not a display name -- math.xml has no text for that; a
+    progressive's real tier name (Mega, Major, ...) lives in ``progConfig.xml``,
+    which this reads nothing from."""
+
+
+@dataclass(frozen=True)
 class PaytableRef:
     """A named paytable: which combo sets are live when it is selected."""
 
@@ -334,6 +414,8 @@ class GameMath:
     payline_combos: tuple[PaylineCombo, ...]
     scatter_combos: tuple[ScatterCombo, ...]
     paytables: tuple[PaytableRef, ...]
+    orb_value_tables: tuple[OrbValueTable, ...]
+    jackpot_tiers: tuple[JackpotTier, ...]
 
     def symbol_set(self, identifier: str | None) -> SymbolSet | None:
         """Look one symbol set up by identifier, or take the only one there is."""
@@ -344,6 +426,25 @@ class GameMath:
     def reel_strip(self, identifier: str) -> ReelStrip | None:
         """Look one strip up by identifier."""
         return next((s for s in self.reel_strips if s.identifier == identifier), None)
+
+    def orb_values(
+        self, symbol_kind: str, *, context: str = "BG", bet: int | None = None
+    ) -> OrbValueTable | None:
+        """Look one orb's value table up by kind, context and bet rung."""
+        return next(
+            (
+                table
+                for table in self.orb_value_tables
+                if table.symbol_kind == symbol_kind
+                and table.context == context
+                and (bet is None or table.bet == bet)
+            ),
+            None,
+        )
+
+    def jackpot_tier(self, code: int) -> JackpotTier | None:
+        """Look one jackpot level up by its negative orb code."""
+        return next((tier for tier in self.jackpot_tiers if tier.code == code), None)
 
     def reel_strip_set(self, identifier: str | None) -> ReelStripSet | None:
         """Look one set of reels up by identifier."""
@@ -603,6 +704,93 @@ def _paytable_refs(root: ElementTree.Element, *, path: Path) -> tuple[PaytableRe
     return tuple(refs)
 
 
+def _orb_value_tables(root: ElementTree.Element) -> tuple[OrbValueTable, ...]:
+    """Read ``<WeightedTableList>``, keeping only the tables that describe an
+    orb's possible values -- ``BG_SCPearlCredit_88`` and its siblings. The list
+    also carries unrelated mechanics (``BG_SplitPearl_0``, ``ThrowTrigger_*``)
+    under the same element shape, so a table earns a place here by its
+    identifier matching the naming convention, not by its shape alone."""
+    tables = _find(root, "WeightedTableList")
+    if tables is None:
+        return ()
+
+    found: list[OrbValueTable] = []
+    for table in _children(tables, "WeightedTable"):
+        identifier = _text(table, "Identifier")
+        if identifier is None:
+            continue
+        match = _ORB_VALUE_TABLE.match(identifier)
+        if match is None:
+            continue
+
+        weights: list[OrbValueWeight] = []
+        elements = _child(table, "WeightedElementList")
+        for item in (
+            _children(elements, "WeightedElement") if elements is not None else []
+        ):
+            value = _int(item, "Value")
+            weight = _int(item, "Weight")
+            if value is None or weight is None:
+                raise GameMathError(
+                    f"a <WeightedElement> in {identifier} has no <Value> or <Weight>"
+                )
+            weights.append(OrbValueWeight(value=value, weight=weight))
+
+        found.append(
+            OrbValueTable(
+                identifier=identifier,
+                context=match["context"],
+                symbol_kind=match["kind"],
+                bet=int(match["bet"]),
+                weights=tuple(weights),
+            )
+        )
+    return tuple(found)
+
+
+def _jackpot_tiers(root: ElementTree.Element) -> tuple[JackpotTier, ...]:
+    """Read ``<ValueTableList>``'s ``Jackpots_*`` tables into one row per level:
+    its reset credits (``Jackpots_N``) and its label (``Jackpots_Type``, paired
+    positionally with ``Jackpots_Level``)."""
+    tables = _find(root, "ValueTableList")
+    if tables is None:
+        return ()
+
+    levels: tuple[int, ...] = ()
+    types: tuple[str, ...] = ()
+    resets: dict[int, int] = {}
+    for table in _children(tables, "ValueTable"):
+        identifier = _text(table, "Identifier")
+        if identifier is None:
+            continue
+        if identifier == "Jackpots_Level":
+            value_list = _child(table, "ValueList")
+            if value_list is not None:
+                levels = tuple(int(v) for v in _texts(value_list, "Value"))
+            continue
+        if identifier == "Jackpots_Type":
+            string_list = _child(table, "StringValueList")
+            if string_list is not None:
+                types = _texts(string_list, "Value")
+            continue
+        match = _JACKPOT_VALUE_TABLE.match(identifier)
+        if match is None:
+            continue
+        value_list = _child(table, "ValueList")
+        values = _texts(value_list, "Value") if value_list is not None else ()
+        if values:
+            resets[-int(match["level"])] = int(values[0])
+
+    labels = dict(zip(levels, types, strict=False))
+    codes = set(resets) | set(levels)
+    return tuple(
+        JackpotTier(
+            code=code, reset_value=resets.get(code), type_label=labels.get(code)
+        )
+        for code in sorted(codes, reverse=True)
+    )
+
+
 def load_game_math(path: Path) -> GameMath:
     """Read one ``math.xml``."""
     root = _parse(path, what="math file")
@@ -645,4 +833,6 @@ def load_game_math(path: Path) -> GameMath:
         payline_combos=payline_combos,
         scatter_combos=scatter_combos,
         paytables=_paytable_refs(root, path=path),
+        orb_value_tables=_orb_value_tables(root),
+        jackpot_tiers=_jackpot_tiers(root),
     )

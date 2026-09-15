@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { GameSelector } from "@/features/games/game-selector";
+import { OrbValueTable } from "@/features/paytable/orb-value-table";
 import { PaylineComboTable } from "@/features/paytable/payline-combo-table";
 import { PaytableSummary } from "@/features/paytable/paytable-summary";
 import { ReelStripTable } from "@/features/paytable/reel-strip-table";
@@ -60,11 +61,12 @@ export function GameConfigPage() {
             onRefresh={refresh}
             isFetching={isFetching}
           />
-          {/* Read down: which paytable, where its lines run, what they pay,
-              and what sits on each reel. The strips come last because they are
-              by far the longest thing here. */}
+          {/* Read down: which paytable, where its lines run, what they pay
+              (along a line, then on one orb), and what sits on each reel. The
+              strips come last because they are by far the longest thing here. */}
           <WinGeometryCard geometry={data.win_geometry} />
           <PaylineComboTable math={data.math} />
+          <OrbValueTable math={data.math} />
           <ReelStripTable math={data.math} />
         </>
       )}

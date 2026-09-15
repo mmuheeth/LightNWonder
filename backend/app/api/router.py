@@ -17,6 +17,7 @@ from app.api.endpoints import (
     paylines,
     paytable,
     roi,
+    scatter_validation,
 )
 
 api_router = APIRouter()
@@ -41,4 +42,7 @@ api_router.include_router(
 )
 api_router.include_router(
     evaluate_screen.router, prefix="/evaluate-screen", tags=["evaluate-screen"]
+)
+api_router.include_router(
+    scatter_validation.router, prefix="/scatter-validation", tags=["scatter-validation"]
 )

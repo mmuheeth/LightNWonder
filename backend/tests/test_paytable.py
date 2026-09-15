@@ -139,6 +139,58 @@ MATH_XML = """<?xml version="1.0" encoding="utf-8"?>
       </ComboSetIDList>
     </Paytable>
   </PaytableList>
+  <!-- Nested exactly as FortuneOx's own math.xml carries it: inside BonusInfo,
+       not at the top level like every other list this file reads. -->
+  <BonusInfo>
+    <WeightedTableList>
+      <WeightedTable>
+        <Identifier>BG_SCPearlCredit_88</Identifier>
+        <WeightedElementList>
+          <WeightedElement><Weight>500000</Weight><Value>-5</Value></WeightedElement>
+          <WeightedElement><Weight>4500000</Weight><Value>100</Value></WeightedElement>
+          <WeightedElement><Weight>5000000</Weight><Value>50</Value></WeightedElement>
+        </WeightedElementList>
+      </WeightedTable>
+      <WeightedTable>
+        <Identifier>BG_NonSCPearlCredit_88</Identifier>
+        <WeightedElementList>
+          <WeightedElement><Weight>1000000</Weight><Value>100</Value></WeightedElement>
+          <WeightedElement><Weight>9000000</Weight><Value>50</Value></WeightedElement>
+        </WeightedElementList>
+      </WeightedTable>
+      <!-- The same orb, one bet rung up: values doubled, same shares, so a
+           test can tell which rung's table it was actually given. -->
+      <WeightedTable>
+        <Identifier>BG_NonSCPearlCredit_176</Identifier>
+        <WeightedElementList>
+          <WeightedElement><Weight>1000000</Weight><Value>200</Value></WeightedElement>
+          <WeightedElement><Weight>9000000</Weight><Value>100</Value></WeightedElement>
+        </WeightedElementList>
+      </WeightedTable>
+      <!-- A Hold & Spin table for the same orb, at the same bet; kept out of
+           the response, which is base-game only. -->
+      <WeightedTable>
+        <Identifier>HNS_SCPearlCredit_88</Identifier>
+        <WeightedElementList>
+          <WeightedElement><Weight>1</Weight><Value>9999</Value></WeightedElement>
+        </WeightedElementList>
+      </WeightedTable>
+    </WeightedTableList>
+    <ValueTableList>
+      <ValueTable>
+        <Identifier>Jackpots_Level</Identifier>
+        <ValueList><Value>-5</Value></ValueList>
+      </ValueTable>
+      <ValueTable>
+        <Identifier>Jackpots_Type</Identifier>
+        <StringValueList><Value>JP5</Value></StringValueList>
+      </ValueTable>
+      <ValueTable>
+        <Identifier>Jackpots_5</Identifier>
+        <ValueList><Value>2500</Value></ValueList>
+      </ValueTable>
+    </ValueTableList>
+  </BonusInfo>
 </GameMath>
 """
 
@@ -225,6 +277,22 @@ def log_line(paytable: str, *, denom: str = "1.000") -> str:
         "08/24/26 19:06:03.063 01 FortuneOx:22372 DBG: [WagerGameApp.UpdatePayTable] "
         f"current denom[{denom}] current paytableId[{paytable}] "
         "current supported denoms[1.000,2.000]"
+    )
+
+
+def bet_line(bet: int, *, denom: str = "1.000", units: int = 88) -> str:
+    """One real ``BetChangeMsg`` line, which is where the live bet comes from.
+
+    ``totalBetValue`` is ``bet`` scaled by ``denom`` -- 352 at denom 2.000 for
+    a credit rung of 176 -- exactly as the game's own log reports it, so a
+    test writing a non-default ``denom`` still lands on the rung it asked for.
+    """
+    total_bet = bet * float(denom)
+    return (
+        "08/24/26 19:06:04.000 00 FortuneOx:22372 DBG: ServerProxy.ClientToServerSend: "
+        f"GDK.Common.ServerAPI.BetChangeMsg betData: denom: {denom} units: {units} "
+        f"unitCost: {units} betsPerUnit: {denom} customTotalBet: 0.000 "
+        f"totalBetCost: {total_bet:.3f} totalBetValue: {total_bet:.3f}"
     )
 
 
@@ -784,6 +852,133 @@ async def test_scatter_combos_are_kept_apart_from_line_combos(
             "bonus_code": 1,
         }
     ]
+
+
+async def test_orb_value_tables_are_kept_apart_from_scatter_combos(
+    client: AsyncClient, active_game
+) -> None:
+    """A landed orb's possible values are a different question from a count of
+    them anywhere on screen -- the two must not collapse into one table."""
+    active_game()
+
+    math = assert_success((await client.get(f"{API}/")).json())["math"]
+    by_kind = {table["symbol_kind"]: table for table in math["orb_value_tables"]}
+
+    assert set(by_kind) == {"SC", "NonSC"}
+    assert by_kind["SC"]["bet"] == 88
+    # Highest credit amount first, the jackpot tier last.
+    assert by_kind["SC"]["rows"] == [
+        {
+            "value": 100,
+            "jackpot_code": None,
+            "jackpot_label": None,
+            "weight": 4500000,
+            "probability": 0.45,
+        },
+        {
+            "value": 50,
+            "jackpot_code": None,
+            "jackpot_label": None,
+            "weight": 5000000,
+            "probability": 0.5,
+        },
+        {
+            "value": None,
+            "jackpot_code": -5,
+            "jackpot_label": "JP5",
+            "weight": 500000,
+            "probability": 0.05,
+        },
+    ]
+    # EV = 100*0.45 + 50*0.5 + 2500*0.05 = 195.0
+    assert by_kind["SC"]["expected_value"] == 195.0
+
+
+async def test_orb_value_tables_are_base_game_only_at_the_paytables_minimum_bet(
+    client: AsyncClient, active_game
+) -> None:
+    """The maths carries the same orb's Hold & Spin table too, at the same bet
+    -- surfacing both would be two near-identical tables on one card."""
+    active_game()
+
+    math = assert_success((await client.get(f"{API}/")).json())["math"]
+
+    assert len(math["orb_value_tables"]) == 2
+    values = {
+        row["value"] for table in math["orb_value_tables"] for row in table["rows"]
+    }
+    assert 9999 not in values
+
+
+async def test_orb_value_tables_follow_the_logs_last_bet(
+    client: AsyncClient, active_game, tmp_path: Path
+) -> None:
+    """The player raised their bet to 176 mid-session; the log says so, and the
+    orb table shown has to move with it rather than sticking on the minimum."""
+    active_game()
+    log = tmp_path / "FortuneOx_Client.log"
+    log.write_text(
+        "\n".join([log_line(LOGGED), bet_line(176, units=176)]), encoding="utf-8"
+    )
+
+    data = assert_success((await client.get(f"{API}/")).json())
+
+    assert data["bet_config"]["current_bet"] == 176
+    assert data["bet_config"]["current_bet_source"] == "log"
+    assert data["bet_config"]["unit_cost"] == 88  # the folder's own minimum, unmoved
+
+    by_kind = {
+        table["symbol_kind"]: table for table in data["math"]["orb_value_tables"]
+    }
+    assert by_kind["NonSC"]["bet"] == 176
+    # Same shares as the bet-88 table, values doubled -- proof it is a
+    # different table and not the minimum-bet one relabelled.
+    assert by_kind["NonSC"]["rows"][0]["value"] == 200
+    assert by_kind["NonSC"]["rows"][1]["value"] == 100
+
+
+async def test_orb_value_tables_fall_back_to_the_minimum_bet_with_no_log(
+    client: AsyncClient, active_game
+) -> None:
+    """No ``BetChangeMsg`` has ever been logged -- the only bet known to be
+    live is the paytable's own declared minimum."""
+    active_game()
+
+    data = assert_success((await client.get(f"{API}/")).json())
+
+    assert data["bet_config"]["current_bet"] == 88
+    assert data["bet_config"]["current_bet_source"] == "unit_cost"
+
+    by_kind = {
+        table["symbol_kind"]: table for table in data["math"]["orb_value_tables"]
+    }
+    assert by_kind["NonSC"]["bet"] == 88
+
+
+async def test_a_logged_bet_is_read_off_the_credit_rung_not_the_money_total(
+    client: AsyncClient, active_game, tmp_path: Path
+) -> None:
+    """``BetChangeMsg`` reports ``totalBetValue`` money-scaled by ``denom`` --
+    352 at denom 2 for a live bet of 176, exactly as FortuneOx's own log does
+    it. Reading ``totalBetValue`` as the bet outright would land on 352, which
+    matches no rung math.xml carries, and silently fall back to every bet
+    level's table at once -- this is the regression that fallback hides."""
+    active_game()
+    log = tmp_path / "FortuneOx_Client.log"
+    log.write_text(
+        "\n".join([log_line(LOGGED), bet_line(176, denom="2.000", units=40)]),
+        encoding="utf-8",
+    )
+
+    data = assert_success((await client.get(f"{API}/")).json())
+
+    assert data["bet_config"]["current_bet"] == 176
+
+    by_kind = {
+        table["symbol_kind"]: table for table in data["math"]["orb_value_tables"]
+    }
+    assert set(by_kind) == {"SC", "NonSC"}
+    assert by_kind["NonSC"]["bet"] == 176
 
 
 # --- win geometry ---------------------------------------------------------

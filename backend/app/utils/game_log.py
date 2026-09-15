@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 __all__ = [
+    "BET_CHANGED",
     "DEFAULT_RULES",
     "PAYTABLE_LOADED",
     "TOUCH_REGISTERED",
@@ -283,6 +284,18 @@ PAYTABLE_LOADED = re.compile(
 )
 
 
+# The game names the bet it just moved to here -- ``total_bet`` is the credit
+# amount math.xml's own "_88", "_176", ... orb value tables are keyed on, which
+# is what lets :mod:`app.services.paytable` show the orb table for the bet
+# actually in play rather than always the paytable's minimum. Shared with the
+# ``bet-changed`` rule below, the same relationship ``PAYTABLE_LOADED`` has with
+# ``paytable-changed``.
+BET_CHANGED = re.compile(
+    r"BetChangeMsg betData:\s*denom:\s*(?P<denom>[\d.]+)\s+"
+    r"units:\s*(?P<units>\d+).*?totalBetValue:\s*(?P<total_bet>[\d.]+)"
+)
+
+
 # Ordered (first match wins, narrow before broad) and deliberately a *visual* list
 # only -- internal bookkeeping the log names but that produces no frame
 # distinguishable from its neighbours is left out. ``capture=False`` keeps a rule in
@@ -340,10 +353,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
     # --- what the player set ----------------------------------------------
     EventRule(
         event="bet-changed",
-        pattern=re.compile(
-            r"BetChangeMsg betData:\s*denom:\s*(?P<denom>[\d.]+)\s+"
-            r"units:\s*(?P<units>\d+).*?totalBetValue:\s*(?P<total_bet>[\d.]+)"
-        ),
+        pattern=BET_CHANGED,
         summary="Bet changed to {total_bet} ({units} units at denom {denom})",
     ),
     EventRule(
