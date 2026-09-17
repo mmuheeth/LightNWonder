@@ -39,6 +39,105 @@ class CyclicEventSource(StrEnum):
     SAMPLED = "sampled"
 
 
+class CyclicFrameReading(BaseModel):
+    """What one *line* of the strip read as, on one captured frame.
+
+    One of these per line the strip draws, not one per frame: FortuneOx stacks
+    two, "LINE 25 PAYS 15" with "PLAY 880 CREDITS" beneath it, each cycling its
+    own messages. They are cropped and recognised separately because a caption
+    is read recognise-only, and handing the recogniser both at once reads one
+    wrong line rather than two right ones -- see CYCLIC_MESSAGES_TEXT_REGIONS.
+
+    Filled in by the reader worker *after* the frame was taken, never by the
+    capture loop -- so an event carries a screenshot the moment OBS wrote one
+    and gains this a beat later. A frame whose reading is still ``null`` has
+    not reached the front of the queue yet; one whose ``error`` is set reached
+    it and could not be read, which is a different fact and rendered as one.
+    """
+
+    text: str = Field(description="What Paddle read, verbatim and uncorrected.")
+    repaired: str = Field(
+        default="",
+        description=(
+            "The same reading with its number slots and vocabulary put right "
+            "against the strip's known wording -- the same repair the clip "
+            "reader applies, and kept beside the raw text for the same reason: "
+            "a repair moves a character to the class the grammar demands, so "
+            "it can be confidently wrong about which digit."
+        ),
+    )
+    confidence: float = Field(
+        ge=0,
+        le=100,
+        description=(
+            "Lowest per-word confidence, 0-100. Paddle's own 0-1 score scaled "
+            "onto Tesseract's range, so one floor serves every reading in this "
+            "feature whichever engine produced it."
+        ),
+    )
+    reliable: bool = Field(
+        description=(
+            "Whether the confidence cleared CYCLIC_MESSAGES_TEXT_MIN_CONFIDENCE. "
+            "An unreliable reading keeps its text -- see the settings note; "
+            "that floor was measured on Tesseract and not on Paddle."
+        )
+    )
+    engine: str = Field(
+        default="paddle",
+        description=(
+            "Which engine read it. Always 'paddle' for a live frame -- the "
+            "clip reader's Tesseract option is not offered here, because a "
+            "reader that has to keep up with the capture loop is not the place "
+            "to shell out to a subprocess per frame."
+        ),
+    )
+    region: str = Field(
+        default="",
+        description=(
+            "Named game-config region this line was cropped from, one of "
+            "CYCLIC_MESSAGES_TEXT_REGIONS. On the reading rather than the run "
+            "because a frame has several: it is what says which line of the "
+            "strip the text came off."
+        ),
+    )
+    key: str = Field(
+        default="",
+        description=(
+            "What two frames have to share to be showing the same caption -- "
+            "the repaired text with case, spacing and punctuation removed. "
+            "Sampling runs faster than the strip changes on purpose, so most "
+            "captions are caught by two or three frames in a row, and this is "
+            "what collapses those into one entry. "
+            "On the payload rather than worked out by the reader, because the "
+            "rule is subtle enough to be worth having only once: it is "
+            "deliberately *not* tolerant of a wrong character, since two "
+            "genuinely different captions here differ by exactly one ('Line 1 "
+            "Pays 250' against 'Line 4 Pays 250') and any slack wide enough to "
+            "merge a misread is wide enough to merge two real messages. Empty "
+            "for a frame that read nothing, which is what stops blanks "
+            "grouping with each other or bridging two showings of one line."
+        ),
+    )
+    crop: str | None = Field(
+        default=None,
+        description=(
+            "Filename of the caption crop, written beside the screenshot and "
+            "served by the same route. There so a wrong reading can be told "
+            "apart from a badly aimed region without re-cropping anything."
+        ),
+    )
+    read_ms: int = Field(
+        default=0, ge=0, description="How long cropping and recognising took."
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Why this frame could not be read. Set instead of dropping the "
+            "reading, so a frame the reader choked on is visible as one."
+        ),
+    )
+
+
 class CyclicEvent(BaseModel):
     """One recognised strip change and the screenshot taken for it."""
 
@@ -101,9 +200,22 @@ class CyclicEvent(BaseModel):
         )
     )
 
+    readings: list[CyclicFrameReading] = Field(
+        default_factory=list,
+        description=(
+            "What each line of the strip read as on this frame, top line "
+            "first -- one entry per CYCLIC_MESSAGES_TEXT_REGIONS. Empty while "
+            "nothing has read it: the frame is still waiting for its pass to "
+            "close, live reading is off, or the event never took a screenshot. "
+            "A list rather than one reading because the strip is stacked and "
+            "the lines cycle independently, so 'what was on screen' is all of "
+            "them together."
+        ),
+    )
+
 
 class CyclicRunVideo(BaseModel):
-    """One recording: a single win presentation, not the whole run.
+    """One recording: a single window of the strip, not the whole run.
 
     Recording opens on ``cyclic-game-pays`` and closes on
     ``cyclic-line-pays-cycle-finished``, so a clip is exactly the window the
@@ -132,13 +244,23 @@ class CyclicRunVideo(BaseModel):
             "every screenshot, so this is reported rather than raised."
         ),
     )
+    kind: str = Field(
+        default="win-video",
+        description=(
+            "Which strip this is a recording of: 'win-video' for a win paying "
+            "out, 'idle-video' for the between-spins strip that follows a spin "
+            "(after a loss, or after a win is taken). A run holds both kinds "
+            "and they are different things to watch, so the clip says which "
+            "rather than leaving it to be guessed from where it sits."
+        ),
+    )
     cycle: int | None = Field(
         default=None,
         ge=1,
         description=(
             "Cyclic sequence this clip covers, matching the ``cycle`` on the "
-            "events of that win presentation -- so a clip can be shown beside "
-            "the frames taken inside it."
+            "events of that window -- so a clip can be shown beside the frames "
+            "taken inside it."
         ),
     )
     started_at: datetime | None = Field(
@@ -427,8 +549,168 @@ class CyclicStatus(BaseModel):
     video_count: int = Field(
         default=0, ge=0, description="Clips saved so far, one per win presentation."
     )
+    reading: bool = Field(
+        default=False,
+        description=(
+            "Whether captions are being read *right now*. Capture is the only "
+            "priority while a pass is going, so reading never runs alongside "
+            "it -- this goes true only once a pass has closed, for exactly as "
+            "long as it takes to read that pass's frames in order, and false "
+            "again once it has (or once nothing was captured to read)."
+        ),
+    )
+    no_pay_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Spins this run that paid nothing. Those show no win strip at all, "
+            "so they are recorded as a marker with no screenshot and open no "
+            "sequence -- but they are counted, because a run capturing nothing "
+            "because the game keeps losing and a run capturing nothing because "
+            "it has broken look identical otherwise. The majority case on "
+            "FortuneOx: 29 losing spins against 26 winning ones in one log."
+        ),
+    )
+    queue_depth: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Frames captured in the pass still going, or read so far out of "
+            "the pass just closed while `reading` is true. Always 0 once a "
+            "pass's reading has finished -- there is no persistent backlog "
+            "that can grow, because nothing competes with capture for OBS or "
+            "the CPU until capture is done."
+        ),
+    )
+    read_count: int = Field(
+        default=0, ge=0, description="Frames read so far this run, across every pass."
+    )
+    sample_rate: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Frames a second the capture loop actually achieved on the pass "
+            "running now, or the last one. Reported because "
+            "CYCLIC_MESSAGES_SAMPLE_INTERVAL_SECONDS is a floor and not a "
+            "rate -- an OBS round trip is what decides this."
+        ),
+    )
     recent_events: list[CyclicEvent] = Field(
         default_factory=list, description="The most recent events, newest last."
+    )
+    errors: list[str] = Field(
+        default_factory=list, description="Non-fatal problems so far."
+    )
+
+
+class CyclicLiveView(BaseModel):
+    """The win presentation being captured right now, frame by frame.
+
+    Its own payload rather than a slice of :class:`CyclicRunDetail`, for two
+    reasons. A run is every event since Start -- hours of attract, thousands of
+    frames -- and a page polling twice a second wants only the pass in front of
+    it. And the manifest on disk is written at most once a second
+    (CYCLIC_MESSAGES_MANIFEST_INTERVAL_SECONDS), while this is read straight
+    off the live run, so a frame appears here the moment OBS wrote it rather
+    than at the next flush.
+    """
+
+    active: bool = Field(description="Whether a run is in progress at all.")
+    run_id: str | None = Field(default=None, description="Active run, if any.")
+    game: str | None = Field(default=None, description="Game it is following.")
+    cycle: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Cyclic sequence these frames belong to -- the win presentation "
+            "being captured, or the last one that was. Null before the run has "
+            "seen a win."
+        ),
+    )
+    capturing: bool = Field(
+        default=False,
+        description=(
+            "Whether the capture loop is running *now*, i.e. the run is "
+            "between 'cyclic-game-pays' and the line messages finishing. False "
+            "with frames present means the pass is over and these are its "
+            "frames."
+        ),
+    )
+    reading: bool = Field(
+        default=False,
+        description=(
+            "Whether captions for this pass are being read *right now* -- true "
+            "only once the pass has closed and only until every one of its "
+            "frames has been read, since reading never runs while capture is "
+            "still going. False with `capturing` also false and frames present "
+            "means either the pass is fully read or nothing is reading it -- "
+            "`errors` says which."
+        ),
+    )
+    spins_without_pay: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Spins since the last win, all of which paid nothing. A strip that "
+            "shows no win messages is what a losing spin looks like, so this is "
+            "how a view with no frames on it says 'nothing has paid yet' rather "
+            "than leaving the reader to wonder whether tracking is working."
+        ),
+    )
+    queue_depth: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "This pass's frames not yet read. Climbs to `frame_count` the "
+            "moment the pass closes (nothing was read while it was open) and "
+            "counts down to 0 as `reading` works through them in order."
+        ),
+    )
+    read_count: int = Field(
+        default=0, ge=0, description="This run's frames read so far, across every pass."
+    )
+    sample_rate: float = Field(
+        default=0.0, ge=0, description="Frames a second the capture loop achieved."
+    )
+    sample_interval_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "The interval the capture loop was asked for, beside the rate it "
+            "managed. The pair is the coverage question and neither half "
+            "answers it alone: a message stays on the strip for a bounded time "
+            "(1.3-1.8s on FortuneOx), so frames landing further apart than "
+            "that skip messages with nothing on the record saying so. "
+            "`coverage_warning` is this comparison already made."
+        ),
+    )
+    coverage_warning: str | None = Field(
+        default=None,
+        description=(
+            "Set when frames actually landed far enough apart that the pass "
+            "may have skipped messages -- the one failure this feature could "
+            "otherwise never report, since a missed message looks exactly like "
+            "a message the strip never showed. Null when the loop kept up. The "
+            "clip the run recorded covers the pass either way, so 'Read the "
+            "messages' remains the complete answer when this is set."
+        ),
+    )
+    frame_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Frames captured in this pass, which can exceed the length of "
+            "`frames` -- that list is capped at CYCLIC_MESSAGES_LIVE_FRAMES."
+        ),
+    )
+    frames: list[CyclicEvent] = Field(
+        default_factory=list,
+        description=(
+            "The pass's captured frames in order, newest last, capped to the "
+            "most recent CYCLIC_MESSAGES_LIVE_FRAMES. Whole events rather than "
+            "a reduced shape, so the live view and the run view render the "
+            "same thing from the same fields."
+        ),
     )
     errors: list[str] = Field(
         default_factory=list, description="Non-fatal problems so far."

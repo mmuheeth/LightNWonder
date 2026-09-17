@@ -2,15 +2,12 @@
  * react-query hooks for Cyclic Messages. Same shape as
  * `features/event-capture/use-event-capture.js`, including its functional
  * `refetchInterval` — nothing polls unless a run is actually going.
- *
- * The interval is tighter than event capture's 2s: a sampled line-message pass
- * lasts under 7s and takes a frame roughly every second, so a 2s poll would
- * show the panel's "latest messages" list jumping several at a time.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  getCyclicLive,
   getCyclicRun,
   getCyclicStatus,
   listCyclicRuns,
@@ -23,6 +20,19 @@ import { queryKeys } from "@/lib/query-keys";
 const ACTIVE_INTERVAL_MS = 1_000;
 const IDLE_STALE_MS = 30_000;
 
+/**
+ * How often the live view refetches while a presentation is being captured or
+ * its just-closed pass is being read.
+ *
+ * Tighter than the status poll because this is the view whose whole point is
+ * that a frame shows up as soon as it exists. Capture and reading never run at
+ * the same time — see the backend's own note on `CYCLIC_MESSAGES_LIVE_READ` —
+ * so this one interval covers both: 500ms is well inside the 2s a frame is
+ * captured at and short enough to show each caption landing during the batch
+ * read that follows a pass.
+ */
+const CAPTURING_INTERVAL_MS = 500;
+
 /** Poll the run in progress. */
 export function useCyclicStatus() {
   return useQuery({
@@ -31,6 +41,29 @@ export function useCyclicStatus() {
     refetchInterval: (query) => (query.state.data?.active ? ACTIVE_INTERVAL_MS : false),
     // Idle status is not a live signal; a remount inside the window is cached.
     staleTime: IDLE_STALE_MS,
+  });
+}
+
+/**
+ * Poll the presentation being captured right now.
+ *
+ * Three speeds rather than two, because "a run is going" and "a win is being
+ * captured" are different states: half a second while frames are arriving, the
+ * ordinary status interval while a run idles between wins (readings for the
+ * last pass can still be landing), and nothing at all when no run is going.
+ *
+ * @param {boolean} isActive whether a run is in progress, from `useCyclicStatus`
+ */
+export function useCyclicLive(isActive) {
+  return useQuery({
+    queryKey: queryKeys.cyclicMessages.live(),
+    queryFn: ({ signal }) => getCyclicLive({ signal }),
+    enabled: Boolean(isActive),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data?.active) return false;
+      return data.capturing ? CAPTURING_INTERVAL_MS : ACTIVE_INTERVAL_MS;
+    },
   });
 }
 

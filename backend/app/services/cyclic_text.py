@@ -26,7 +26,7 @@ Four things it exists to get right:
   of them is still caught; consecutive readings of one caption then collapse
   into one message, and it is that collapse -- never the interval -- that
   decides how many messages there were. What counts as "one caption" is
-  :func:`_key`, and it is deliberately narrower than it could be.
+  :func:`caption_key`, and it is deliberately narrower than it could be.
 * **Two engines, and the reading says which one answered.** PaddleOCR reads a
   caption by default and Tesseract is still selectable
   (``CYCLIC_MESSAGES_TEXT_ENGINE``), because they want opposite things of a
@@ -61,11 +61,14 @@ Four things it exists to get right:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+import numpy
 from PIL import Image
 
 from app.config.game_config import GameConfig, GameConfigError, load_game_config
@@ -95,6 +98,46 @@ PADDLE = "paddle"
 TESSERACT = "tesseract"
 
 
+def repair(text: str) -> str:
+    """One reading put right against the strip's known wording, or nothing at
+    all if it was too short to be a caption.
+
+    Module-level rather than a method because both readers apply it -- the
+    clip reader per decoded frame and the live reader per captured frame --
+    and two copies of "what the strip is allowed to say" would eventually
+    disagree.
+    """
+    if not believable(text):
+        return ""
+    return caption_text.repair(
+        text,
+        vocabulary=settings.cyclic_messages_text_vocabulary,
+        number_after=settings.cyclic_messages_text_number_after,
+    )
+
+
+def believable(text: str) -> bool:
+    """Whether a reading is long enough to be one of the strip's captions.
+
+    The strip leaves bands unused -- the top one for a whole pass between
+    spins -- and a recogniser handed an empty crop answers with a character it
+    thinks it found in the artwork rather than with nothing. This is the cut
+    that throws those away, and it counts characters rather than trusting the
+    confidence because the confidence cannot tell them apart: see
+    ``CYCLIC_MESSAGES_TEXT_MIN_CHARACTERS`` for the measurement, where a stray
+    "50" outscored the reliability floor.
+    """
+    characters = sum(1 for character in text if character.isalnum())
+    return characters >= settings.CYCLIC_MESSAGES_TEXT_MIN_CHARACTERS
+
+
+def reliable(confidence: float) -> bool:
+    """Whether a reading cleared the confidence floor. One floor for both
+    readers, on the 0-100 scale Paddle's own 0-1 is put onto at the point of
+    reading."""
+    return confidence >= settings.CYCLIC_MESSAGES_TEXT_MIN_CONFIDENCE
+
+
 @dataclass(frozen=True)
 class _Read:
     """One frame's reading, before it is grouped with its neighbours."""
@@ -116,15 +159,11 @@ class _Read:
         reader has to be given, and the repair is derived from it every time
         instead of being carried alongside and able to disagree.
         """
-        return caption_text.repair(
-            self.text,
-            vocabulary=settings.cyclic_messages_text_vocabulary,
-            number_after=settings.cyclic_messages_text_number_after,
-        )
+        return repair(self.text)
 
     @property
     def reliable(self) -> bool:
-        return self.confidence >= settings.CYCLIC_MESSAGES_TEXT_MIN_CONFIDENCE
+        return reliable(self.confidence)
 
 
 @dataclass(frozen=True)
@@ -214,30 +253,40 @@ def _region_of(config: GameConfig, region: str) -> image_roi.Roi:
 
 @dataclass(frozen=True)
 class _Caption:
-    """One frame cut down to just its caption, before anything reads it."""
+    """One frame cut down to just its caption, before anything reads it.
+
+    ``images`` is one crop per line the strip draws, top first -- the strip is
+    stacked and each line has to be recognised on its own. Which lines those
+    are depends on which strip the clip is of: see :func:`_clip_regions`.
+    """
 
     index: int
     at_seconds: float
-    image: Image.Image
+    images: tuple[Image.Image, ...]
 
 
-def _captions(path: Path, region: image_roi.Roi, interval: float) -> list[_Caption]:
-    """Decode the clip and keep only the caption out of each sampled frame.
+def _captions(
+    path: Path, regions: tuple[image_roi.Roi, ...], interval: float
+) -> list[_Caption]:
+    """Decode the clip and keep only the caption bands out of each sampled frame.
 
     Cropping here rather than after is what makes the reading affordable: a
     1080x1920 frame is 6MB and a caption is a few kilobytes, so holding a 90s
     clip's worth of the first is over half a gigabyte and holding the same
     number of the second is nothing.
 
-    The content box is found per frame rather than once for the clip. It costs
-    little beside the decode, and a clip whose window changed shape part-way
-    through would otherwise crop the wrong place for the rest of its length.
+    The content box is found per frame rather than once for the clip, and once
+    for all of that frame's bands. It costs little beside the decode, and a
+    clip whose window changed shape part-way through would otherwise crop the
+    wrong place for the rest of its length.
     """
     captions: list[_Caption] = []
     for frame in video_frames.sample(path, interval_seconds=interval):
         content = roi_service.content_box(frame.image)
-        crop = frame.image.crop(region.to_box_within(content.box))
-        captions.append(_Caption(frame.index, frame.at_seconds, crop))
+        crops = tuple(
+            frame.image.crop(region.to_box_within(content.box)) for region in regions
+        )
+        captions.append(_Caption(frame.index, frame.at_seconds, crops))
     return captions
 
 
@@ -254,6 +303,47 @@ def _blank(caption: _Caption, exc: Exception) -> _Read:
     return _Read(caption.index, caption.at_seconds, "", 0.0)
 
 
+def _clip_regions(clip: CyclicRunVideo) -> tuple[str, ...]:
+    """Which of the strip's lines this clip's own strip draws.
+
+    A run holds two kinds of clip and they are recordings of different things:
+    a win presentation uses one line, and the between-spins strip two. Reading
+    an idle clip against the win presentation's single region is how "Read the
+    messages" came back with nothing at all from a losing spin -- the band it
+    was cropping is the one that strip leaves empty.
+    """
+    if clip.kind == "idle-video":
+        return settings.cyclic_messages_idle_regions
+    return settings.cyclic_messages_text_regions
+
+
+def _joined(caption: _Caption, lines: list[tuple[str, float]]) -> _Read:
+    """One frame's bands as a single reading.
+
+    The bands are joined rather than kept apart because everything downstream
+    of here -- :func:`_group`, :func:`_distinct`, the run view's list -- asks
+    "what did the strip say at this moment", and on a stacked strip the answer
+    is all of its lines together. Two captions differing only on the second
+    line are two different things the strip showed, and a reading that kept
+    only the first would merge them.
+
+    **Bands that read nothing are dropped, not joined as blanks**, and their
+    confidence with them: the strip does not use every line at every moment --
+    between spins FortuneOx leaves the top one empty for a whole pass -- so an
+    unused band is not a bad reading, and letting its 0 through
+    :func:`_worst` would mark every frame of that pass unreliable.
+    """
+    said = [(t, c) for t, c in lines if believable(t)]
+    if not said:
+        return _Read(caption.index, caption.at_seconds, "", 0.0)
+    return _Read(
+        caption.index,
+        caption.at_seconds,
+        " ".join(text for text, _ in said),
+        _worst(tuple(confidence for _, confidence in said)),
+    )
+
+
 def _worst(confidences: tuple[float, ...]) -> float:
     """The *lowest* per-word confidence, not the mean: one mangled word is what
     makes a caption wrong, and an average hides it behind the words that read
@@ -264,14 +354,20 @@ def _worst(confidences: tuple[float, ...]) -> float:
 def _read_tesseract(
     caption: _Caption, *, executable: Path, options: ocr.OcrOptions
 ) -> _Read:
-    """Read one caption with Tesseract."""
-    try:
-        result = ocr.read_image(caption.image, executable=executable, options=options)
-    except ocr.OcrError as exc:
-        return _blank(caption, exc)
-
-    confidence = _worst(tuple(word.confidence for word in result.words))
-    return _Read(caption.index, caption.at_seconds, result.text.strip(), confidence)
+    """Read every band of one caption with Tesseract."""
+    lines: list[tuple[str, float]] = []
+    for image in caption.images:
+        try:
+            result = ocr.read_image(image, executable=executable, options=options)
+        except ocr.OcrError as exc:
+            return _blank(caption, exc)
+        lines.append(
+            (
+                result.text.strip(),
+                _worst(tuple(word.confidence for word in result.words)),
+            )
+        )
+    return _joined(caption, lines)
 
 
 def _read_paddle(caption: _Caption, *, options: paddle_ocr.PaddleLineOptions) -> _Read:
@@ -285,16 +381,23 @@ def _read_paddle(caption: _Caption, *, options: paddle_ocr.PaddleLineOptions) ->
     Taking the worst "word" is the same rule as the Tesseract path and means
     the same thing, though a recognise-only read returns just the one.
     """
-    try:
-        result = paddle_ocr.read_line(caption.image, options=options)
-    except ocr.OcrError as exc:
-        return _blank(caption, exc)
-
-    # Scaled onto Tesseract's 0-100 at the point of reading, so the floor, the
-    # `reliable` flag and the payload all mean one thing whichever engine
-    # answered -- the same conversion `ocr._read_tile_paddle` makes for an orb.
-    confidence = _worst(tuple(word.confidence * 100.0 for word in result.words))
-    return _Read(caption.index, caption.at_seconds, result.text.strip(), confidence)
+    lines: list[tuple[str, float]] = []
+    for image in caption.images:
+        try:
+            result = paddle_ocr.read_line(image, options=options)
+        except ocr.OcrError as exc:
+            return _blank(caption, exc)
+        # Scaled onto Tesseract's 0-100 at the point of reading, so the floor,
+        # the `reliable` flag and the payload all mean one thing whichever
+        # engine answered -- the same conversion `ocr._read_tile_paddle` makes
+        # for an orb.
+        lines.append(
+            (
+                result.text.strip(),
+                _worst(tuple(word.confidence * 100.0 for word in result.words)),
+            )
+        )
+    return _joined(caption, lines)
 
 
 def _tesseract_reader(executable: Path, config: GameConfig, region: str) -> _Reader:
@@ -346,8 +449,15 @@ def _read_all(captions: list[_Caption], reader: _Reader) -> list[_Read]:
         return list(pool.map(reader.read, captions))
 
 
-def _key(text: str) -> str:
+def caption_key(text: str) -> str:
     """What two readings have to share to be one message.
+
+    Public because the live capture groups by it too: a frame every 1.0s
+    against a message that dwells 1.3-1.8s catches most captions twice, and
+    those repeats are collapsed on the way to the screen. The rule for "the
+    same caption" has to be one rule -- a clip read back and the stills taken
+    of the same pass disagreeing about how many messages there were would be
+    worse than either being wrong alone.
 
     Case, spacing and punctuation only -- ``"Line B Pays 250 +"`` and
     ``"line b pays250"`` are one caption read twice, and holding out for an
@@ -376,7 +486,7 @@ def _group(reads: list[_Read]) -> list[CyclicTextMessage]:
     and one showing of the line lost.
 
     A message keeps the *best-scoring* of the readings that formed it. Once
-    grouping is by :func:`_key` the frames no longer agree character for
+    grouping is by :func:`caption_key` the frames no longer agree character for
     character, so one of the variants has to be the one shown, and the frame
     the engine was surest of is the better bet than whichever came first.
     Every variant survives on ``frames`` regardless.
@@ -392,7 +502,7 @@ def _group(reads: list[_Read]) -> list[CyclicTextMessage]:
             open_at = None
             continue
         repaired = read.repaired
-        key = _key(repaired)
+        key = caption_key(repaired)
         if open_at is not None and keys[open_at] == key:
             running = messages[open_at]
             better = read.confidence > running.confidence
@@ -425,7 +535,7 @@ def _distinct(messages: list[CyclicTextMessage]) -> list[CyclicTextCaption]:
     """Count the repeats instead of listing them.
 
     The strip loops, so one pass of a 40-line win says "Line 1 Pays 250" as
-    many times as the clip runs round. Grouping by :func:`_key` again -- not by
+    many times as the clip runs round. Grouping by :func:`caption_key` again -- not by
     the displayed text -- so a caption that read two ways still counts once,
     and the variant shown is the one the engine was surest of anywhere.
 
@@ -434,7 +544,7 @@ def _distinct(messages: list[CyclicTextMessage]) -> list[CyclicTextCaption]:
     """
     captions: dict[str, CyclicTextCaption] = {}
     for message in messages:
-        key = _key(message.text)
+        key = caption_key(message.text)
         seen = captions.get(key)
         if seen is None:
             captions[key] = CyclicTextCaption(
@@ -470,12 +580,23 @@ def _read(
     path = cyclic_service.file_path(run_id, file_name)
 
     config = _config_for(detail.game)
-    region_name = settings.CYCLIC_MESSAGES_TEXT_REGION
-    region = _region_of(config, region_name)
-    reader = engine.reader_for(config, region_name)
+    # The lines *this* clip's strip draws, not one fixed band: see
+    # :func:`_clip_regions`.
+    names = _clip_regions(clip)
+    if not names:
+        raise GameConfigInvalidError(
+            "No caption region is configured for this clip, so there is "
+            "nothing to read it out of"
+        )
+    regions = tuple(_region_of(config, name) for name in names)
+    region_name = ", ".join(names)
+    # Tesseract's per-region options are resolved against the first band; the
+    # bands of one strip are the same kind of crop drawn in the same face, so
+    # there is nothing per-band to resolve between them.
+    reader = engine.reader_for(config, names[0])
 
     info = video_frames.probe(path)
-    captions = _captions(path, region, interval)
+    captions = _captions(path, regions, interval)
     reads = _read_all(captions, reader)
 
     messages = _group(reads)
@@ -574,3 +695,481 @@ async def read_run(
     # blocking work, so it goes to a thread rather than stalling the loop --
     # the i-deck and the game clicks share this process.
     return await asyncio.to_thread(_read, run_id, cycle, interval, engine)
+
+
+# --- reading a frame while the run is still going -------------------------
+#
+# The clip reader above answers "what did the strip say" once the run is over,
+# off a video. This answers the same question frame by frame while the run is
+# still going, off the PNGs the capture loop is writing -- so a tester watching
+# a pass sees each caption named beside its own screenshot rather than waiting
+# for the clip and asking for it.
+#
+# Three things it does *not* do differently, deliberately. The region is the
+# same ``CYCLIC_MESSAGES_TEXT_REGION``; the repair is the same
+# :func:`repair`; and the confidence floor is the same :func:`reliable`. A
+# caption read live and the same caption read off the clip should differ
+# because the picture differed -- a still against an encoded frame -- and never
+# because two readers disagreed about what the strip is allowed to say.
+#
+# Paddle only, and that is the one real difference. The clip reader keeps
+# Tesseract selectable for a host that cannot install Paddle; a reader that has
+# to keep pace with the capture loop is not the place to start a subprocess per
+# frame, and a live reading that silently came from the other engine at a floor
+# measured for neither is worse than no live reading at all.
+
+
+CAPTION_CROP_SUFFIX = "_caption.png"
+"""Appended to a frame's stem for the crop written beside it."""
+
+
+@dataclass(frozen=True)
+class LiveRead:
+    """One *line* of a captured frame's strip, read from the file OBS wrote.
+
+    One of these per configured region, not per frame: the strip is stacked,
+    and each line is cropped and recognised on its own. See
+    ``CYCLIC_MESSAGES_TEXT_REGIONS``.
+    """
+
+    region: str
+    """Which named region this line was cropped from."""
+
+    text: str
+    """Verbatim, as Paddle returned it."""
+
+    repaired: str
+    confidence: float
+    """0-100, Paddle's own 0-1 scaled onto the range the floor is written in."""
+
+    reliable: bool
+    crop_name: str | None
+    """The caption crop written beside the frame, or None if it could not be."""
+
+    read_ms: int
+
+
+@dataclass(frozen=True)
+class LiveReader:
+    """A caption reader prepared once and then pointed at frame after frame.
+
+    Built by :func:`live_reader`, which resolves the region and *builds the
+    model* before handing one back -- the same pre-flight :func:`_resolve_engine`
+    does and for the same reason. Inside the worker loop a failure is caught per
+    frame and recorded on that frame, so a reader that was never going to work
+    would otherwise come back as a pass of blank captions rather than as one
+    error saying PaddleOCR is not installed.
+
+    Frozen and holding no per-frame state, so the one instance a run makes is
+    reused for every frame of every pass in it.
+    """
+
+    game: str
+    regions: dict[str, image_roi.Roi]
+    """Every line either window may ask for, by name.
+
+    Resolved once for the run and then *selected from* per frame, because the
+    two windows show different strips: a win presentation draws one line, and
+    the between-spins strip draws two. Which of these a frame wants is decided
+    by the window it was captured in and passed to :meth:`read` -- see
+    ``CYCLIC_MESSAGES_TEXT_REGIONS`` and ``CYCLIC_MESSAGES_IDLE_REGIONS``.
+    """
+
+    model: str
+    """The Paddle recognition model that will read, as it reported itself."""
+
+    options: paddle_ocr.PaddleLineOptions
+
+    def read(self, path: Path, names: tuple[str, ...]) -> list[LiveRead]:
+        """Crop every line of the strip out of one written frame and read each.
+
+        Blocking: opening the frame and running a recogniser over each line is
+        squarely thread work, and the caller hands it to one. Raises rather
+        than returning blanks on failure -- unlike the clip reader's
+        :func:`_blank`, because a live frame's error belongs on that frame
+        where it can be seen, not averaged into a run of empty captions.
+
+        ``names`` is which lines to read, in draw order -- the caller knows
+        which window the frame came from and this does not. Reading a band the
+        strip was not using costs a recogniser pass to be told there is nothing
+        there, which is why the win presentation asks for one line and the
+        between-spins strip for two.
+
+        The frame is opened and its content box found *once* for all the lines
+        rather than per line: they are rectangles on one picture, and letterbox
+        detection scans the whole of it.
+        """
+        return self.read_image(roi_service.open_frame(path), names, beside=path)
+
+    def regions_in(
+        self, names: tuple[str, ...]
+    ) -> tuple[tuple[str, image_roi.Roi], ...]:
+        """The named regions, paired with their rectangles, for a caller that
+        wants to *look* at the bands rather than read them."""
+        return tuple(
+            (name, self.regions[name]) for name in names if name in self.regions
+        )
+
+    def read_image(
+        self, image: Image.Image, names: tuple[str, ...], *, beside: Path
+    ) -> list[LiveRead]:
+        """The same read, over a frame already in hand.
+
+        The door for a frame that never was a file of its own -- one decoded
+        out of a clip, recovering the messages the live stills were too slow to
+        catch. ``beside`` is the picture this frame stands for on disk, which
+        is only where its caption crops are written.
+        """
+        started = time.perf_counter()
+        # Per frame rather than once for the clip, exactly as :func:`_captions`
+        # does it: the cost is nothing beside the decode, and a window that
+        # changed shape part-way through would otherwise crop the wrong place
+        # for the rest of it.
+        content = roi_service.content_box(image)
+
+        reads: list[LiveRead] = []
+        for name in names:
+            roi = self.regions.get(name)
+            if roi is None:
+                continue
+            crop = image.crop(roi.to_box_within(content.box))
+            crop_name = _write_crop(crop, beside, name)
+            result = paddle_ocr.read_line(crop, options=self.options)
+            confidence = _worst(tuple(word.confidence * 100.0 for word in result.words))
+            text = result.text.strip()
+            reads.append(
+                LiveRead(
+                    region=name,
+                    text=text,
+                    repaired=repair(text),
+                    confidence=confidence,
+                    reliable=reliable(confidence),
+                    crop_name=crop_name,
+                    read_ms=round((time.perf_counter() - started) * 1000),
+                )
+            )
+        return reads
+
+
+def _write_crop(crop: Image.Image, frame: Path, region: str) -> str | None:
+    """Leave one line's crop beside the frame it came out of.
+
+    Evidence, not output: a reading that says "Lne 1 Paye 25" is either a
+    misread or a badly aimed rectangle, and the two look identical until
+    somebody sees the pixels the recogniser was given. Named off the frame's
+    own stem *and* the region, so the strip's lines sort together beneath their
+    frame instead of overwriting one another.
+
+    Never raises -- losing the crop costs the diagnosis and not the reading.
+    """
+    target = frame.with_name(f"{frame.stem}_{region}{CAPTION_CROP_SUFFIX}")
+    try:
+        crop.save(target, format="PNG")
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not write the caption crop at %s: %s", target, exc)
+        return None
+    return target.name
+
+
+# --- noticing when the strip has come round ------------------------------
+#
+# The between-spins strip loops the same few messages until somebody spins, so
+# capturing it to a deadline means capturing the same three captions over and
+# over. Stopping once it has been round once is what keeps a run to one of
+# each -- but the capture loop cannot ask what a caption *says* to know that,
+# because reading is 1.5s a frame and deliberately does not run until the
+# window has closed.
+#
+# So the loop is spotted by the picture instead. Two crops of one caption are
+# the same pixels; two different captions are not, and by a wide margin. The
+# signature below is the caption bands reduced to a small normalised grid, and
+# measured on real frames of a FortuneOx run the two populations do not come
+# close to meeting:
+#
+#   the same caption, 0.4s and 2.0s apart      0.000, 0.000
+#   different captions of the same strip       0.135 - 0.593
+#
+# Normalising each grid to zero mean and unit deviation is what makes that gap
+# hold: it takes brightness and contrast out, so the strip fading between
+# messages does not read as a new one.
+_SIGNATURE_GRID = (64, 16)
+_SIGNATURE_REPEATED = 0.005
+"""Below which two frames are the same picture and reading both is wasted.
+
+Measured over a real 29-frame win clip: frames the encoder repeated outright
+score **0.000**, and the smallest genuine change -- one glyph, "Line 1 Pays 15"
+becoming "Line 2 Pays 15" -- scores **0.01**. The cut sits between, nearer the
+bottom, because the two errors are not equal: reading a frame twice costs a
+second and a half, and skipping one costs a message nobody will know was
+missed.
+"""
+
+_SIGNATURE_INK = 20.0
+"""Least contrast a band needs before it counts as showing a caption.
+
+The strip goes briefly blank changing from one message to the next, and a
+frame caught in that gap is not a caption -- it is the space between two. Told
+apart by how much the band varies, measured on real frames: 32-38 with a
+message on it, 10.0 caught mid-change, and 6.4 for a band this strip never
+uses at all. The cut sits between, with a wide margin either side.
+"""
+_SIGNATURE_SAME = 0.05
+"""Mean absolute difference below which two frames show the same caption.
+
+Sat between the two measured populations rather than near either: three times
+the largest "same" reading and a third of the smallest "different" one.
+"""
+
+
+def strip_rois(
+    game: str, names: tuple[str, ...]
+) -> tuple[tuple[str, image_roi.Roi], ...]:
+    """The named regions of one game, resolved without starting an OCR engine.
+
+    :func:`live_reader` needs PaddleOCR before it can hand anything back; this
+    is the same resolution for a caller that only wants to *look* at the
+    caption bands -- :class:`LoopWatch` does, and it runs inside the capture
+    loop where an engine has no business being.
+    """
+    config = _config_for(game)
+    return tuple((name, _region_of(config, name)) for name in names)
+
+
+@dataclass
+class LoopWatch:
+    """Notices when the strip has shown everything it has and come round again.
+
+    Fed one written frame at a time by the capture loop, in order.
+    :meth:`saw` answers "has the strip now been round once", which is when
+    there is nothing further to capture: everything after it is a repeat.
+
+    It counts *distinct consecutive* captions, so the several frames that catch
+    one message are one caption rather than several, and joining the strip
+    part-way through its cycle still measures a whole lap -- the lap closes
+    when it returns to whichever caption it happened to start on, wherever in
+    the loop that was.
+    """
+
+    regions: tuple[tuple[str, image_roi.Roi], ...]
+    seen: list[Any] = field(default_factory=list)
+    """One signature per distinct caption, in the order the strip showed them."""
+
+    current: Any = None
+    """The caption on screen, so the repeats of it in a row are not counted."""
+
+    blank: int = 0
+    """Frames passed over as the gap between two messages; reported only so a
+    pass that saw nothing but gaps is recognisable as such."""
+
+    def saw(self, path: Path) -> bool:
+        """Take one frame in; return whether the strip has completed a lap.
+
+        Blocking, and cheap on purpose: opening the frame and reducing two thin
+        bands to a 64x16 grid is milliseconds against the 1.5s an OCR pass
+        costs, which is the whole reason the loop can be spotted here and the
+        reading still left until afterwards.
+
+        Never raises. A frame that cannot be read is not evidence the strip has
+        come round, so it is passed over and the window runs on to its deadline
+        -- capturing a few frames too many is a far smaller failure than
+        stopping a pass before it has shown anything.
+        """
+        try:
+            signature, showing = self._signature(path)
+        except Exception as exc:  # noqa: BLE001 - never worth ending a pass over
+            logger.warning("Could not read %s to watch for the loop: %s", path, exc)
+            return False
+
+        if not showing:
+            # The gap between two messages, not a message. Counting it as one
+            # both invents a caption that was never shown and -- because the
+            # next real frame then looks like a *return* -- can close the lap
+            # before the strip has been round. Passed over entirely: it does
+            # not become `current`, so the caption either side of it is still
+            # one showing.
+            self.blank += 1
+            return False
+
+        if self.current is not None and _alike(signature, self.current):
+            return False
+        self.current = signature
+
+        if self.seen and _alike(signature, self.seen[0]):
+            # Back to the caption it started on, which is a whole lap however
+            # far into the strip's own cycle the window happened to open. Only
+            # once a second caption has been seen, since a strip sitting on one
+            # message has not looped, it has simply not changed.
+            #
+            # Deliberately the *first* caption and not any already seen. The
+            # strip can repeat a message part-way round, and a frame missed
+            # while OBS was slow leaves the sequence looking like a return to
+            # the wrong one -- both of which closed a pass early enough to lose
+            # a message that had not been shown yet.
+            return len(self.seen) >= 2
+        if not any(_alike(signature, earlier) for earlier in self.seen):
+            self.seen.append(signature)
+        return False
+
+    def _signature(self, path: Path) -> tuple[Any, bool]:
+        return band_signature(roi_service.open_frame(path), self.regions)
+
+
+def band_signature(
+    image: Image.Image, regions: tuple[tuple[str, image_roi.Roi], ...]
+) -> tuple[Any, bool]:
+    """One frame's caption bands as a signature, and whether any is showing.
+
+    The cheap stand-in for reading a frame: two crops of one caption reduce to
+    the same grid and two different captions do not, at a fraction of what an
+    OCR pass costs. Used both to notice the strip coming round
+    (:class:`LoopWatch`) and to pick out the frames worth reading at all
+    (:class:`CaptionChanges`).
+    """
+    content = roi_service.content_box(image)
+    grids = []
+    showing = False
+    for _, roi in regions:
+        crop = (
+            image.crop(roi.to_box_within(content.box))
+            .convert("L")
+            .resize(_SIGNATURE_GRID)
+        )
+        grid = numpy.asarray(crop, dtype=numpy.float32)
+        # Read before normalising, which is what removes the very contrast this
+        # depends on: a blank band is flat, and dividing it by its own
+        # deviation turns it into noise indistinguishable from text.
+        showing = showing or bool(grid.std() >= _SIGNATURE_INK)
+        grids.append((grid - grid.mean()) / (grid.std() + 1e-6))
+    return numpy.concatenate(grids, axis=0), showing
+
+
+@dataclass
+class CaptionChanges:
+    """Picks the frames of a clip where the caption actually changed.
+
+    Reading every frame of a clip is mostly reading the same caption again: a
+    message stays up for several seconds and the clip is sampled every one, so
+    a 29-frame win presentation holding five messages is five answers and
+    twenty-four repetitions of them. At around a second and a half an OCR pass
+    that is the difference between reading a clip in ten seconds and in eighty
+    -- and eighty is long enough to still be going when the next spin needs the
+    run's attention.
+
+    So each frame is compared against the last by picture first, and only a
+    frame whose caption is *new* is read. Frames caught in the gap between two
+    messages are skipped for the same reason they are in :class:`LoopWatch`:
+    they are not captions, and reading them yields the noise the character cut
+    would throw away anyway.
+    """
+
+    regions: tuple[tuple[str, image_roi.Roi], ...]
+    current: Any = None
+
+    def changed(self, image: Image.Image) -> bool:
+        """Whether this frame shows a caption the one before it did not.
+
+        Judged far more strictly than :class:`LoopWatch` judges two captions
+        alike, and the difference is the whole safety of this. That one asks
+        "is this the caption I saw earlier", across seconds and a re-render, so
+        it can afford slack. This asks "is this frame the one before it", where
+        slack costs a *message*: the strip's consecutive captions differ by a
+        single glyph -- "Line 1 Pays 15" against "Line 2 Pays 15" -- which
+        measures only 0.01-0.03 against the 0.000 of a frame the encoder
+        repeated outright. Anything loose enough to be comfortable would merge
+        two line messages into one, which is a lost message and the failure
+        this feature exists to prevent.
+        """
+        try:
+            signature, showing = band_signature(image, self.regions)
+        except Exception as exc:  # noqa: BLE001 - a frame is not the clip
+            logger.warning("Could not compare a clip frame: %s", exc)
+            return True
+        if not showing:
+            return False
+        if self.current is not None and _identical(signature, self.current):
+            return False
+        self.current = signature
+        return True
+
+
+def _identical(left: Any, right: Any) -> bool:
+    """Whether two frames are the same picture, not merely the same caption.
+
+    See ``_SIGNATURE_REPEATED``; this is the strict cousin of :func:`_alike`.
+    """
+    return bool(numpy.abs(left - right).mean() < _SIGNATURE_REPEATED)
+
+
+def _alike(left: Any, right: Any) -> bool:
+    """Whether two signatures are the same caption. See ``_SIGNATURE_SAME``."""
+    return bool(numpy.abs(left - right).mean() < _SIGNATURE_SAME)
+
+
+@dataclass(frozen=True)
+class ClipFrame:
+    """One frame decoded out of a clip, with the whole picture kept.
+
+    Unlike :class:`_Caption`, which throws the frame away and keeps only its
+    caption bands, this holds the picture too -- the caller writes it out as
+    the frame's own screenshot, so a message recovered from the clip is shown
+    the same way a message caught live is.
+    """
+
+    index: int
+    at_seconds: float
+    image: Image.Image
+
+
+def clip_frames(path: Path, interval: float) -> Iterator[ClipFrame]:
+    """Every frame of a clip at ``interval``, whole rather than cropped.
+
+    A generator, like the sampler it wraps: a clip's worth of full frames is
+    hundreds of megabytes held at once and nothing here needs two of them.
+    """
+    for frame in video_frames.sample(path, interval_seconds=interval):
+        yield ClipFrame(frame.index, frame.at_seconds, frame.image)
+
+
+async def live_reader(game: str) -> LiveReader:
+    """Prepare a caption reader for one game, proving the engine starts first.
+
+    Raises the same 409 the clip reader does when PaddleOCR is missing or OCR
+    is off, and the same 500 when the game declares no such region. Both are
+    for the *caller* to decide about: a cyclic run whose captions cannot be
+    read is still a run worth having, so ``services/cyclic_messages`` catches
+    these and notes them rather than failing the run.
+    """
+    config = _config_for(game)
+    # Both windows' lines, resolved together: the reader outlives any one
+    # window and a region that only the between-spins strip uses should still
+    # fail loudly here, when the run starts, rather than on the first frame
+    # after somebody's first losing spin.
+    names = tuple(
+        dict.fromkeys(
+            settings.cyclic_messages_text_regions
+            + settings.cyclic_messages_idle_regions
+        )
+    )
+    if not names:
+        raise GameConfigInvalidError(
+            "Neither CYCLIC_MESSAGES_TEXT_REGIONS nor "
+            "CYCLIC_MESSAGES_IDLE_REGIONS names a region, so there is nothing "
+            "to read the strip out of"
+        )
+    regions = {name: _region_of(config, name) for name in names}
+    options = paddle_ocr.PaddleLineOptions(
+        model_name=settings.CYCLIC_MESSAGES_LIVE_PADDLE_MODEL,
+        # Shared with the clip reader rather than given its own setting: 2x is
+        # a property of how thin the caption band is, which is the same band
+        # whichever picture it was cut out of.
+        upscale=settings.CYCLIC_MESSAGES_TEXT_PADDLE_UPSCALE,
+    )
+    model = await ocr_service.paddle_line_engine_for_reading(options)
+    logger.info(
+        "Live caption reader ready for %s: %d line(s) (%s), PaddleOCR %s",
+        game,
+        len(regions),
+        ", ".join(f"roi.{name}" for name in regions),
+        model,
+    )
+    return LiveReader(game=game, regions=regions, model=model, options=options)

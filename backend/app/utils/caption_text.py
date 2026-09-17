@@ -123,6 +123,40 @@ def _split_words(token: str, vocabulary: tuple[str, ...]) -> list[str]:
     return parts or [token]
 
 
+def _rejoin(tokens: list[str], vocabulary: tuple[str, ...]) -> list[str]:
+    """Put back together a vocabulary word the recogniser split in two.
+
+    The counterpart of :func:`_split_words`, which separates a word welded to
+    its neighbour; this joins one broken away from itself. PaddleOCR reads
+    "PLAY 880 CREDITS" off a thin band as ``Play 880 Cred its`` often enough to
+    matter, and each half is then close enough to "Credits" on its own that the
+    loose match in :func:`_as_word` snaps *both* to it -- turning a caption
+    that was read correctly into "Play 880 Credits Credits".
+
+    Joining only on an **exact** match of the concatenation, deliberately,
+    where :func:`_as_word` matches loosely. The pieces are already suspect; a
+    loose match on top of them would let two unrelated short tokens be welded
+    into a word the strip never drew. An exact hit cannot do that -- the result
+    is a word the game is known to draw, assembled from the letters that were
+    actually read, in order.
+    """
+    known = {word.casefold(): word for word in vocabulary}
+    out: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        if following is not None and token.isalpha() and following.isalpha():
+            joined = known.get((token + following).casefold())
+            if joined is not None:
+                out.append(joined)
+                index += 2
+                continue
+        out.append(token)
+        index += 1
+    return out
+
+
 def repair(
     text: str, *, vocabulary: tuple[str, ...], number_after: tuple[str, ...]
 ) -> str:
@@ -144,7 +178,12 @@ def repair(
     # are walked, so a number slot never receives a token with a word still
     # inside it. This also canonicalises them, so `Lie` arrives as `Line`.
     tokens = [
-        part for token in text.split() for part in _split_words(token, vocabulary)
+        part
+        # Rejoined before being split: a word broken in two has to be made whole
+        # before the splitter is allowed to snap each half to the vocabulary
+        # separately, or one caption becomes two of the same word.
+        for token in _rejoin(text.split(), vocabulary)
+        for part in _split_words(token, vocabulary)
     ]
 
     out: list[str] = []

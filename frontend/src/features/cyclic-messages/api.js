@@ -28,6 +28,32 @@ export function getCyclicStatus({ signal } = {}) {
 }
 
 /**
+ * Fetch the win presentation being captured right now — every frame of it, each
+ * with whatever the backend has made of its caption so far.
+ *
+ * Separate from `getCyclicStatus` because it answers a different question at a
+ * different size: status is a handful of counters, this is up to a few hundred
+ * frames. Read off the live run rather than off its manifest, so a frame is
+ * here as soon as OBS wrote it.
+ *
+ * Capturing and reading never happen at once — capturing every frame on
+ * schedule is the backend's only priority while a pass is open, so nothing
+ * reads a caption until the pass closes, and then every one of its frames is
+ * read in one batch. `capturing` and `reading` are never both true; a frame's
+ * `reading` is null until that batch reaches it, and `queue_depth` counts down
+ * from `frame_count` to 0 while it does.
+ *
+ * @param {{signal?: AbortSignal}} [options]
+ * @returns {Promise<{active: boolean, run_id: string|null, game: string|null,
+ *   cycle: number|null, capturing: boolean, reading: boolean,
+ *   queue_depth: number, read_count: number, sample_rate: number,
+ *   frame_count: number, frames: Array<object>, errors: string[]}>}
+ */
+export function getCyclicLive({ signal } = {}) {
+  return apiRequest({ method: "GET", url: `${CYCLIC_URL}/live`, signal });
+}
+
+/**
  * Start tracking the active game's cyclic messages. Connects to OBS first, so
  * this rejects with `OBS_CONNECTION_FAILED` or
  * `CYCLIC_MESSAGES_LOG_UNAVAILABLE`.

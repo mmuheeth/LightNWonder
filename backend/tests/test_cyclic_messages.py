@@ -441,14 +441,19 @@ async def test_a_sampled_event_quotes_the_boundary_that_opened_its_window(
     game_log_file: Path, quick_sampling: None, running: None
 ) -> None:
     """Not a line about the message in its own picture -- there is none, and
-    inventing one is what would make a guess look like evidence."""
+    inventing one is what would make a guess look like evidence.
+
+    The boundary is ``cyclic-game-pays``, which is where capture opens: the
+    strip is already showing the banner and then the count-up by the time
+    ``WinBangDone`` lands, and those frames are part of the presentation too.
+    """
     append(game_log_file, GAME_PAYS, WIN_BANG_DONE)
     await wait_for_messages(3)
     detail = await cyclic_service.stop()
 
     sampled = events_named(detail, "cyclic-line-pays-shown")
     assert sampled
-    assert all(event.log_line == WIN_BANG_DONE for event in sampled)
+    assert all(event.log_line == GAME_PAYS for event in sampled)
 
 
 async def test_sampling_stops_when_the_log_says_the_pass_finished(
@@ -675,7 +680,12 @@ async def test_a_pass_longer_than_a_typical_win_is_not_truncated(
 
     (video,) = detail.videos
     assert video.closed_by == "cyclic-line-pays-cycle-finished"
-    assert detail.errors == [], "nothing was cut short, so nothing to report"
+    # Specific to truncation rather than `errors == []`: a run also notes when
+    # its captions are not being read, and this fixture's game declares no
+    # caption region -- true, reported, and nothing to do with a cut-off pass.
+    assert not [message for message in detail.errors if "cut off" in message], (
+        "nothing was cut short, so nothing to report"
+    )
 
 
 async def test_a_clip_whose_closing_line_never_arrives_is_closed_by_the_deadline(

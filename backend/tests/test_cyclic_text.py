@@ -732,7 +732,11 @@ async def test_the_region_read_is_the_one_the_settings_name(
 
     reading = await text_service.read_run(run_id)
 
-    assert reading.region == settings.CYCLIC_MESSAGES_TEXT_REGION == "cyclic_message"
+    # The first configured line: the clip reader reads the top one, while
+    # the live path reads every line the strip draws.
+    assert (
+        reading.region == settings.cyclic_messages_text_regions[0] == "cyclic_message"
+    )
 
 
 # --- the interval ---------------------------------------------------------

@@ -128,8 +128,19 @@ const CLOSED_BY = {
   "cyclic-line-pays-cycle-finished": "one full pass through the line messages",
   "cyclic-results-cycle-stopped": "cut short — the next spin cleared the strip",
   "cyclic-game-pays": "cut short — the next win began",
+  "cyclic-idle-strip-ended": "cut short — the next spin cleared the strip",
+  // Not "cut short": the strip repeats, so coming round is it having shown
+  // everything it has.
+  "strip-looped": "one full round of the strip",
   "run-stopped": "cut short — tracking was stopped",
   "time-limit": "cut short — the line messages never reported finishing",
+};
+
+/** Which strip a clip is of. A run holds both, and they are different things
+ *  to watch — a win paying out, against what the game says between spins. */
+const CLIP_KIND = {
+  "win-video": "Win presentation",
+  "idle-video": "Between spins",
 };
 
 /**
@@ -141,11 +152,12 @@ const CLOSED_BY = {
  */
 function ClipVideo({ runId, clip }) {
   const ended = clip.closed_by ? CLOSED_BY[clip.closed_by] : null;
+  const kind = CLIP_KIND[clip.kind] ?? clip.kind;
 
   if (!clip.file_name) {
     return (
       <p className="text-muted-foreground text-xs">
-        No video for this win. {clip.error}
+        No video for this sequence. {clip.error}
       </p>
     );
   }
@@ -158,7 +170,7 @@ function ClipVideo({ runId, clip }) {
         className="bg-muted/40 aspect-video w-full rounded-md border"
       />
       <figcaption className="text-muted-foreground text-xs">
-        {ended ?? clip.closed_by}
+        {kind} · {ended ?? clip.closed_by}
       </figcaption>
     </figure>
   );

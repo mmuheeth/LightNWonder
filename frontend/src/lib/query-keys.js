@@ -48,6 +48,7 @@ export const queryKeys = Object.freeze({
   cyclicMessages: Object.freeze({
     all: ["cyclic-messages"],
     status: () => [...queryKeys.cyclicMessages.all, "status"],
+    live: () => [...queryKeys.cyclicMessages.all, "live"],
     runs: () => [...queryKeys.cyclicMessages.all, "runs"],
     run: (runId) => [...queryKeys.cyclicMessages.all, "run", runId],
   }),

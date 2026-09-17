@@ -402,6 +402,72 @@ CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
         delay_ms=500,
     ),
     EventRule(
+        event="cyclic-no-pay",
+        # The other half of the same line, and the reason it is here at all:
+        # ``Zero()=True`` is a spin that paid nothing, so the strip shows no
+        # "GAME PAYS", no line messages and nothing to screenshot.
+        #
+        # Recognised rather than ignored, and recorded without a frame -- the
+        # same bargain the loop boundaries make. A losing spin is the *common*
+        # case (measured on FortuneOx's own log: 29 of them against 26 wins),
+        # and left unmatched it is indistinguishable from a run that has broken:
+        # both look like a tracker sitting there capturing nothing. The marker
+        # is what says "the game spun and it did not pay" instead.
+        #
+        # It opens no capture window. The strip a losing spin leaves up is the
+        # *between-spins* strip, and that is bracketed by
+        # ``cyclic-idle-strip-started`` below -- which a won spin reaches too,
+        # once its win has been taken.
+        pattern=re.compile(
+            r"SpinBufferManager\.OnGameStateResults"
+            r" resultsStateEvent\.totalWin\.Zero\(\)=True"
+        ),
+        summary="Spin paid nothing, so the strip shows no win messages",
+        # Structure, not a picture: there is no message on screen to catch.
+        capture=False,
+    ),
+    EventRule(
+        event="cyclic-idle-strip-started",
+        # The spin is over and the game is sitting idle, which is when the
+        # between-spins strip runs: "GAME OVER", "GAME PAYS n", "PLAY 880
+        # CREDITS", round and round until somebody spins again.
+        #
+        # **One line for both ways a spin ends**, which is the point of
+        # bracketing on this rather than on the results line. Measured on
+        # FortuneOx's own log, every spin arrives here on ``GameOverMsg``: a
+        # losing spin within a few hundred milliseconds of its result, and a
+        # winning one only once its win has been taken -- 78s after the line
+        # messages finished, on one of them. So the strip that says "GAME PAYS
+        # 0" after a loss and "GAME PAYS 30" after a collected win is the same
+        # strip in the same window, and neither is inside the win presentation.
+        #
+        # Deliberately matched on the state machine rather than on
+        # ``GameOverMsg`` itself: the message is published a millisecond
+        # earlier and is what ``cyclic-game-over`` claims for its own frame.
+        pattern=re.compile(
+            r"StateMachine\[IdleStateMachine\] transitioned from"
+            r" \[(?P<from_state>[^\]]+)\] to \[stateIdleWithCredits\]"
+        ),
+        summary="Spin over: the between-spins strip has started",
+        # Structure, not a picture -- the sampler takes the frames.
+        capture=False,
+    ),
+    EventRule(
+        event="cyclic-idle-strip-ended",
+        # The player has touched the machine again, so whatever the strip was
+        # saying between spins is over. Leaving ``stateIdleWithCredits`` is the
+        # first line of the next spin and the only thing that reliably marks
+        # the end -- the strip itself writes nothing when it stops, exactly as
+        # it writes nothing while it runs.
+        pattern=re.compile(
+            r"StateMachine\[IdleStateMachine\] transitioned from"
+            r" \[stateIdleWithCredits\] to \[(?P<to_state>[^\]]+)\]"
+        ),
+        summary="Strip cleared: the next spin has begun",
+        # Structure, not a picture: the strip is already gone by this line.
+        capture=False,
+    ),
+    EventRule(
         event="cyclic-win-presented",
         # The count-up has finished, so this frame is the last one that is
         # certainly still "GAME PAYS": the line messages start from here.

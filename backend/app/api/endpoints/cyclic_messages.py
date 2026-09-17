@@ -13,6 +13,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 
 from app.schemas.cyclic_messages import (
+    CyclicLiveView,
     CyclicRunDetail,
     CyclicRunSummary,
     CyclicStatus,
@@ -47,6 +48,33 @@ async def get_status() -> ApiResponse[CyclicStatus]:
             f"Cyclic message run {state.run_id} is in progress"
             if state.active
             else "No cyclic message run is in progress"
+        ),
+    )
+
+
+@router.get(
+    "/live",
+    response_model=ApiResponse[CyclicLiveView],
+    summary="The win presentation being captured right now",
+)
+async def get_live() -> ApiResponse[CyclicLiveView]:
+    """Every frame of the current (or most recent) win presentation, each with
+    whatever the reader has made of its caption.
+
+    Read off the live run rather than off its manifest, so a frame is here as
+    soon as OBS wrote it -- the manifest is flushed at most once a second. A
+    frame whose ``reading`` is still null has not reached the front of the
+    reader's queue; ``queue_depth`` says how far behind that queue is.
+
+    Always 200 -- check ``data.active``, like ``/status``.
+    """
+    view = cyclic_service.live()
+    return ApiResponse[CyclicLiveView].ok(
+        data=view,
+        message=(
+            f"{view.frame_count} frames captured in sequence {view.cycle}"
+            if view.active and view.cycle is not None
+            else "No win presentation has been captured yet"
         ),
     )
 

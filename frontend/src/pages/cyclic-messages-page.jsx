@@ -5,7 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CyclicMessagesPanel } from "@/features/cyclic-messages/cyclic-messages-panel";
 import { CyclicRunView } from "@/features/cyclic-messages/cyclic-run-view";
-import { useCyclicRuns } from "@/features/cyclic-messages/use-cyclic-messages";
+import { LiveCaptureCard } from "@/features/cyclic-messages/live-capture-card";
+import {
+  useCyclicRuns,
+  useCyclicStatus,
+} from "@/features/cyclic-messages/use-cyclic-messages";
 import { cn } from "@/lib/utils";
 
 const STATUS_VARIANTS = {
@@ -53,6 +57,10 @@ export function CyclicMessagesPage() {
   const { runId } = useParams();
   const navigate = useNavigate();
   const { data: runs, error, isPending, refetch } = useCyclicRuns();
+  // Read from the shared status query the panel below already polls, rather
+  // than asking the live endpoint whether a run exists — one poll answers
+  // "is anything going", and the live view is only worth fetching if it is.
+  const { data: status } = useCyclicStatus();
 
   const selected = runId ?? runs?.[0]?.run_id ?? null;
 
@@ -61,12 +69,16 @@ export function CyclicMessagesPage() {
       <div className="space-y-1 border-b pb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Cyclic Messages</h1>
         <p className="text-muted-foreground text-sm">
-          Every cyclic message run, with the frame taken for each message the
-          strip showed.
+          Every cyclic message run, with the frame taken for each message the strip
+          showed.
         </p>
       </div>
 
       <CyclicMessagesPanel />
+
+      {/* Above the run list, not inside a run: it is about the presentation
+          happening now, and the run it belongs to has not been sealed yet. */}
+      <LiveCaptureCard isActive={Boolean(status?.active)} />
 
       {isPending ? (
         <Skeleton className="h-64 w-full" />
