@@ -227,6 +227,57 @@ function paytable(overrides = {}) {
           combo_set_ids: ["PaylineComboSet_Main"],
         },
       ],
+      orb_value_tables: [
+        {
+          symbol_kind: "SC",
+          bet: 88,
+          rows: [
+            {
+              value: 100,
+              jackpot_code: null,
+              jackpot_label: null,
+              weight: 4500000,
+              probability: 0.45,
+            },
+            {
+              value: 50,
+              jackpot_code: null,
+              jackpot_label: null,
+              weight: 5000000,
+              probability: 0.5,
+            },
+            {
+              value: null,
+              jackpot_code: -5,
+              jackpot_label: "JP5",
+              weight: 500000,
+              probability: 0.05,
+            },
+          ],
+          expected_value: 195,
+        },
+        {
+          symbol_kind: "NonSC",
+          bet: 88,
+          rows: [
+            {
+              value: 100,
+              jackpot_code: null,
+              jackpot_label: null,
+              weight: 1000000,
+              probability: 0.1,
+            },
+            {
+              value: 50,
+              jackpot_code: null,
+              jackpot_label: null,
+              weight: 9000000,
+              probability: 0.9,
+            },
+          ],
+          expected_value: 55,
+        },
+      ],
     },
     win_geometry: {
       path: "C:\\re\\winGeometry.xml",
@@ -338,23 +389,41 @@ describe("GameConfigPage", () => {
     expect(screen.getAllByText("Wild").length).toBeGreaterThan(0);
   });
 
-  it("shows the four cards, in reading order", async () => {
+  it("shows the five cards, in reading order", async () => {
     respond();
 
     renderWithProviders(<GameConfigPage />, { route: "/game-config" });
 
     await screen.findByText("Current paytable");
     const titles = screen
-      .getAllByText(/^(Current paytable|Win geometry|Payline combos|Reel strips)$/)
+      .getAllByText(
+        /^(Current paytable|Win geometry|Payline combos|Orb value range|Reel strips)$/,
+      )
       .map((node) => node.textContent);
 
-    // Which paytable, where its lines run, what they pay, what is on each reel.
+    // Which paytable, where its lines run, what they pay (along a line, then
+    // on one orb), what is on each reel.
     expect(titles).toEqual([
       "Current paytable",
       "Win geometry",
       "Payline combos",
+      "Orb value range",
       "Reel strips",
     ]);
+  });
+
+  it("shows what a landed orb can show, base game, at the minimum bet", async () => {
+    respond();
+
+    renderWithProviders(<GameConfigPage />, { route: "/game-config" });
+
+    await screen.findByText("Orb value range");
+
+    // Both kinds, each with its credit rows and its jackpot tier.
+    expect(screen.getByText("SC (scatter orb)")).toBeInTheDocument();
+    expect(screen.getByText("Other orbs")).toBeInTheDocument();
+    expect(screen.getByText("Jackpot (JP5)")).toBeInTheDocument();
+    expect(screen.getAllByText("195.0").length).toBeGreaterThan(0);
   });
 
   it("lays the line pays out as a paytable, a column per run length", async () => {

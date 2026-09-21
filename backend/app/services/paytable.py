@@ -27,6 +27,8 @@ from app.schemas.paytable import (
     DenominationInfo,
     GameMathInfo,
     MathDefaultsInfo,
+    OrbValueRow,
+    OrbValueTableInfo,
     PaylineComboInfo,
     PaylineInfo,
     PaylinePayRow,
@@ -46,6 +48,8 @@ from app.utils.bet_config import BetConfigError, load_bet_ladder, load_unit_cost
 from app.utils.game_math import (
     GameMath,
     GameMathError,
+    JackpotTier,
+    OrbValueTable,
     PaytableIdentity,
     ReelStrip,
     load_game_math,
@@ -200,6 +204,41 @@ def _from_log(config: GameConfig) -> tuple[str, PaytableSource] | None:
         denomination=found.match.group("denom"),
         supported_denominations=supported,
     )
+
+
+def _bet_from_log(config: GameConfig) -> tuple[int, str, datetime | None] | None:
+    """Last bet the game's log named -- the credit amount, its log line, and
+    when it was logged -- or ``None`` if the log never said or there is none.
+
+    ``BetChangeMsg``'s own ``totalBetValue`` is money-scaled by the same
+    ``denom`` the line reports (352 at denom 2.000 for a live bet of 176), not
+    the bare credit rung math.xml's "_88", "_176", ... tables are keyed on --
+    dividing by ``denom`` undoes that scaling. Both fields are decimal strings
+    ("176.000"), so they are read as floats and the quotient rounded rather
+    than either being parsed as an int outright.
+    """
+    log_path = config.log_path
+    if log_path is None:
+        return None
+
+    scan = settings.PAYTABLE_LOG_SCAN_BYTES
+    found = last_match(log_path, game_log.BET_CHANGED, max_bytes=scan or None)
+    if found is None:
+        return None
+
+    try:
+        total_bet = float(found.match.group("total_bet"))
+        denom = float(found.match.group("denom"))
+        bet = round(total_bet / denom) if denom else round(total_bet)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+    logged_at: datetime | None = None
+    line = game_log.parse_line(found.line)
+    if line is not None:
+        logged_at = line.timestamp
+
+    return bet, found.line, logged_at
 
 
 def _resolve(
@@ -441,6 +480,81 @@ def _scatters(math: GameMath, config: GameConfig) -> list[ScatterComboInfo]:
     ]
 
 
+def _orb_value_table_info(
+    table: OrbValueTable, jackpot_tiers: dict[int, JackpotTier]
+) -> OrbValueTableInfo:
+    """Narrow one parsed :class:`~app.utils.game_math.OrbValueTable` to its
+    public shape: a probability and a jackpot label per row, plus the table's
+    expected value with jackpots priced at their reset amount."""
+    total = table.total_weight
+    rows: list[OrbValueRow] = []
+    credits_ev = 0.0
+    for item in table.weights:
+        probability = item.weight / total if total else 0.0
+        if item.is_jackpot:
+            tier = jackpot_tiers.get(item.value)
+            rows.append(
+                OrbValueRow(
+                    jackpot_code=item.value,
+                    jackpot_label=tier.type_label if tier else None,
+                    weight=item.weight,
+                    probability=probability,
+                )
+            )
+            priced = tier.reset_value if tier and tier.reset_value is not None else 0
+        else:
+            rows.append(
+                OrbValueRow(
+                    value=item.value, weight=item.weight, probability=probability
+                )
+            )
+            priced = item.value
+        credits_ev += priced * probability
+
+    # Credit amounts descending, jackpots last -- a table reads like a
+    # paytable poster: biggest plain number first, the rare tiers at the foot.
+    rows.sort(key=lambda row: (row.value is None, -(row.value or 0)))
+
+    return OrbValueTableInfo(
+        symbol_kind=table.symbol_kind,
+        bet=table.bet,
+        rows=rows,
+        expected_value=credits_ev if total else None,
+    )
+
+
+def _orb_values(
+    math: GameMath, identity: PaytableIdentity | None, live_bet: int | None
+) -> list[OrbValueTableInfo]:
+    """What a landed SC/NonSC orb can show, base game, at the bet actually in
+    play -- the log's own last ``BetChangeMsg`` when there is one, else the
+    paytable's declared minimum (the same rung ``BetConfigInfo.unit_cost``
+    should equal).
+
+    Only ``BG`` is surfaced: ``HNS``/``FF`` are the same orb in a feature state
+    and would be a second, near-identical table on a card meant to answer one
+    question plainly. math.xml keeps the rest on ``GameMath`` for a future
+    context/feature selector if one is ever wanted."""
+    bet = live_bet
+    if bet is None:
+        bet = identity.min_total_bet if identity is not None else None
+    tiers = {tier.code: tier for tier in math.jackpot_tiers}
+
+    tables = [table for table in math.orb_value_tables if table.context == "BG"]
+    if bet is not None:
+        at_bet = [table for table in tables if table.bet == bet]
+        # A bet -- logged or declared -- that names no rung math.xml's own
+        # tables carry (should not happen, but a live log or a folder
+        # disagreeing with math.xml is not new here) falls back to every BG
+        # table rather than showing none.
+        if at_bet:
+            tables = at_bet
+
+    rows = [_orb_value_table_info(table, tiers) for table in tables]
+    rows.sort(key=lambda row: row.symbol_kind)
+    return rows
+
+
 def _applicable_set(
     math: GameMath, identity: PaytableIdentity | None
 ) -> tuple[str | None, str]:
@@ -506,13 +620,28 @@ def _win_geometry(
 
 
 def _bet_config(
-    directory: Path, identity: PaytableIdentity | None
+    directory: Path,
+    identity: PaytableIdentity | None,
+    live_bet: tuple[int, str, datetime | None] | None,
 ) -> BetConfigInfo | None:
-    """Read the folder's two bet configuration files, if it ships them."""
+    """Read the folder's two bet configuration files, if it ships them, plus
+    whatever the log last said the player was betting."""
+    current_bet, current_bet_source, current_bet_logged_at = (None, None, None)
+    if live_bet is not None:
+        current_bet, _line, logged_at = live_bet
+        current_bet_source = "log"
+        current_bet_logged_at = logged_at
+
     ladder_path = directory / BET_PER_UNIT_FILE
     cost_path = directory / BET_UNIT_FILE
     if not ladder_path.is_file() and not cost_path.is_file():
-        return None
+        if current_bet is None:
+            return None
+        return BetConfigInfo(
+            current_bet=current_bet,
+            current_bet_source=current_bet_source,
+            current_bet_logged_at=current_bet_logged_at,
+        )
 
     try:
         ladder = _cached(ladder_path, load_bet_ladder)
@@ -528,7 +657,18 @@ def _bet_config(
     if cost is None and len(costs) == 1:
         cost = costs[0][1]
 
-    return BetConfigInfo(ladder=list(ladder), unit_cost=cost)
+    if current_bet is None:
+        # Nothing logged yet -- the minimum is the only bet known to be live.
+        current_bet = cost
+        current_bet_source = "unit_cost" if cost is not None else None
+
+    return BetConfigInfo(
+        ladder=list(ladder),
+        unit_cost=cost,
+        current_bet=current_bet,
+        current_bet_source=current_bet_source,
+        current_bet_logged_at=current_bet_logged_at,
+    )
 
 
 def _identity_info(identity: PaytableIdentity | None) -> PaytableIdentityInfo | None:
@@ -552,7 +692,12 @@ def _identity_info(identity: PaytableIdentity | None) -> PaytableIdentityInfo | 
     )
 
 
-def _math_info(math: GameMath, config: GameConfig) -> GameMathInfo:
+def _math_info(
+    math: GameMath,
+    config: GameConfig,
+    identity: PaytableIdentity | None,
+    live_bet: int | None,
+) -> GameMathInfo:
     """Narrow a parsed ``math.xml`` to its public shape."""
     default_set = math.defaults.reel_strip_set_id
     pay_lengths, pay_table = _pay_table(math, config)
@@ -591,6 +736,7 @@ def _math_info(math: GameMath, config: GameConfig) -> GameMathInfo:
             )
             for ref in math.paytables
         ],
+        orb_value_tables=_orb_values(math, identity, live_bet),
     )
 
 
@@ -644,6 +790,7 @@ def _view(paytable_id: str | None) -> PaytableView:
     math = _load_math(directory)
     identity = _load_identity(directory)
     denomination = _denomination(source, resolved_id, identity)
+    live_bet = _bet_from_log(config)
 
     logger.info("Read paytable %s for %s (%s)", resolved_id, game, source.origin)
 
@@ -656,9 +803,9 @@ def _view(paytable_id: str | None) -> PaytableView:
         available=available,
         identity=_identity_info(identity),
         denomination=denomination,
-        math=_math_info(math, config),
+        math=_math_info(math, config, identity, live_bet[0] if live_bet else None),
         win_geometry=_win_geometry(_geometry_path(config, root), math, identity),
-        bet_config=_bet_config(directory, identity),
+        bet_config=_bet_config(directory, identity, live_bet),
     )
 
 

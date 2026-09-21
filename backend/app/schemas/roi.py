@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.meter import MeterValues
+from app.schemas.meter import MeterEngine, MeterValues
 
 
 class RoiFrame(BaseModel):
@@ -82,6 +82,16 @@ class RoiExtractRequest(BaseModel):
         description=(
             "Screenshot in the screenshots directory to crop. Must be a bare "
             "filename. Omit to use the newest one."
+        ),
+    )
+    engine: MeterEngine = Field(
+        default=MeterEngine.PADDLE,
+        description=(
+            "Which OCR engine reads the cash meter. Only consulted for the "
+            "'cash_meter' region, since it is the only one this endpoint reads "
+            "numbers off. PaddleOCR is the default here too, matching Analyze "
+            "Spin and Evaluate Screen; Tesseract remains available for a "
+            "caller that asks for it explicitly."
         ),
     )
 
