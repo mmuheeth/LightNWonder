@@ -40,6 +40,16 @@ function readFigure(check) {
   return "—";
 }
 
+/**
+ * Whether `expected_values` is math.xml's own multipliers turned into money
+ * (currently only at $2) rather than the raw table -- the report shows the
+ * raw figures underneath when it is, so a reader can see where the shown
+ * numbers came from.
+ */
+function isScaled(check) {
+  return check.money_per_credit != null && check.money_per_credit !== 1.0;
+}
+
 function StatusBadge({ status }) {
   const meta = STATUS_META[status] ?? STATUS_META.no_table;
   const Icon = meta.icon;
@@ -87,6 +97,11 @@ function CheckRow({ check }) {
         </div>
         {check.bet != null ? (
           <span className="text-muted-foreground text-[0.6rem]">at bet {check.bet}</span>
+        ) : null}
+        {isScaled(check) ? (
+          <div className="text-muted-foreground mt-0.5 text-[0.6rem]">
+            math.xml: {check.raw_expected_values.join(", ")} &times; {check.money_per_credit}
+          </div>
         ) : null}
       </td>
       <td className="py-2">

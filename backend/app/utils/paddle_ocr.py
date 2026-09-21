@@ -2,11 +2,16 @@
 jackpot tier name an orb carries instead of one.
 
 Deliberately narrow: this is the reader for **what an orb says** and nothing
-else. Every other reading in the service -- meters, named screen regions, whole
-frames -- stays on Tesseract in :mod:`app.utils.ocr`, which is why that module is
-untouched by this one. Two engines are carried because the orb is the one crop
-Tesseract measurably cannot read: on this project's own tiles it returns *nothing*
-for ``dataset/SC/r1c4.png`` where Paddle reads ``160`` at 0.9998, and scores a
+else. Named screen regions and whole frames (the generic OCR endpoint) still
+read with Tesseract in :mod:`app.utils.ocr`, which is why that module is
+untouched by this one -- Paddle has no options or per-word geometry equivalent
+to what that endpoint exposes. The cash meter is also read with this module
+(via :mod:`app.services.meter`'s ``read_paddle``), a separate consumer that
+does not go through the tile/orb functions below.
+
+This module exists because the orb is a crop Tesseract measurably could not
+read: on this project's own tiles it returned *nothing* for
+``dataset/SC/r1c4.png`` where Paddle reads ``160`` at 0.9998, and scored a
 correct ``50`` on ``dataset/SC/SC_50.png`` at confidence 0.0 against Paddle's
 0.9997.
 
@@ -18,6 +23,7 @@ expensive part is building the model, which is why the engine is cached.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import threading
 from dataclasses import dataclass
 from decimal import Decimal
@@ -309,16 +315,15 @@ def _predict(engine: Any, array: np.ndarray[Any, Any]) -> Any:
         raise OcrError(f"PaddleOCR failed to read the crop: {exc}") from exc
 
 
-def read_image(
-    image: Image.Image, *, options: PaddleOptions = DEFAULT_OPTIONS
-) -> PaddleResult:
-    """Read the number on one orb crop.
+# Retried once at this upscale when the detector finds nothing at all, rather
+# than raised as the default -- most crops (a wider "$100", "$4") detect fine at
+# 1x, and paying the resize/inference cost on every tile to rescue the rare one
+# would slow every spin for a problem most tiles do not have. Measured on a
+# real "$8" orb the detector missed outright at 1x: 2x finds it at 0.9996.
+_RETRY_UPSCALE = 2.0
 
-    Raises :class:`app.utils.ocr.OcrUnavailableError` when Paddle is not
-    installed and :class:`app.utils.ocr.OcrError` when it ran and could not
-    produce a reading -- the same two exceptions the Tesseract reader raises, so
-    a caller handles one pair either way.
-    """
+
+def _read_once(image: Image.Image, options: PaddleOptions) -> PaddleResult:
     prepared = preprocess(image, options)
     engine = _cached_engine(options)
     pages = _predict(engine, _as_array(prepared))
@@ -329,6 +334,29 @@ def read_image(
         confidence=max((word.confidence for word in words), default=None),
         size=prepared.size,
     )
+
+
+def read_image(
+    image: Image.Image, *, options: PaddleOptions = DEFAULT_OPTIONS
+) -> PaddleResult:
+    """Read the number on one orb crop.
+
+    Raises :class:`app.utils.ocr.OcrUnavailableError` when Paddle is not
+    installed and :class:`app.utils.ocr.OcrError` when it ran and could not
+    produce a reading -- the same two exceptions the Tesseract reader raises, so
+    a caller handles one pair either way.
+
+    A detector finding no text at all is retried once at :data:`_RETRY_UPSCALE`
+    when ``options.upscale`` started below it -- a real figure the first pass
+    missed (a compact one like ``$8``, next to wider reads like ``$100`` that
+    detect fine at 1x) is worth the one retry; a tile genuinely carrying no
+    figure still comes back empty either way, so this never invents a reading.
+    """
+    result = _read_once(image, options)
+    if not result.words and options.upscale < _RETRY_UPSCALE:
+        retry_options = dataclasses.replace(options, upscale=_RETRY_UPSCALE)
+        result = _read_once(image, retry_options)
+    return result
 
 
 def read_number(

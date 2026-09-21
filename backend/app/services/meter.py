@@ -196,10 +196,7 @@ def read_paddle(
     Tesseract. Same contract as :func:`read` -- never raises, a declared band in
     ``profile`` wins, and the reading comes back in the same ``MeterValues``.
 
-    Used by Evaluate Screen. Analyze Spin stays on :func:`read`: the two engines
-    do not read a strip identically and that feature's validations were measured
-    against Tesseract, so this is a choice per feature rather than a switch for
-    the project.
+    Used by both Evaluate Screen and Analyze Spin's meter validations.
 
     The fitted band is cached **separately** from :func:`read`'s, under its own
     key: which rows read best is a judgement the engine makes, so a band fitted

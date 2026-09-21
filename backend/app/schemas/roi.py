@@ -85,13 +85,13 @@ class RoiExtractRequest(BaseModel):
         ),
     )
     engine: MeterEngine = Field(
-        default=MeterEngine.TESSERACT,
+        default=MeterEngine.PADDLE,
         description=(
             "Which OCR engine reads the cash meter. Only consulted for the "
             "'cash_meter' region, since it is the only one this endpoint reads "
-            "numbers off. The two do not read a strip identically, so it is a "
-            "choice per caller: Analyze Spin's validations were measured against "
-            "Tesseract, and Evaluate Screen asks for PaddleOCR."
+            "numbers off. PaddleOCR is the default here too, matching Analyze "
+            "Spin and Evaluate Screen; Tesseract remains available for a "
+            "caller that asks for it explicitly."
         ),
     )
 

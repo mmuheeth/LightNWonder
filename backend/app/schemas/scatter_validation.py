@@ -130,6 +130,23 @@ class ScatterValueCheck(BaseModel):
     ocr_confidence: float | None = Field(
         default=None, description="OCR's own mean word confidence, 0-100."
     )
+    money_per_credit: float | None = Field(
+        default=None,
+        description=(
+            "The live denomination's own rate, e.g. 2.0 for $2 -- the factor "
+            "expected_values was scaled by so it reads in the same units as "
+            "ocr_value. Null when the denomination is unresolved; 1.0 when it "
+            "resolved but scaling is a no-op (every denomination but $2 today)."
+        ),
+    )
+    raw_expected_values: list[float] = Field(
+        default_factory=list,
+        description=(
+            "math.xml's own declared multipliers, unscaled -- the figures "
+            "'expected_values' were computed from. Equal to expected_values "
+            "whenever money_per_credit is 1.0 or null."
+        ),
+    )
     symbol_kind: str | None = Field(
         default=None,
         description=(
@@ -145,8 +162,10 @@ class ScatterValueCheck(BaseModel):
         default_factory=list,
         description=(
             "Every plain credit amount math.xml declares for this symbol kind "
-            "(and bet, when live) -- jackpot codes excluded, since those print a "
-            "tier word rather than a number."
+            "(and bet, when live), scaled by money_per_credit so it reads in "
+            "the same units the glass and ocr_value do -- jackpot codes "
+            "excluded, since those print a tier word rather than a number. "
+            "Identical to raw_expected_values except at $2."
         ),
     )
     expected_jackpot_labels: list[str] = Field(

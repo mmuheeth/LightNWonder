@@ -12,10 +12,8 @@ single frame rather than over a driven spin:
 * the cash meter comes from :mod:`app.services.roi`'s extract of
   ``roi.cash_meter``.
 
-One thing differs from Analyze Spin deliberately, and it is the reason this is a
-separate feature rather than a flag on that one: **the meter is read with
-PaddleOCR**, through ``meter_service.read_paddle``. Analyze Spin's meter
-validations were measured against Tesseract and stay on it.
+The meter is read with **PaddleOCR**, through ``meter_service.read_paddle`` --
+the same engine Analyze Spin's meter validations now use.
 
 What is *absent* is as deliberate. There is no spin, no log to follow, no
 recording, and **no validation**: a check like "balance fell by the bet" needs

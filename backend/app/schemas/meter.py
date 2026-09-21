@@ -23,11 +23,12 @@ class MeterMode(StrEnum):
 class MeterEngine(StrEnum):
     """Which OCR engine reads the strip.
 
-    Both stay available on purpose. Tesseract is what Analyze Spin's meter
-    validations were measured against; PaddleOCR reads a cell in one call rather
+    Both stay available on purpose. PaddleOCR reads a cell in one call rather
     than an escalating ladder of subprocesses, and scores every reading it
-    returns. They do not read a strip identically, so this is a choice per
-    caller rather than a setting for the project.
+    returns -- it is what Analyze Spin and Evaluate Screen both ask for.
+    Tesseract remains available for a caller that wants it. They do not read a
+    strip identically, so this is a choice per caller rather than a setting for
+    the project.
     """
 
     TESSERACT = "tesseract"

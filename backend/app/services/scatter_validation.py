@@ -81,8 +81,26 @@ def _table_for(
     return (tables[0], tables[0].bet) if tables else (None, None)
 
 
+# The $2 denomination's own `money_per_credit` (200 cents a credit). math.xml's
+# orb tables declare a bet-unit multiplier, but the glass shows that multiplier
+# already turned into money -- at every other shipped denomination the two are
+# either identical ($1) or a fraction the checker has not yet been taught to
+# scale, so this constant scopes the correction to the one denomination it has
+# been verified against rather than guessing the same scaling is safe
+# everywhere. Scaling the *table* up to money (rather than dividing the OCR
+# reading back to a multiplier) is deliberate: ocr_value must stay exactly what
+# PaddleOCR read off the glass, and expected_values is what the report should
+# show the user as "what this game actually displays" -- 4, 8, ... 200, not
+# math.xml's own 2, 4, ... 100.
+_TWO_DOLLAR_MONEY_PER_CREDIT = 2.0
+
+
 def _check_scatter(
-    scatter, math: GameMath, live_bet: int | None, context: str = _DEFAULT_CONTEXT
+    scatter,
+    math: GameMath,
+    live_bet: int | None,
+    money_per_credit: float | None = None,
+    context: str = _DEFAULT_CONTEXT,
 ) -> ScatterValueCheck:
     """Judge one landed scatter against its declared value range."""
     symbol_kind = _symbol_kind(scatter.symbol)
@@ -110,7 +128,7 @@ def _check_scatter(
         )
 
     tiers = {tier.code: tier for tier in math.jackpot_tiers}
-    expected_values = sorted({item.value for item in table.weights if not item.is_jackpot})
+    raw_expected_values = sorted({item.value for item in table.weights if not item.is_jackpot})
     expected_labels = sorted(
         {
             tiers[item.value].type_label
@@ -118,6 +136,16 @@ def _check_scatter(
             if item.is_jackpot and item.value in tiers and tiers[item.value].type_label
         }
     )
+
+    # At $2 the glass draws every plain credit amount already turned into money
+    # (multiplier x money_per_credit), so the *table* is scaled up to match what
+    # is on screen rather than the OCR reading being divided back down -- ocr_value
+    # must stay exactly what PaddleOCR read, and expected_values is what a user
+    # reads off the report, so it needs to read in the same units the tile does.
+    # Every other denomination scales by 1.0, a no-op -- see
+    # _TWO_DOLLAR_MONEY_PER_CREDIT. Jackpot labels are words, never scaled.
+    scale = money_per_credit if money_per_credit == _TWO_DOLLAR_MONEY_PER_CREDIT else 1.0
+    expected_values = sorted({value * scale for value in raw_expected_values})
 
     if scatter.value is None and scatter.prize_label is None:
         # A feature scatter (e.g. FG) is drawn without a figure, and that is a
@@ -127,6 +155,8 @@ def _check_scatter(
         status = "unreadable" if (expected_values or expected_labels) else "matched"
         return ScatterValueCheck(
             **base,
+            money_per_credit=money_per_credit,
+            raw_expected_values=raw_expected_values,
             expected_values=expected_values,
             expected_jackpot_labels=expected_labels,
             status=status,
@@ -141,6 +171,8 @@ def _check_scatter(
         matched = scatter.prize_label in expected_labels
         return ScatterValueCheck(
             **base,
+            money_per_credit=money_per_credit,
+            raw_expected_values=raw_expected_values,
             expected_values=expected_values,
             expected_jackpot_labels=expected_labels,
             status="matched" if matched else "not_matched",
@@ -151,9 +183,14 @@ def _check_scatter(
             ),
         )
 
+    # ocr_value is compared exactly as PaddleOCR read it -- never divided --
+    # against expected_values, which is already in the same (possibly scaled)
+    # units.
     matched = scatter.value in expected_values
     return ScatterValueCheck(
         **base,
+        money_per_credit=money_per_credit,
+        raw_expected_values=raw_expected_values,
         expected_values=expected_values,
         expected_jackpot_labels=expected_labels,
         status="matched" if matched else "not_matched",
@@ -217,25 +254,6 @@ async def validate(
             "window-capture source is pointed at the game and showing it."
         )
 
-    reels = None
-    reels_error: str | None = None
-    grid_image: str | None = None
-    try:
-        reels, result, split_dir = await evaluate_screen_service._read_grid(
-            source.file_name, payload.architecture, include_images=payload.include_images
-        )
-    except AppException as exc:
-        reels_error = exc.message
-        errors.append(f"Grid: {exc.message}")
-    except Exception as exc:  # noqa: BLE001 - recorded, never raised
-        reels_error = f"{type(exc).__name__}: {exc}"
-        errors.append(f"Grid: {reels_error}")
-        logger.exception("Reading the grid of %s failed", name)
-    else:
-        grid_image = result.overlay_image
-        scatters, summary = await analyze_spin_service.read_scatters(config, split_dir, reels)
-        reels = reels.model_copy(update={"scatters": scatters, "scatter_summary": summary})
-
     bet_info: ScatterValidationBetInfo | None = None
     bet_info_error: str | None = None
     math: GameMath | None = None
@@ -256,6 +274,31 @@ async def validate(
     else:
         bet_info = _bet_info(view)
 
+    reels = None
+    reels_error: str | None = None
+    grid_image: str | None = None
+    try:
+        reels, result, split_dir = await evaluate_screen_service._read_grid(
+            source.file_name, payload.architecture, include_images=payload.include_images
+        )
+    except AppException as exc:
+        reels_error = exc.message
+        errors.append(f"Grid: {exc.message}")
+    except Exception as exc:  # noqa: BLE001 - recorded, never raised
+        reels_error = f"{type(exc).__name__}: {exc}"
+        errors.append(f"Grid: {reels_error}")
+        logger.exception("Reading the grid of %s failed", name)
+    else:
+        grid_image = result.overlay_image
+        # `math` is the same maths just loaded above (or `None` when it could
+        # not be read), passed through so the scatter reading's OCR digit floor
+        # matches this game's own paytable -- see
+        # `app.services.analyze_spin._read_scatter_value`.
+        scatters, summary = await analyze_spin_service.read_scatters(
+            config, split_dir, reels, math
+        )
+        reels = reels.model_copy(update={"scatters": scatters, "scatter_summary": summary})
+
     checks: list[ScatterValueCheck] = []
     checkable = [
         s for s in (reels.scatters if reels else []) if s.symbol not in _EXCLUDED_FROM_CHECK
@@ -263,7 +306,8 @@ async def validate(
     if checkable:
         if math is not None:
             live_bet = bet_info.current_bet if bet_info else None
-            checks = [_check_scatter(s, math, live_bet) for s in checkable]
+            money_per_credit = bet_info.money_per_credit if bet_info else None
+            checks = [_check_scatter(s, math, live_bet, money_per_credit) for s in checkable]
         else:
             checks = [
                 ScatterValueCheck(

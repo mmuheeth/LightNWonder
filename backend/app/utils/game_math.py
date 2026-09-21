@@ -442,6 +442,29 @@ class GameMath:
             None,
         )
 
+    def min_prize_digits(self) -> int | None:
+        """The fewest digits any orb value table's own declared credit amount is
+        written with -- the floor a prize-figure OCR reading must clear to be
+        believed rather than dismissed as noise off the artwork.
+
+        A fixed floor tuned against one game's paytable (see
+        ``app.services.ocr.TILE_MIN_DIGITS``) is wrong for any game whose own
+        tables declare a single-digit prize: a `4` or `6` credit orb would be
+        indistinguishable, digit-count-wise, from the stray single digits that
+        floor exists to reject. This reads the answer out of the maths actually
+        loaded instead of assuming one game's figures apply to another's.
+
+        ``None`` when there are no non-jackpot values to measure, so the caller
+        falls back to its own constant rather than trusting an empty minimum.
+        """
+        digit_counts = [
+            len(str(abs(item.value)))
+            for table in self.orb_value_tables
+            for item in table.weights
+            if not item.is_jackpot
+        ]
+        return min(digit_counts) if digit_counts else None
+
     def jackpot_tier(self, code: int) -> JackpotTier | None:
         """Look one jackpot level up by its negative orb code."""
         return next((tier for tier in self.jackpot_tiers if tier.code == code), None)
