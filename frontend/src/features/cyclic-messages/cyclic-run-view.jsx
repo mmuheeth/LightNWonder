@@ -18,21 +18,41 @@ function formatTime(value) {
 }
 
 /**
- * Split a run into its cyclic sequences, preserving order.
+ * Split a run into its cyclic sequences, in the order they first appear.
  *
  * The events already carry a `cycle`, so this only groups — it never decides
  * which sequence something belongs to. That call is the backend's, made while
  * following the log, and re-deriving it here from event names would be a second
  * answer that could disagree with the manifest.
+ *
+ * **Not by runs of adjacent events, which is what this used to be.** A
+ * window's messages are filled in from its own clip afterwards, in the
+ * background, so a sequence's frames can land on the run *after* the next
+ * sequence has started writing its own — which split one sequence into two
+ * groups, and rendered its clip, its video player and its "Read the messages"
+ * button once per group. Grouped by the cycle itself, a sequence is one
+ * section however far apart its events arrived.
+ *
+ * Each group's events are then put back in the order the strip showed them,
+ * which is by time and not by sequence: a recovered frame is numbered later
+ * than the live frame that follows it on screen, because it was written later.
+ * Sequence is the tie-break, since a marker may carry no timestamp at all.
  */
 function bySequence(events) {
-  const groups = [];
+  const groups = new Map();
   for (const event of events) {
-    const last = groups.at(-1);
-    if (last && last.cycle === event.cycle) last.events.push(event);
-    else groups.push({ cycle: event.cycle, events: [event] });
+    const group = groups.get(event.cycle);
+    if (group) group.events.push(event);
+    else groups.set(event.cycle, { cycle: event.cycle, events: [event] });
   }
-  return groups;
+  for (const group of groups.values()) group.events.sort(byShownAt);
+  return [...groups.values()];
+}
+
+/** Two events in the order the strip showed them. See `bySequence`. */
+function byShownAt(left, right) {
+  const at = new Date(left.at ?? 0) - new Date(right.at ?? 0);
+  return Number.isNaN(at) || at === 0 ? left.sequence - right.sequence : at;
 }
 
 /**
@@ -208,8 +228,15 @@ function ClipMessages({ runId, clip }) {
         </Button>
         {read.isPending ? (
           <span className="text-muted-foreground text-xs">
-            A frame a second, each one OCR'd — around three minutes for a
-            90-second clip. Leave the tab open.
+            {/* The stretch read so far, not a spinner: the clip is read in
+                windows of ~20s and each is a minute or two of OCR, so how far
+                through it is the only honest thing to say. The captions below
+                fill in as each window lands. */}
+            {reading
+              ? `Read ${Math.round(reading.to_seconds)}s of ${Math.round(
+                  reading.duration_seconds,
+                )}s — captions appear as each part is read.`
+              : "Reading the clip — a frame a second, one OCR pass per caption band."}
           </span>
         ) : null}
       </div>
@@ -222,9 +249,16 @@ function ClipMessages({ runId, clip }) {
               disagree about a caption — without it, two readings of one clip
               look like the same reading changing its mind. */}
           <p className="text-muted-foreground text-xs">
-            {reading.captions.length} captions over {reading.messages.length}{" "}
-            showings, from {reading.frames_sampled} frames at{" "}
-            {reading.interval_seconds}s, read by {reading.engine}
+            {reading.captions.length} captions over {reading.messages.length} showings,
+            from {reading.frames_sampled} frames at {reading.interval_seconds}s
+            {/* Both numbers, because the gap between them is why this returns
+                at all: a caption stays up for several of the seconds the clip
+                is sampled at, so most frames are the frame before them again
+                and share its reading rather than paying for their own. */}
+            {reading.frames_read > 0 && reading.frames_read < reading.frames_sampled
+              ? ` (${reading.frames_read} of them read)`
+              : null}
+            , read by {reading.engine}
           </p>
 
           {/* The one thing that makes a plausible-looking reading untrustworthy,
@@ -233,11 +267,11 @@ function ClipMessages({ runId, clip }) {
             <p className="text-destructive flex items-start gap-2 text-xs">
               <TriangleAlert className="mt-0.5 size-3 shrink-0" />
               <span>
-                {reading.frames_unreadable} of {reading.frames_sampled} frames
-                came back below the confidence floor. That is usually the
-                recording rather than the reader — a caption the encoder smeared
-                still OCRs to something plausible, so treat the greyed rows as
-                unreliable and raise the OBS recording quality.
+                {reading.frames_unreadable} of {reading.frames_sampled} frames came back
+                below the confidence floor. That is usually the recording rather than
+                the reader — a caption the encoder smeared still OCRs to something
+                plausible, so treat the greyed rows as unreliable and raise the OBS
+                recording quality.
               </span>
             </p>
           ) : null}
@@ -313,9 +347,9 @@ export function CyclicRunView({ runId }) {
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">{data.game}</h2>
         <p className="text-muted-foreground text-sm">
-          {data.message_count} messages over {data.cycle_count} sequences ·{" "}
-          {clips.size} {clips.size === 1 ? "clip" : "clips"} ·{" "}
-          {formatTime(data.started_at)} to {formatTime(data.stopped_at)} · {data.status}
+          {data.message_count} messages over {data.cycle_count} sequences · {clips.size}{" "}
+          {clips.size === 1 ? "clip" : "clips"} · {formatTime(data.started_at)} to{" "}
+          {formatTime(data.stopped_at)} · {data.status}
         </p>
         <p className="text-muted-foreground font-mono text-xs break-all">
           {data.log_path}
@@ -324,12 +358,12 @@ export function CyclicRunView({ runId }) {
 
       {data.sampled_count > 0 ? (
         <p className="text-muted-foreground bg-muted/40 rounded-md border p-3 text-xs">
-          <strong className="font-medium">{data.sampled_count}</strong> of these
-          frames are marked <em>sampled</em>. The game logs where the line
-          messages start and where one full pass through them ends, but writes
-          nothing at all in between — so those frames were taken on a timer
-          inside that window, and their log line is the boundary that opened it
-          rather than a line describing the message in the picture.
+          <strong className="font-medium">{data.sampled_count}</strong> of these frames
+          are marked <em>sampled</em>. The game logs where the line messages start and
+          where one full pass through them ends, but writes nothing at all in between —
+          so those frames were taken on a timer inside that window, and their log line
+          is the boundary that opened it rather than a line describing the message in
+          the picture.
         </p>
       ) : null}
 

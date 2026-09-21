@@ -4,6 +4,7 @@
  * `refetchInterval` — nothing polls unless a run is actually going.
  */
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -11,7 +12,7 @@ import {
   getCyclicRun,
   getCyclicStatus,
   listCyclicRuns,
-  readCyclicText,
+  readWholeCyclicText,
   startCyclic,
   stopCyclic,
 } from "@/features/cyclic-messages/api";
@@ -105,15 +106,32 @@ export function useCyclicRun(runId) {
 }
 
 /**
- * Read one clip's messages back out of it.
+ * Read one clip's messages back out of it, a window at a time.
  *
- * A mutation rather than a query, even though it only reads: it decodes ~180
- * frames and shells out to Tesseract for each, so it has to be asked for
- * rather than fetched on mount. Deliberately does not invalidate anything —
- * reading a clip changes nothing on the run.
+ * A mutation rather than a query, even though it only reads: it decodes a
+ * frame a second and runs OCR over every caption band of each, so it has to
+ * be asked for rather than fetched on mount. Deliberately does not invalidate
+ * anything — reading a clip changes nothing on the run.
+ *
+ * **`partial` is the point of the extra state.** A clip is read in windows
+ * (see `readWholeCyclicText`), and each one takes a minute or two, so the
+ * mutation's own `data` would sit undefined until the last of them landed.
+ * This holds the reading stitched so far instead, which is what the card
+ * renders while `isPending` — captions filling in as the clip is worked
+ * through, rather than a spinner for the length of it.
  */
 export function useReadCyclicText(runId) {
-  return useMutation({
-    mutationFn: (options) => readCyclicText(runId, options),
+  const [partial, setPartial] = useState(null);
+  const mutation = useMutation({
+    mutationFn: (options) => {
+      // Cleared here rather than in `onMutate` so a second press does not
+      // show the previous read's captions under the new one's progress.
+      setPartial(null);
+      return readWholeCyclicText(runId, { ...options, onWindow: setPartial });
+    },
   });
+  // The finished reading wins once there is one; until then the windows read
+  // so far are the best answer available, and after a failure part-way
+  // through they are still every caption that was recovered before it.
+  return { ...mutation, data: mutation.data ?? partial, partial };
 }

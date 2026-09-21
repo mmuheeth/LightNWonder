@@ -70,8 +70,36 @@ the line messages finished, on one of them. It closes on
 ``cyclic-idle-strip-ended``, the same machine leaving that state, which is the
 first line of the next spin.
 
-So this window is strictly *after* the win presentation, never inside it. That
-matters because the two draw different strips and are read differently:
+So this window is strictly *after* the win presentation, never inside it --
+but it is not always *separate* from it, and that is the third case. Take the
+win before its line messages have been round once and the game goes idle while
+the presentation is still being captured: on screen there is no break at all,
+the strip simply carries on from "LINE 1 PAYS 250" into "GAME OVER". So the
+window carries on with it (:func:`_carry_on`) -- the same sampler, the same
+clip, the same sequence, with the bands widened underneath. It used to close
+the win window here and open a fresh one, which lost the end of the line
+messages, put a gap in the recording and emptied the live card of the win at
+the exact moment the tester pressed the button.
+
+**A carried-on window runs two strips at once, and it ends on the slower
+one.** This is the trap, because the two are wildly different lengths: the top
+band is still cycling line messages -- 2s a line, so minutes on a 40-line win
+-- while the small band beneath it laps its three between-spins captions every
+six seconds. So the carry-on keeps the *win's* deadline and goes on expecting
+``cyclic-line-pays-cycle-finished``, and the lap watch that ordinarily ends a
+between-spins window is not armed until that line lands
+(:func:`_watch_for_the_lap`). Arming it at the carry-on instead ended the
+window on the small band's first lap: on the run this was found on, six
+frames, then 69 uncaptured seconds of line messages, and the closing line
+arriving to a window already read and filed.
+
+The two ways of taking a win therefore differ in how many *windows* a spin
+produces and not in what ends up on the card: taken early it is one window,
+taken after the line messages finish it is two, and either way the live view
+shows the whole spin. See :attr:`_ActiveRun.live_cycles`.
+
+The difference between the strips matters because the two draw different
+things and are read differently:
 
 * A **win presentation** draws **one** line -- "GAME PAYS 168", then "LINE 25
   PAYS 15" and the rest. The band beneath it is empty, measured at 29
@@ -89,20 +117,32 @@ Which lines a frame is read for is stamped on it when it is captured
 run has moved on, and the window a frame came from is the only thing that knows
 what was on screen.
 
-Three things differ from the win window besides, all deliberate. It records
-**no clip**: a clip is one win presentation, and recording the gap after every
-spin would be recording most of the session, which is what per-win recording
-exists to avoid. It has its **own interval**
-(``CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS``), because an interval has to clear
-the shortest dwell of the strip it is sampling and these two are nowhere near
-each other -- a line message dwells 1.3-1.8s, while the between-spins strip
-sits on each of its three for the best part of ten seconds. And it has its
-**own deadline** (``CYCLIC_MESSAGES_IDLE_MAX_SECONDS``), because the two
-overrun differently: a win pass that outruns its closing line is still a win
-pass, while this window ends only when somebody spins again -- measured at
-eight and a half minutes once -- so the deadline is how it ordinarily ends
-rather than a fault, and is sized to catch the whole cycle several times over
-rather than to cut it short.
+Two things differ from the win window besides, and one thing that used to no
+longer does. It has its **own deadline**
+(``CYCLIC_MESSAGES_IDLE_MAX_SECONDS``), because the two overrun differently: a
+win pass that outruns its closing line is still a win pass, while this window
+ends only when somebody spins again -- measured at eight and a half minutes
+once -- so the deadline is how it ordinarily ends rather than a fault, and is
+sized to catch the whole cycle several times over rather than to cut it short.
+And it ends early when the strip has been **round once**
+(``CYCLIC_MESSAGES_IDLE_STOP_AFTER_LOOP``), spotted from the picture rather
+than the text, because past the first lap every caption is one already caught.
+
+What no longer differs is the **interval**, and the correction is worth having
+on the record because the wrong value here fails *silently*. The two strips
+were taken to be nowhere near each other -- a line message dwells 1.3-1.8s,
+while this one was believed to sit on each of its three captions for the best
+part of ten seconds -- so it was sampled at 2.0s. Read back off a real losing
+spin's own clip, the strip runs a caption for about a second with a blank
+second after it and laps all three in six, so 2.0s sat above the dwell and
+dropped captions with nothing on the record saying so. Both strips are now
+sampled at 1.0s; see ``CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS``.
+
+It **does** record a clip, which that same measurement is why. Recording the
+gap after every spin was the thing per-win recording existed to avoid, and it
+still would be if these clips ran to the deadline -- but a window that stops
+after one lap is about eight seconds, one file per spin, and it is the only
+complete record of a strip the stills cannot keep up with.
 
 **Capturing every frame on schedule is the one thing this feature cannot get
 back if it slips, so nothing else is allowed to compete with it.** Every frame
@@ -141,16 +181,38 @@ concurrently, which is what an earlier version of this feature did:
   the post-pass reading is the same crop, the same repair and the same
   confidence floor, applied to the stills instead of to the video.
 
-**A clip is one win presentation, and its boundaries are the same two lines the
-sampler brackets one pass with -- widened by one at the front.** Recording
-opens on ``cyclic-game-pays`` (before that event's own screenshot, so the GAME
-PAYS banner the frame catches is inside the video) and closes on
-``cyclic-line-pays-cycle-finished`` (after that event's screenshot, so the last
-line message is). What that buys is a video of the thing the frames are
-evidence of: the amount, then every line message that paid it. What it costs is
-the idle strip, which is never recorded -- it is per-message logged, so every
-one of its messages already has a frame of its own and a video of the gaps
-between them shows nothing a screenshot missed.
+**The stills are the sparse record and the clip is the complete one, so every
+clip is read back afterwards.** This is the part that makes the whole bargain
+above affordable: capture may skip messages, because recovery fills them in.
+An OBS screenshot costs 1.5-7s while a recording is running and a caption
+stays up for about one second on either strip, so a window caught live is
+missing some of what it showed -- measured at two of three captions on one
+between-spins pass, and rather worse than that on a win. :func:`_recover`
+decodes the window's own clip, writes out each frame where the caption
+*changed* and reads it, so the window ends up with the messages the stills
+went past.
+
+**It runs on a queue, and that is not tidiness.** A clip is filed at the
+moment the window that follows it is often already on screen -- take a win and
+the between-spins strip is up within a beat of the presentation's clip being
+filed -- and recovering there, inline, took fifteen seconds off a strip that
+runs for eight: the run recorded that window opening and closing with not one
+frame in between, which is the bug the queue exists to fix. So
+:func:`_file_and_record` queues the clip, :func:`_drain_recovery` works
+through the queue in the background whenever no window is open, and a window
+opening asks it to give way after the single frame it is on. It is the only
+work on a run that deliberately runs alongside the watcher, and that is
+exactly why it checks :attr:`_ActiveRun.pass_open` before every frame.
+
+**A clip is one window of the strip, and a win presentation's boundaries are
+the same two lines the sampler brackets one pass with -- widened by one at the
+front.** Recording opens on ``cyclic-game-pays`` (before that event's own
+screenshot, so the GAME PAYS banner the frame catches is inside the video) and
+closes on ``cyclic-line-pays-cycle-finished`` (after that event's screenshot,
+so the last line message is). What that buys is a video of the thing the frames
+are evidence of: the amount, then every line message that paid it. The
+between-spins strip is bracketed by its own two lines and gets its own clip;
+see that window above for why it is recorded at all.
 
 Four other things end a clip, and :attr:`CyclicRunVideo.closed_by` says which:
 the next spin cutting the pass short, a *second* win opening before the first
@@ -208,6 +270,8 @@ from app.utils.log_tail import LogFollower
 from app.utils.paths import UnsafeNameError, resolve_subdirectory, resolve_within
 
 if TYPE_CHECKING:  # pragma: no cover - the cycle below is a runtime one only
+    from collections.abc import Generator
+
     # `cyclic_text` imports this module to find a run's clip, so importing it
     # back at runtime would be a cycle. These are plain function annotations,
     # never evaluated (`from __future__ import annotations`), so the checker
@@ -267,8 +331,33 @@ _SAMPLER_STOP_SECONDS = 10.0
 
 # What a clip is a recording of. On the clip so its file name, and the run
 # view beside it, say which strip it covers -- a run holds both kinds now.
-_WIN_VIDEO = "win-video"
-_IDLE_VIDEO = "idle-video"
+#
+# Public because which *bands* a clip's strip draws follows from which strip it
+# is of, and that answer lives in `cyclic_text.clip_regions` -- one place, so a
+# caption read back off a clip cannot come from a different band than the same
+# caption read off the stills beside it.
+WIN_VIDEO = "win-video"
+IDLE_VIDEO = "idle-video"
+
+# The two of them, one after the other, in one window. Take the win before its
+# line messages have been round once and the game goes idle *inside* the
+# presentation: the strip runs straight on from the line messages into "GAME
+# OVER / GAME PAYS n / PLAY 880 CREDITS" with no break on screen, so the window
+# runs straight on with it rather than being torn down and rebuilt. See the
+# ``cyclic-idle-strip-started`` branch of :func:`_handle`.
+#
+# A kind of its own rather than either of the two it spans, for the reason
+# every other kind is one: it decides which *bands* the strip draws (both of
+# them, since the second half is the between-spins strip) and that answer has
+# to be the same for the stills and for the clip read back beside them.
+WIN_THEN_IDLE = "win-then-idle"
+
+# Which strip each is, for a summary a reader sees rather than a rule name.
+_STRIP_NAMES = {
+    WIN_VIDEO: "the win presentation",
+    IDLE_VIDEO: "the between-spins strip",
+    WIN_THEN_IDLE: "the win presentation and the strip after it",
+}
 
 
 @dataclass(frozen=True)
@@ -302,8 +391,37 @@ class _Clip:
 
     cycle: int
     started_at: datetime
-    kind: str = _WIN_VIDEO
-    """Which strip this is a recording of; see :data:`_WIN_VIDEO`."""
+    kind: str = WIN_VIDEO
+    """Which strip this is a recording of; see :data:`WIN_VIDEO`."""
+
+
+@dataclass
+class _Recovery:
+    """A filed clip whose messages have not been read back out of it yet.
+
+    Queued rather than recovered on the spot, and that is the whole point of
+    the type existing. Decoding a clip and OCR'ing the frames where its caption
+    changed costs seconds to tens of seconds, and the *next* window is often
+    already on screen by the time a clip is filed -- a win taken before its
+    line messages have been round once puts the between-spins strip straight
+    after it. Recovering inline there cost that strip its first fifteen
+    seconds, measured, which on a strip that runs for eight is all of it: the
+    run recorded the window opening and closing with not one frame in between.
+
+    So the clip goes on a queue and :func:`_drain_recovery` works through it in
+    the background, giving way the instant a window opens.
+    """
+
+    video: CyclicRunVideo
+    written: int = 0
+    """Frames of this clip already written out and read.
+
+    Kept so an interrupted recovery resumes instead of starting over: the drain
+    gives way mid-clip, and the frames it did get through are already events on
+    the run. Counted in *changed* frames rather than in decoded ones, because
+    that is the sequence :func:`_recover` walks and re-walking it from the top
+    of the file reproduces it exactly.
+    """
 
 
 @dataclass
@@ -424,22 +542,61 @@ class _ActiveRun:
     sampled ones.
     """
 
-    live_cycle: int | None = None
-    """Cyclic sequence the live view shows -- the win presentation being
-    captured, or the last one that was. Not ``cycle``, which walks on through
-    the idle attract loops that follow a win and would take the live view off
-    the pass a tester is still looking at."""
+    live_kind: str = ""
+    """Which strip :attr:`live_cycles` is of -- :data:`WIN_VIDEO`,
+    :data:`IDLE_VIDEO` or, when the view spans both halves of one spin,
+    :data:`WIN_THEN_IDLE`. Empty before the run has shown any of them.
+
+    Not :attr:`pass_kind`, which is cleared the moment a window closes: the
+    live view goes on showing a finished window's frames, and a card that
+    captioned the between-spins strip as a win presentation was describing the
+    wrong thing. Set beside `live_cycles` for that reason -- the two are one
+    answer to "which window am I looking at", and :func:`_live_on` is the only
+    thing that writes either.
+    """
+
+    live_cycles: list[int] = field(default_factory=list)
+    """Cyclic sequences the live view shows, oldest first.
+
+    Not ``cycle``, which walks on through the idle attract loops that follow a
+    win and would take the live view off the pass a tester is still looking at.
+
+    A *list* rather than one sequence because a spin's presentation can be two
+    of them. Let a win's line messages finish and then take it, and the
+    between-spins strip opens a window of its own -- a second sequence, on the
+    record as a second sequence, and rightly so. But it is the same spin
+    continuing, and replacing the live view with it emptied the card of every
+    frame of the win that had just been captured. So the new sequence is
+    *appended* and the card grows; :func:`_spin_over` is where that happens
+    and :attr:`win_cycle` is how it knows the two belong together.
+
+    Reset to a single entry whenever a genuinely new spin's window opens.
+    """
+
+    win_cycle: int | None = None
+    """The win presentation whose between-spins strip has not run yet.
+
+    Set when a win opens a window and consumed by the ``cyclic-idle-strip-
+    started`` that follows it, which is the moment the win was taken. Its only
+    job is to tell that line's two cases apart: a strip opening after *this
+    run's* win is the same spin continuing and joins it, while one opening
+    after a losing spin -- or after the strip has already been round -- is a
+    spin of its own and starts the live view again.
+    """
 
     pass_kind: str = ""
-    """Which strip the window currently open is of -- :data:`_WIN_VIDEO` or
-    :data:`_IDLE_VIDEO`, empty when none is open.
+    """Which strip the window currently open is of -- :data:`WIN_VIDEO`,
+    :data:`IDLE_VIDEO` or :data:`WIN_THEN_IDLE`, empty when none is open.
 
     There to keep one strip's closing lines off the other's window. The two
     can overlap in the log: take the win before its line messages have been
     round once and ``cyclic-line-pays-cycle-finished`` arrives *after* the game
     has gone idle, where -- read as "close the window" -- it tore down the
     between-spins window a second after it opened, which is why that strip's
-    second line never got captured.
+    second line never got captured. :data:`WIN_THEN_IDLE` is that same line
+    arriving at a window which never closed, and it is refused for the same
+    reason: the strip it names has moved on, and the moment is a frame on the
+    timeline rather than the end of anything.
     """
 
     pass_interval: float = 0.0
@@ -456,10 +613,62 @@ class _ActiveRun:
     """Lines the strip is drawing in the window currently open. Set when one
     opens, and stamped onto every frame taken inside it."""
 
+    # --- the knobs the capture loop reads, and why they are here ----------
+    #
+    # Every one of these was a parameter of :func:`_sampler` until a window
+    # needed to change mid-flight. Taking the win before the line messages have
+    # been round once does exactly that: the strip runs straight on into the
+    # between-spins messages, which want a different deadline, a different
+    # event name and a loop watch the win pass has none of -- and the one thing
+    # that must *not* happen is a gap in the frames while a sampler is stopped
+    # and another started. So they live on the run and the loop re-reads them
+    # every frame, and :func:`_retune` is the whole of "the window changed".
+    pass_opener: game_log.DetectedEvent | None = None
+    """The log line each sampled frame quotes as the boundary that opened it."""
+
+    pass_event: str = ""
+    """Name stamped on a sampled frame -- one per strip, so a reader sorting a
+    run by event never has to guess which strip a frame is of."""
+
+    pass_deadline: float = 0.0
+    """When the capture loop gives up, on the monotonic clock. Absolute rather
+    than a duration because a retune moves it, and moving a duration part-way
+    through a window is ambiguous about what it is measured from."""
+
+    pass_closing_expected: bool = False
+    """Whether reaching that deadline is worth complaining about. See
+    :func:`_sampler`: the game writes the end of a win pass and writes nothing
+    at all for the end of a between-spins one."""
+
+    pass_watch: cyclic_text.LoopWatch | None = None
+    """Ends the window once the strip has come back round, or ``None`` to run
+    to the deadline. Decided from the picture -- see :func:`_loop_watch`."""
+
+    unfiled: list[int] = field(default_factory=list)
+    """Sequences of frames captured with no window open, awaiting a cycle.
+
+    A cycle is a *window* of the strip, and one log-driven frame is written
+    before its window's own marker line: ``cyclic-game-over`` is captured 400ms
+    after ``GameOverMsg`` while ``cyclic-idle-strip-started`` -- the line that
+    increments :attr:`cycle` -- is the next one. Recorded with the cycle
+    current at the time, that frame lands in the window that just *ended* and
+    :func:`live` (which scopes to one cycle) never shows it, so the between-spins
+    strip's first message was captured, read, and still missing from the card.
+
+    Re-filed by :func:`_adopt` the moment a window opens. See it for why the
+    frame belongs to the window that follows it rather than the one before.
+    """
+
     pending_reads: list[_Pending] = field(default_factory=list)
-    """This pass's frames, captured and not yet read. Appended to while
-    :attr:`pass_open` is true and worked through by :func:`_read_pending` the
-    moment it goes false -- never both at once. See :func:`_Pending`."""
+    """Frames captured and not yet read, whichever window took them.
+
+    Worked through by :func:`_read_pending` the moment a pass closes -- never
+    while one is open, so reading never competes with capture. Appended to
+    *including* while no pass is open, because a log-driven frame can be
+    written before its window opens and its caption is no less real for it:
+    see :func:`_capture`. Such a frame waits here for the next pass to close,
+    or for the run to stop, which also drains this.
+    """
 
     reading_now: bool = False
     """Whether :func:`_read_pending` is running right now. There is no reader
@@ -470,6 +679,31 @@ class _ActiveRun:
     read_count: int = 0
     """Frames read so far this run, across every pass -- never reset between
     them, unlike :attr:`pending_reads`."""
+
+    pending_recovery: list[_Recovery] = field(default_factory=list)
+    """Filed clips whose messages have not been read back out of them yet.
+
+    Appended to as each clip is filed and worked through by
+    :func:`_drain_recovery` whenever no window is open. A queue rather than a
+    call at the point of filing because the two compete: see :class:`_Recovery`.
+    """
+
+    recovering: asyncio.Task[None] | None = None
+    """The drain, if one is running. Its own task -- and the *only* piece of
+    work on this run that deliberately runs alongside the watcher -- because
+    the watcher handles one log line at a time and a recovery waited out inside
+    a handler delays every line behind it, including the one that opens the
+    next window."""
+
+    stop_recovery: bool = False
+    """Asks the drain to give way. Set when a window opens and when the run is
+    sealed; the drain checks it before each frame, so the most a window can
+    overlap with a recovery is the one frame already in flight."""
+
+    recovered_count: int = 0
+    """Frames recovered from a clip so far this run. Reported beside the
+    sampled count because the two are different evidence: a sampled frame is
+    what the stills caught live, and this is what they went past."""
 
     no_pay_count: int = 0
     """Spins this run that paid nothing, and therefore showed no win strip.
@@ -665,7 +899,7 @@ def _clip_name(clip: _Clip, suffix: str) -> str:
 
 
 async def _open_clip(
-    run: _ActiveRun, *, kind: str = _WIN_VIDEO, replaces: str = _GAME_PAYS
+    run: _ActiveRun, *, kind: str = WIN_VIDEO, replaces: str = _GAME_PAYS
 ) -> None:
     """Begin recording the window that just opened.
 
@@ -681,7 +915,7 @@ async def _open_clip(
     """
     wanted = (
         settings.CYCLIC_MESSAGES_RECORD_IDLE_VIDEO
-        if kind == _IDLE_VIDEO
+        if kind == IDLE_VIDEO
         else settings.CYCLIC_MESSAGES_RECORD_VIDEO
     )
     if not wanted or run.finishing:
@@ -843,6 +1077,11 @@ async def _file_and_record(run: _ActiveRun, clip: _Clip, closed_by: str) -> None
         )
 
     run.videos.append(video)
+    if video.file_name and settings.CYCLIC_MESSAGES_RECOVER_FROM_CLIP:
+        # Queued the moment it is filed, and recovered whenever nothing is
+        # being captured -- never here, where the caller is very often about to
+        # open the window that follows this clip. See :class:`_Recovery`.
+        run.pending_recovery.append(_Recovery(video=video))
     if video.error:
         _note(run, f"video: {video.error}")
         logger.warning(
@@ -1030,18 +1269,85 @@ async def _record(
 
     _append(screenshot, capture_error)
 
-    # Collected, not read. Every frame written inside a win presentation is
-    # kept for :func:`_read_pending` -- the sampled ones and the two log-driven
-    # frames that bracket them, since "GAME PAYS 168" is a caption like any
-    # other. Outside a presentation nothing is collected: the idle strip is
-    # logged per message, so its summary already says what the picture shows.
-    if saved is not None and run.pass_open:
-        run.pending_reads.append(
-            _Pending(sequence=sequence, path=saved, regions=run.pass_regions)
-        )
+    if saved is not None:
+        _queue_read(run, sequence=sequence, saved=saved)
 
     _touch(run)
     return saved
+
+
+def _queue_read(run: _ActiveRun, *, sequence: int, saved: Path) -> None:
+    """Keep one written frame for :func:`_read_pending`.
+
+    Collected, not read: the sampled frames and the log-driven ones alike,
+    since "GAME PAYS 168" is a caption like any other.
+
+    **Including the frames captured with no window open**, which is the whole
+    reason this is its own function. A log-driven frame can land before its
+    window opens -- ``cyclic-game-over`` is captured 400ms after
+    ``GameOverMsg`` while ``cyclic-idle-strip-started`` is the *next* line --
+    so on a losing spin the one picture the log takes was written while
+    ``pass_open`` was still false. Gated on it, that frame's caption was
+    dropped on the floor: measured on a real losing spin it reads "Game Over"
+    at 97, and nothing else in the run ever looked at it. It waits here for the
+    next pass to close, or for the run to stop, both of which drain the queue.
+
+    The bands cannot come from :attr:`_ActiveRun.pass_regions` in that case --
+    it still holds whichever window ran *last*, so after a win presentation it
+    names the one band that strip draws while the between-spins strip draws
+    two, and the second would never be cropped. Outside a presentation the
+    strip on screen is the between-spins one, so that is what a frame with no
+    window of its own is read as.
+    """
+    if not run.pass_open:
+        # Captured between two windows, so it has no cycle of its own yet --
+        # see :attr:`_ActiveRun.unfiled` and :func:`_adopt`.
+        run.unfiled.append(sequence)
+    run.pending_reads.append(
+        _Pending(
+            sequence=sequence,
+            path=saved,
+            regions=(
+                run.pass_regions
+                if run.pass_open
+                else settings.cyclic_messages_idle_regions
+            ),
+        )
+    )
+
+
+def _adopt(run: _ActiveRun) -> None:
+    """Move the frames captured before this window opened into its cycle.
+
+    A frame belongs to the window it is a picture *of*, and the one frame this
+    moves is a picture of the strip that is about to be sampled, not of the one
+    that just stopped: ``GameOverMsg`` is what puts "GAME OVER" on the
+    between-spins strip, and the frame taken 400ms later shows it. Filed under
+    the outgoing cycle it was captured, read, and then filtered out of
+    :func:`live`, which scopes to one cycle -- so the strip's first message was
+    missing from the card while sitting in the run.
+
+    Called by every window opening rather than only the between-spins one: the
+    frame precedes whichever window comes next, and a win presentation is
+    already inside its own pass by the time its ``cyclic-game-pays`` frame is
+    taken, so in practice there is nothing for it to adopt.
+    """
+    if not run.unfiled:
+        return
+    adopted = set(run.unfiled)
+    run.unfiled = []
+    for sequence in adopted:
+        at = run.index.get(sequence)
+        if at is None:
+            continue
+        run.events[at] = run.events[at].model_copy(update={"cycle": run.cycle})
+    logger.info(
+        "Cyclic message run %s: %d frame(s) taken before this window opened "
+        "belong to cycle %d",
+        run.run_id,
+        len(adopted),
+        run.cycle,
+    )
 
 
 # --- the amount, and the denomination that scales it ----------------------
@@ -1134,8 +1440,12 @@ def _loop_watch(run: _ActiveRun) -> cyclic_text.LoopWatch | None:
     from app.services import cyclic_text
 
     try:
+        # The lap bands, not every band: see
+        # CYCLIC_MESSAGES_IDLE_LOOP_REGIONS. Band 1 is still captured and read
+        # -- it just does not decide when the strip has run out of things to
+        # show, because its cycle is forty messages long and band 2's is three.
         regions = cyclic_text.strip_rois(
-            run.game, settings.cyclic_messages_idle_regions
+            run.game, settings.cyclic_messages_idle_loop_regions
         )
     except AppException as exc:
         _note(run, f"Not watching for the strip's loop: {exc.message}")
@@ -1143,115 +1453,217 @@ def _loop_watch(run: _ActiveRun) -> cyclic_text.LoopWatch | None:
     return cyclic_text.LoopWatch(regions=regions)
 
 
-async def _recover(run: _ActiveRun) -> None:
-    """Fill a just-closed window's messages in from its own clip.
+async def _start_recovery(run: _ActiveRun) -> None:
+    """Ask for the queued clips to be read back, in the background.
 
-    The live stills cannot keep up with a win presentation -- a screenshot
-    costs about six seconds while OBS records an animating scene, against the
-    two a line message stays up -- so a pass caught live is missing most of
-    what it showed. The recording is not: it has every frame. This decodes the
-    clip the window just filed, writes each sampled frame out as a screenshot
-    of its own and reads it, so the pass ends up with the messages the stills
+    Fire and forget, and deliberately *not* awaited by the handler that closed
+    the window: see :class:`_Recovery`. That handler's next job may be opening
+    the window which follows, and a recovery waited out here is time that
+    window spends on screen uncaptured.
+
+    Does nothing if a drain is already running -- one queue, one worker, so the
+    clips are recovered in the order they were filed and nothing reads two at
+    once.
+    """
+    if not settings.CYCLIC_MESSAGES_RECOVER_FROM_CLIP:
+        run.pending_recovery.clear()
+        return
+    if not run.pending_recovery or run.finishing:
+        return
+    task = run.recovering
+    if task is not None and not task.done():
+        return
+    run.stop_recovery = False
+    run.recovering = asyncio.create_task(
+        _drain_recovery(run), name=f"cyclic-messages-recovery-{run.run_id}"
+    )
+
+
+async def _drain_recovery(run: _ActiveRun) -> None:
+    """Work through the queued clips while nothing is being captured.
+
+    The one piece of work on a run that deliberately runs alongside the
+    watcher, and the guards are what make that safe: a window opening sets
+    :attr:`_ActiveRun.stop_recovery` and this returns before its next frame,
+    leaving the rest of the clip on the queue for the next quiet moment. So the
+    most a recovery can overlap a capture is the single frame already in
+    flight -- against the fifteen seconds recovering inline cost the window
+    that followed a taken win.
+
+    Never raises: a background task that does is a silent failure, and a clip
+    that will not decode costs the messages it held and nothing else.
+    """
+    try:
+        while run.pending_recovery:
+            if _recovery_stopped(run) or _finishing(run) or _capturing(run):
+                return
+            item = run.pending_recovery[0]
+            if not await _recover(run, item):
+                # A window opened part-way through. Left on the queue with its
+                # progress, so the rest of it is picked up rather than re-read.
+                return
+            run.pending_recovery.pop(0)
+    except Exception:
+        logger.exception(
+            "Cyclic message run %s could not recover a clip's messages", run.run_id
+        )
+
+
+async def _recover(run: _ActiveRun, item: _Recovery) -> bool:
+    """Fill one filed clip's messages in from the video itself.
+
+    The live stills cannot keep up with either strip -- a screenshot costs
+    about six seconds while OBS records an animating scene, against the two a
+    line message stays up, and frames measured 2.6s apart on a between-spins
+    strip whose captions change about every second -- so a window caught live
+    is missing some of what it showed. The recording is not: it has every
+    frame. This decodes the clip, writes out each frame where the caption
+    *changed* and reads it, so the window ends up with the messages the stills
     went past.
 
-    Runs after the window has closed and its clip has been filed, which is the
-    only reason it is affordable: nothing is competing for OBS or the CPU by
-    then, and the decode and its reads have the machine to themselves.
+    **Both strips, not just the win presentation.** The between-spins strip was
+    left out of this on the grounds that it holds each caption for the best
+    part of ten seconds and its stills therefore catch every one. Measured off
+    a real losing spin's own clip it holds each for about a second with a blank
+    second between them, and the three stills that pass managed caught two of
+    its three captions -- so it needs this exactly as much as a win does.
 
-    Never raises. A clip that will not decode costs the messages it held and
-    nothing else -- the stills that *were* caught are already on the record.
+    Returns whether the clip is finished with. ``False`` means a window opened
+    part-way through, and :attr:`_Recovery.written` has been advanced to
+    wherever it got to.
+
+    Never raises.
     """
-    if not settings.CYCLIC_MESSAGES_RECOVER_FROM_CLIP or run.finishing:
-        return
-    clip = next((video for video in reversed(run.videos) if video.file_name), None)
-    if (
-        clip is None
-        or clip.file_name is None
-        or clip.kind != _WIN_VIDEO
-        or clip.started_at is None
-    ):
-        # Only the win presentation needs this. The between-spins strip holds
-        # each message for the best part of ten seconds, so its stills already
-        # catch every one. `file_name` is re-checked rather than left to the
-        # search above, which the type checker cannot see through.
-        return
+    clip = item.video
+    if clip.file_name is None or clip.started_at is None:
+        return True
 
+    # Locally, for the reason the TYPE_CHECKING block at the top gives.
     from app.services import cyclic_text
 
+    # The bands *this* clip's strip draws, which is not one fixed region: a win
+    # presentation uses one line and the between-spins strip two. Reading an
+    # idle clip against the win presentation's single band is reading the one
+    # band that strip leaves empty.
+    regions = cyclic_text.clip_regions(clip.kind)
+    if not regions:
+        return True
     try:
         reader = await cyclic_text.live_reader(run.game)
     except AppException as exc:
-        _note(run, f"Could not recover this win's messages: {exc.message}")
-        return
+        _note(run, f"Could not recover this clip's messages: {exc.message}")
+        return True
 
     path = run.directory / clip.file_name
     interval = settings.CYCLIC_MESSAGES_TEXT_INTERVAL_SECONDS
-    regions = settings.cyclic_messages_text_regions
-    recovered = 0
-    try:
-        frames = await asyncio.to_thread(
-            lambda: list(cyclic_text.clip_frames(path, interval))
-        )
-    except Exception as exc:  # noqa: BLE001 - reported, never fatal
-        _note(run, f"Could not read this win's clip back: {exc}")
-        logger.warning("Could not decode %s to recover its messages: %s", path, exc)
-        return
-
     # Only the frames where the caption changed are read. A clip sampled every
     # second holds each message several times over, and at a second and a half
     # an OCR pass the difference is reading a win presentation in ten seconds
     # rather than eighty -- long enough, at eighty, to still be going when the
     # next spin needs the run.
     changes = cyclic_text.CaptionChanges(regions=reader.regions_in(regions))
-    for frame in frames:
-        if _finishing(run):
-            break
-        if not changes.changed(frame.image):
-            continue
-        at = clip.started_at + timedelta(seconds=frame.at_seconds)
-        run.next_sequence += 1
-        sequence = run.next_sequence
-        name = _screenshot_name(sequence, _RECOVERED, at)
-        target = run.directory / f"{name}.{settings.CYCLIC_MESSAGES_SCREENSHOT_FORMAT}"
-        try:
-            readings = await asyncio.to_thread(
-                _recover_frame, reader, frame, regions, target
+    frames = cyclic_text.clip_frames(path, interval)
+    # Changed frames walked past this time round; the counterpart of
+    # `_Recovery.written`, which says how many of them are already events.
+    seen = 0
+    recovered = 0
+    finished = False
+    try:
+        while True:
+            if _recovery_stopped(run) or _finishing(run) or _capturing(run):
+                break
+            try:
+                # A frame at a time off the decoder rather than a list of them
+                # all: a 90s clip's frames are full-size pictures and holding
+                # every one at once is hundreds of megabytes, which is why
+                # `clip_frames` is a generator in the first place.
+                frame = await asyncio.to_thread(_next_clip_frame, frames)
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                _note(run, f"Could not read this clip back: {exc}")
+                logger.warning(
+                    "Could not decode %s to recover its messages: %s", path, exc
+                )
+                finished = True
+                break
+            if frame is None:
+                finished = True
+                break
+            if not await asyncio.to_thread(changes.changed, frame.image):
+                continue
+            seen += 1
+            if seen <= item.written:
+                # Already on the record from an earlier attempt at this clip.
+                # Re-walked rather than skipped ahead in the decoder, because
+                # `CaptionChanges` compares each frame with the one before it
+                # and a jump would compare across the gap.
+                continue
+            at = clip.started_at + timedelta(seconds=frame.at_seconds)
+            run.next_sequence += 1
+            sequence = run.next_sequence
+            name = _screenshot_name(sequence, _RECOVERED, at)
+            target = (
+                run.directory / f"{name}.{settings.CYCLIC_MESSAGES_SCREENSHOT_FORMAT}"
             )
-        except Exception as exc:  # noqa: BLE001 - one frame is not the clip
-            logger.warning("Could not recover frame %d: %s", frame.index, exc)
-            continue
-        run.events.append(
-            CyclicEvent(
-                sequence=sequence,
-                event=_RECOVERED,
-                at=at,
-                summary=(
-                    f"Strip {frame.at_seconds:.1f}s into the presentation, "
-                    "recovered from the clip"
-                ),
-                cycle=clip.cycle or max(1, run.cycle),
-                fields={"at_seconds": f"{frame.at_seconds:.1f}"},
-                captured=True,
-                screenshot=target.name,
-                source=CyclicEventSource.SAMPLED,
-                log_line=f"recovered from {clip.file_name}",
-                readings=readings,
+            try:
+                readings = await asyncio.to_thread(
+                    _recover_frame, reader, frame, regions, target
+                )
+            except Exception as exc:  # noqa: BLE001 - one frame is not the clip
+                logger.warning("Could not recover frame %d: %s", frame.index, exc)
+                item.written = seen
+                continue
+            run.events.append(
+                CyclicEvent(
+                    sequence=sequence,
+                    event=_RECOVERED,
+                    at=at,
+                    summary=(
+                        f"Strip {frame.at_seconds:.1f}s into "
+                        f"{_STRIP_NAMES.get(clip.kind, clip.kind)}, recovered "
+                        "from the clip"
+                    ),
+                    cycle=clip.cycle or max(1, run.cycle),
+                    fields={
+                        "at_seconds": f"{frame.at_seconds:.1f}",
+                        "strip": clip.kind,
+                    },
+                    captured=True,
+                    screenshot=target.name,
+                    source=CyclicEventSource.SAMPLED,
+                    log_line=f"recovered from {clip.file_name}",
+                    readings=readings,
+                )
             )
-        )
-        run.index[sequence] = len(run.events) - 1
-        run.read_count += 1
-        recovered += 1
-        _touch(run)
+            run.index[sequence] = len(run.events) - 1
+            run.read_count += 1
+            run.recovered_count += 1
+            item.written = seen
+            recovered += 1
+            _touch(run)
+    finally:
+        # Releases the decoder's handle on the file rather than waiting for the
+        # generator to be collected -- a clip abandoned part-way through is the
+        # ordinary case here, not the exception.
+        frames.close()
 
     if recovered:
         logger.info(
-            "Cyclic message run %s recovered %d frame(s) of sequence %s from %s",
+            "Cyclic message run %s recovered %d frame(s) of sequence %s from %s%s",
             run.run_id,
             recovered,
             clip.cycle,
             clip.file_name,
+            "" if finished else " so far",
         )
         _write_manifest(run, _detail(run, status=CyclicRunState.RUNNING, stopped=None))
+    return finished
+
+
+def _next_clip_frame(
+    frames: Generator[cyclic_text.ClipFrame, None, None],
+) -> cyclic_text.ClipFrame | None:
+    """One frame off the decoder, or ``None`` at the end of the clip. Blocking."""
+    return next(frames, None)
 
 
 def _recover_frame(
@@ -1276,6 +1688,72 @@ def _recover_frame(
         )
         for line in reader.read_image(frame.image, regions, beside=target)
     ]
+
+
+# How long a stop waits for the drain to finish the frame it is on before
+# cancelling it. Sized above one decode plus one OCR pass (~1.5s for the
+# recogniser, more on a cold model), so the ordinary case always returns
+# through the drain's own code and only a wedged decode reaches the cancel.
+_RECOVERY_STOP_SECONDS = 30.0
+
+
+def _recovery_stopped(run: _ActiveRun) -> bool:
+    """Read :attr:`_ActiveRun.stop_recovery` through a call, for the reason
+    :func:`_sampling_stopped` gives."""
+    return run.stop_recovery
+
+
+def _capturing(run: _ActiveRun) -> bool:
+    """Read :attr:`_ActiveRun.pass_open` through a call, for the same reason --
+    the drain checks it either side of an ``await``, and the watcher sets it
+    from outside that coroutine while it is suspended there, which is the whole
+    point of checking twice."""
+    return run.pass_open
+
+
+def _ask_recovery_to_stop(run: _ActiveRun) -> None:
+    """Ask the drain to give way, and do not wait for it.
+
+    Not awaited, which is the whole difference from :func:`_stop_recovery` and
+    the reason both exist. This is called from the one place that must not
+    block -- a window opening -- and awaiting the drain there would put the
+    remainder of the frame it is on, a decode and an OCR pass, in front of that
+    window's first screenshot. Far better than the fifteen seconds recovering
+    inline cost, and still the wrong thing to spend on the one path where
+    capturing on schedule is the only priority.
+
+    Nothing is lost by not waiting. The drain returns through its own guard at
+    the next frame, its task stays on :attr:`_ActiveRun.recovering` until it
+    does (so :func:`_start_recovery` will not start a second one), and its
+    queue is untouched -- the clips it had not reached are recovered at the
+    next quiet moment.
+    """
+    run.stop_recovery = True
+
+
+async def _stop_recovery(run: _ActiveRun) -> None:
+    """Ask the drain to give way and wait for it, with a cancel behind it.
+
+    The waiting half, for sealing a run and for tests: an unawaited task that
+    outlives its run is the pending-task warning that fails the suite under
+    ``filterwarnings = error``. See :func:`_ask_recovery_to_stop` for the path
+    that deliberately does not wait.
+
+    Asked rather than cancelled, for the reason :func:`_stop_sampler` is: the
+    drain is nearly always inside a frame whose sequence number it has already
+    taken, and cancelled there that number is spent with no event carrying it.
+    The cancel behind it is for the decode that never comes back, which must
+    not hold a Stop press open indefinitely.
+    """
+    task, run.recovering = run.recovering, None
+    if task is None or task.done():
+        return
+    run.stop_recovery = True
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(
+            asyncio.gather(task, return_exceptions=True),
+            timeout=_RECOVERY_STOP_SECONDS,
+        )
 
 
 async def _read_pending(run: _ActiveRun) -> None:
@@ -1419,16 +1897,7 @@ def _sampling_stopped(run: _ActiveRun) -> bool:
     return run.stop_sampling
 
 
-async def _sampler(
-    run: _ActiveRun,
-    opener: game_log.DetectedEvent,
-    *,
-    interval: float,
-    max_seconds: float,
-    event: str,
-    closing_line_expected: bool,
-    loop_watch: cyclic_text.LoopWatch | None = None,
-) -> None:
+async def _sampler(run: _ActiveRun) -> None:
     """Screenshot whatever the strip is showing, on a timer, until it stops.
 
     Two windows use this and they are bracketed by different lines. A win
@@ -1438,41 +1907,53 @@ async def _sampler(
     the moment the log says so, and the interval decides how *often* a frame is
     taken and never how many.
 
-    ``max_seconds`` is per window rather than one setting, because the two fail
-    differently when their closing line never comes: a win pass that overruns
-    is still a win pass and worth following for a long time, while an idle
-    strip that overruns is a machine nobody is playing and screenshotting it
-    for the same two and a half minutes would fill a run directory with the
-    same three captions.
+    **Every knob it reads is on the run, re-read once a frame, and that is the
+    point rather than an accident.** A third window exists -- the two above,
+    run together, when the win is taken before its line messages have been
+    round once -- and it is not a third *pass*: the strip on screen runs
+    straight on from the line messages into the between-spins ones with no
+    break, so the loop must too. Stopping one sampler and starting another
+    there is a hole in the frames at precisely the moment worth catching, so
+    :func:`_retune` changes the knobs under the running loop instead. Read as
+    parameters they were fixed for the window's lifetime, which is what made
+    that impossible.
 
-    ``loop_watch`` ends the window early once the strip has shown everything
-    it has and come back round, which is the ordinary way the between-spins
-    window should stop: everything past the first lap is a caption already
-    captured. It is decided from the picture, so it costs milliseconds a frame
-    rather than the 1.5s an OCR pass would -- see :class:`cyclic_text.LoopWatch`.
-    The win presentation passes none: its messages are a list to get to the end
-    of, not a loop, and the log says when it is done.
+    :attr:`_ActiveRun.pass_deadline` is per window rather than one setting,
+    because the two fail differently when their closing line never comes: a win
+    pass that overruns is still a win pass and worth following for a long time,
+    while an idle strip that overruns is a machine nobody is playing and
+    screenshotting it for the same two and a half minutes would fill a run
+    directory with the same three captions.
 
-    ``closing_line_expected`` says whether reaching that deadline is worth
-    complaining about, and the two windows genuinely differ. The game writes
-    ``cyclic-line-pays-cycle-finished`` itself, so a win pass that never gets
-    there has something wrong with it and the run should say so. Nothing writes
-    the end of an idle strip except the player spinning again -- measured on
-    FortuneOx, eleven seconds of *completely silent* log between a losing spin
-    and the next one -- so that window ending on its deadline is the ordinary
-    case, and it repeats the same few captions until it does. Reporting it
-    would put an error on almost every losing spin in a run.
+    :attr:`_ActiveRun.pass_watch` ends the window early once the strip has
+    shown everything it has and come back round, which is the ordinary way the
+    between-spins window should stop: everything past the first lap is a
+    caption already captured. It is decided from the picture, so it costs
+    milliseconds a frame rather than the 1.5s an OCR pass would -- see
+    :class:`cyclic_text.LoopWatch`. A win presentation has none: its messages
+    are a list to get to the end of, not a loop, and the log says when it is
+    done.
+
+    :attr:`_ActiveRun.pass_closing_expected` says whether reaching the deadline
+    is worth complaining about, and the two windows genuinely differ. The game
+    writes ``cyclic-line-pays-cycle-finished`` itself, so a win pass that never
+    gets there has something wrong with it and the run should say so. Nothing
+    writes the end of an idle strip except the player spinning again --
+    measured on FortuneOx, eleven seconds of *completely silent* log between a
+    losing spin and the next one -- so that window ending on its deadline is
+    the ordinary case, and it repeats the same few captions until it does.
+    Reporting it would put an error on almost every losing spin in a run.
 
     Frames are only written here, never read -- :func:`_read_pending` does that
     once the window closes. That is the whole reason the elapsed figure below
     is wall clock and not ``index * interval``: the loop runs at whatever
     ``asyncio.sleep`` plus an OBS round trip costs, and a frame stamped with
-    the time it was *due* would drift from the time it actually landed.
+    the time it was *due* would drift from the time it actually landed. It is
+    measured from when the window opened and a retune does not reset it: a
+    merged window is one stretch of strip, and its frames are timed from the
+    moment that stretch began.
     """
-    interval = max(0.0, interval)
-    run.pass_interval = interval
     begun = time.monotonic()
-    deadline = begun + max(interval, max_seconds)
     run.sample_frames = 0
     run.sample_rate = 0.0
     index = 0
@@ -1480,13 +1961,16 @@ async def _sampler(
     # warning below: a cooperative stop returns from inside it. Putting
     # `stop_sampling` in the while condition instead would report every ordinary
     # end of a pass as a pass that never reported finishing.
-    while time.monotonic() < deadline:
+    while time.monotonic() < run.pass_deadline:
         if _sampling_stopped(run):
             return
-        await asyncio.sleep(interval)
+        await asyncio.sleep(max(0.0, run.pass_interval))
         if _sampling_stopped(run):
             # Checked again after the sleep, which is where the loop spends
             # nearly all of its time and where a stop nearly always arrives.
+            return
+        opener = run.pass_opener
+        if opener is None:  # pragma: no cover - every window sets one
             return
         index += 1
         elapsed = time.monotonic() - begun
@@ -1497,7 +1981,7 @@ async def _sampler(
             run,
             dataclasses.replace(
                 opener,
-                event=event,
+                event=run.pass_event,
                 summary=f"Strip on screen {elapsed:.1f}s into the presentation",
                 fields={
                     "sample_index": str(index),
@@ -1522,34 +2006,39 @@ async def _sampler(
         # Off the loop's own thread: opening a JPEG is blocking work, and small
         # though it is there is no reason to do it on the event loop that the
         # OBS round trip is also waiting on.
+        #
+        # Read through the run, like every other knob: a window retuned
+        # mid-flight gains a watch it did not open with, and a local bound
+        # before the loop would never see it.
+        watch = run.pass_watch
         if (
-            loop_watch is not None
+            watch is not None
             and saved is not None
-            and await asyncio.to_thread(loop_watch.saw, saved)
+            and await asyncio.to_thread(watch.saw, saved)
         ):
             logger.info(
                 "Cyclic message run %s captured %d caption(s) of the strip "
                 "and stopped: it has come round",
                 run.run_id,
-                len(loop_watch.seen),
+                len(watch.seen),
             )
             return
-    if not closing_line_expected:
+    if not run.pass_closing_expected:
         # The ordinary way this window ends. The strip loops the same few
         # captions until somebody spins, so no line was ever coming and there
         # is nothing further to see. Logged, not noted -- an entry on
         # `run.errors` here would flag almost every losing spin in a run.
         logger.info(
-            "Cyclic message run %s captured the between-spins strip for %.0fs "
-            "and stopped; it repeats until the next spin",
+            "Cyclic message run %s captured the between-spins strip until its "
+            "deadline and stopped; it repeats until the next spin",
             run.run_id,
-            max_seconds,
         )
         return
 
+    limit = settings.CYCLIC_MESSAGES_SAMPLE_MAX_SECONDS
     _note(
         run,
-        f"capture stopped after {max_seconds:g}s without the line-message pass "
+        f"capture stopped after {limit:g}s without the line-message pass "
         "reporting that it finished; raise CYCLIC_MESSAGES_SAMPLE_MAX_SECONDS "
         "if a win presentation legitimately runs longer",
     )
@@ -1557,7 +2046,69 @@ async def _sampler(
         "Cyclic message run %s stopped capturing after %.1fs without the "
         "line-message pass reporting that it finished",
         run.run_id,
-        max_seconds,
+        limit,
+    )
+
+
+def _tune(
+    run: _ActiveRun,
+    opener: game_log.DetectedEvent,
+    *,
+    interval: float,
+    max_seconds: float,
+    event: str,
+    closing_line_expected: bool,
+    loop_watch: cyclic_text.LoopWatch | None,
+) -> None:
+    """Point the capture loop's knobs at one window. See :func:`_sampler` for
+    why they are on the run rather than parameters of it."""
+    run.pass_opener = opener
+    run.pass_interval = max(0.0, interval)
+    run.pass_event = event
+    run.pass_deadline = time.monotonic() + max(run.pass_interval, max_seconds)
+    run.pass_closing_expected = closing_line_expected
+    run.pass_watch = loop_watch
+
+
+def _retune(
+    run: _ActiveRun,
+    opener: game_log.DetectedEvent,
+    *,
+    interval: float,
+    max_seconds: float,
+    event: str,
+    closing_line_expected: bool,
+    loop_watch: cyclic_text.LoopWatch | None,
+) -> None:
+    """Change what the open window is capturing, without stopping it.
+
+    The one caller is the win taken early: the game goes idle while the line
+    messages are still cycling, and the strip runs straight on from them into
+    the between-spins messages. That is one stretch of strip and it wants one
+    unbroken run of frames over it -- so nothing here touches
+    :attr:`_ActiveRun.sampler`, and the loop picks the new values up on its
+    next frame.
+
+    Everything a window decides is reset, the deadline included: the
+    between-spins half has its own, and leaving the win's in place would cut
+    it short by however long the win had already been running. What is
+    deliberately *not* reset is the achieved rate and the elapsed clock the
+    frames are stamped from -- one window, one set of figures.
+    """
+    _tune(
+        run,
+        opener,
+        interval=interval,
+        max_seconds=max_seconds,
+        event=event,
+        closing_line_expected=closing_line_expected,
+        loop_watch=loop_watch,
+    )
+    logger.info(
+        "Cyclic message run %s is carrying its open window on into %s with no "
+        "break in the frames",
+        run.run_id,
+        _STRIP_NAMES.get(run.pass_kind, run.pass_kind),
     )
 
 
@@ -1576,27 +2127,29 @@ async def _start_sampler(
     one run."""
     if not settings.CYCLIC_MESSAGES_SAMPLE_LINE_PAYS or run.finishing:
         return
+    # Asked, and deliberately not waited for. A recovery reading a clip back
+    # is the one thing on a run that can be running when a window opens, and
+    # capturing every frame on schedule is the only priority while one is -- so
+    # it gives way after the frame it is on, and this does not stand around for
+    # even that. Its queue survives to be finished at the next quiet moment.
+    _ask_recovery_to_stop(run)
     await _stop_sampler(run)
     run.stop_sampling = False
+    _tune(
+        run,
+        opener,
+        interval=interval,
+        max_seconds=max_seconds,
+        event=event,
+        closing_line_expected=closing_line_expected,
+        loop_watch=loop_watch,
+    )
     run.sampler = asyncio.create_task(
-        _window(
-            run,
-            opener,
-            interval=interval,
-            max_seconds=max_seconds,
-            event=event,
-            closing_line_expected=closing_line_expected,
-            loop_watch=loop_watch,
-        ),
-        name=f"cyclic-messages-sampler-{run.run_id}",
+        _window(run), name=f"cyclic-messages-sampler-{run.run_id}"
     )
 
 
-async def _window(
-    run: _ActiveRun,
-    opener: game_log.DetectedEvent,
-    **options: Any,
-) -> None:
+async def _window(run: _ActiveRun) -> None:
     """Capture a window, and close it if it ends on its own terms.
 
     The capture loop can finish two ways and they need opposite handling. A log
@@ -1609,7 +2162,7 @@ async def _window(
     happened to close it -- which is exactly what a strip that had already
     shown everything it has looked like: stuck on "capturing", nothing read.
     """
-    await _sampler(run, opener, **options)
+    await _sampler(run)
     if run.stop_sampling:
         # Asked to stop: the caller owns the close, and is most likely awaiting
         # this very task inside `_stop_sampler` right now.
@@ -1620,6 +2173,10 @@ async def _window(
     # recording through it would put that minute in the file.
     await _close_clip(run, closed_by=_STRIP_LOOPED)
     await _read_pending(run)
+    # The ordinary end of a between-spins window, and the quietest moment a run
+    # has: the strip has shown everything it has and the next spin is at human
+    # speed. Which is exactly when the clip it just filed should be read back.
+    await _start_recovery(run)
 
 
 async def _stop_sampler(run: _ActiveRun) -> None:
@@ -1648,6 +2205,152 @@ async def _stop_sampler(run: _ActiveRun) -> None:
             asyncio.gather(task, return_exceptions=True),
             timeout=_SAMPLER_STOP_SECONDS,
         )
+
+
+def _live_on(run: _ActiveRun, cycle: int, *, kind: str, continues: int | None) -> None:
+    """Point the live view at a window, or add one to what it already shows.
+
+    ``continues`` is the sequence this window is the rest of, when it is the
+    rest of one -- the win whose between-spins strip this is. Given one, the
+    card goes on showing that win's frames and files this window's in beside
+    them; given ``None``, the card starts again.
+
+    Both are needed and picking either for both cases is wrong. A run captures
+    every spin, so a view that never reset would grow without bound and show a
+    tester the spin before last. But a *spin* is up to two windows -- the win
+    paying out, then the strip after it has been taken -- and those two are one
+    thing a tester is looking at: resetting between them emptied the card of
+    the win that had just been captured, at the exact moment the tester pressed
+    the button that ended it.
+    """
+    if continues is not None and continues in run.live_cycles:
+        run.live_cycles.append(cycle)
+        # Named for what the card is now showing, which is both of them. The
+        # frames of either half are still stamped with their own strip's bands
+        # -- see :attr:`_Pending.regions` -- so this is a caption for the view
+        # and never an input to a reading.
+        run.live_kind = WIN_THEN_IDLE
+        return
+    run.live_cycles = [cycle]
+    run.live_kind = kind
+
+
+async def _carry_on(run: _ActiveRun, detected: game_log.DetectedEvent) -> None:
+    """Run the open win window straight on into the between-spins strip.
+
+    The win taken before its line messages have been round once. On screen
+    there is no break: the strip carries on from the line messages into "GAME
+    OVER / GAME PAYS n / PLAY 880 CREDITS", and the only thing marking the
+    boundary is this log line. So the window carries on with it -- the same
+    sampler, the same clip, the same sequence -- and everything that differs
+    between the two strips is changed underneath it.
+
+    **What this replaces, and why.** This used to stop the sampler, close the
+    window, file its clip and open a fresh window of everything: it cost the
+    end of the line messages (the frames between the last one captured and the
+    stop, which is exactly where the messages a short win has not shown yet
+    are), it cost an OBS round trip's worth of strip while the new recording
+    started, and it moved the live view onto the new sequence, which emptied
+    the card of every frame of the win. Three separate symptoms of one thing:
+    the strip did not stop, so the window should not have.
+
+    Three things change and nothing else does:
+
+    * **The bands.** The win presentation draws one line and the between-spins
+      strip draws two (CYCLIC_MESSAGES_IDLE_REGIONS), so every frame from here
+      on is stamped for both -- which is what makes the second line readable
+      at all. Frames already taken keep the single band they were taken for;
+      the second one was empty then.
+    * **The clip.** It goes on recording, and becomes a clip of both strips
+      (:data:`WIN_THEN_IDLE`) so that reading it back crops both bands. One
+      file rather than two here *only*: the ordinary case -- a win left to
+      finish, taken afterwards -- still records a clip each, because there the
+      two really are separate windows with a gap between them.
+    * **The window's own terms.** Interval and sampled-event name become the
+      between-spins strip's, because that is what is on screen now. Not the
+      elapsed clock and not the achieved rate: it is one window and they are
+      its figures. And **not the deadline and not the lap watch** -- see
+      below, which is the thing here most easily got wrong.
+
+    :attr:`_ActiveRun.pass_kind` becoming :data:`WIN_THEN_IDLE` is also what
+    keeps ``cyclic-line-pays-cycle-finished`` -- which lands *after* this line
+    when a win is taken early -- from closing the window it names. It is
+    recorded, with a frame, as the moment on the strip that it is.
+
+    **Both strips are now running at once, so this window still ends on the
+    win's terms and not on the between-spins strip's.** The top band goes on
+    cycling "LINE 4 PAYS 15", "LINE 5 PAYS 15" for however many lines paid --
+    minutes, on a 40-line win -- while the smaller band beneath it laps its
+    three captions every six seconds. Retuning onto the between-spins
+    deadline and arming its lap watch here therefore ended the window on that
+    six-second lap, with the line messages still going and
+    ``cyclic-line-pays-cycle-finished`` still more than a minute away: on the
+    run this was found on, the strip ran for another 69 seconds after the last
+    frame, uncaptured and unrecorded, and the closing line arrived to a window
+    that had already been read and filed. So the deadline stays the win's own
+    (what is left of it -- this is the same window, not a new one), the
+    closing line is still expected, and the lap watch is **not** armed until
+    that line lands and the top band really has finished. Arming it there is
+    :func:`_watch_for_the_lap`.
+    """
+    run.pass_kind = WIN_THEN_IDLE
+    run.pass_regions = settings.cyclic_messages_idle_regions
+    # The win's own sequence carries on, so nothing moves on the card and the
+    # frames from here simply keep arriving after the ones already on it.
+    run.win_cycle = None
+    run.live_kind = WIN_THEN_IDLE
+    if run.clip is not None:
+        # Mutated rather than reopened: stopping and starting OBS here is the
+        # gap in the recording this function exists to avoid, and the kind is
+        # only ever read when the clip is filed and read back.
+        run.clip.kind = WIN_THEN_IDLE
+    _retune(
+        run,
+        detected,
+        interval=settings.CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS,
+        # What is left of the win's deadline, not a fresh one of either kind.
+        # The window is unchanged in the only respect a deadline is about --
+        # it is still waiting for `cyclic-line-pays-cycle-finished`, from the
+        # same `cyclic-game-pays` it always was.
+        max_seconds=max(0.0, run.pass_deadline - time.monotonic()),
+        event=_IDLE_MESSAGE_SHOWN,
+        # Both of these are the win's still, and for the one reason: the line
+        # messages have not finished. Their closing line is still coming, and
+        # the between-spins strip lapping underneath them is not evidence
+        # there is nothing left to capture -- it laps every six seconds while
+        # they run on for as long as the win takes to pay.
+        loop_watch=None,
+        closing_line_expected=True,
+    )
+    await _record(run, detected, position=None)
+
+
+def _watch_for_the_lap(run: _ActiveRun, detected: game_log.DetectedEvent) -> None:
+    """Put a carried-on window onto the between-spins strip's own terms, now
+    that the line messages running over it have reported finishing.
+
+    The second half of :func:`_carry_on`, and the reason that one leaves the
+    deadline and the lap watch alone. Until this line lands, two strips are on
+    screen at once and only the top one knows when it is done; from here the
+    between-spins strip is all that is left, so it gets the deadline and the
+    lap watch that ordinarily end its window -- the lap counted from here,
+    since the captions it showed while the line messages were still cycling
+    have been captured already.
+
+    Still one window and still one clip: nothing about the sampler, the
+    sequence or the recording changes, exactly as at the carry-on.
+    """
+    _retune(
+        run,
+        detected,
+        interval=settings.CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS,
+        max_seconds=settings.CYCLIC_MESSAGES_IDLE_MAX_SECONDS,
+        event=_IDLE_MESSAGE_SHOWN,
+        loop_watch=_loop_watch(run),
+        # Nothing writes the end of a between-spins strip; it stops when the
+        # player spins again. The deadline is how it ordinarily ends.
+        closing_line_expected=False,
+    )
 
 
 def _is_repeat(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
@@ -1729,6 +2432,9 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             # taken, and the two show the same strip.
             run.no_pay_count += 1
             run.no_pay_since_win += 1
+            # This spin has no win to continue, so the strip it is about to
+            # show is a window of its own rather than the second half of one.
+            run.win_cycle = None
             if run.cycle == 0:
                 run.cycle = 1
             await _record(run, detected, position=None)
@@ -1740,56 +2446,52 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             # CREDITS", round and round until somebody spins again. **Both of
             # the ways a spin can end arrive here** -- a loss within a few
             # hundred milliseconds of its result, a win only once it has been
-            # taken -- so this one window covers both, and neither is inside
-            # the win presentation, which draws one line and has already
-            # finished by now.
+            # taken -- so this one line covers both.
             #
             # Nothing logs the strip's messages, exactly as nothing logs the
             # line messages, so they are sampled. Two lines, not one: see
             # CYCLIC_MESSAGES_IDLE_REGIONS.
             #
-            # No clip, deliberately. A clip is one win presentation -- see the
-            # module docstring -- and recording the gap after every spin would
-            # be recording most of the session, which is what per-win
-            # recording exists to avoid.
-            if run.pass_open:
-                # A presentation still open -- the win was taken before its
-                # line messages had been round once -- ends here rather than
-                # running on into the window about to replace it. Its clip is
-                # stopped *now*, before anything else: it is a recording of the
-                # presentation and the presentation is over.
-                await _stop_sampler(run)
-                run.pass_open = False
-                run.pass_kind = ""
-                await _close_clip(run, closed_by=_IDLE_STRIP_STARTED)
-                # The clip is complete even though the stills are not, so the
-                # messages it holds are recovered before the next window opens.
-                await _recover(run)
-                # Deliberately *not* read here. The strip this event opens is
-                # already on screen, and an OCR pass takes about as long as the
-                # strip takes to run -- reading now would spend the whole of it
-                # and leave the window it belongs to starting a minute late,
-                # with its own clip recording the read. The frames stay pending
-                # and are read with this window's own once this one closes;
-                # each carries the bands it was captured for, so a win frame is
-                # still read as a win frame.
-                logger.info(
-                    "Cyclic message run %s: the win was taken before its line "
-                    "messages finished; its %d frame(s) will be read with the "
-                    "between-spins strip's",
-                    run.run_id,
-                    len(run.pending_reads),
-                )
+            # Which of *three* things this is depends on what came before it,
+            # and the three are handled below in the order they read:
+            #
+            # 1. A win still being captured -- the win was taken before its
+            #    line messages had been round once. The strip does not stop
+            #    and neither does the window: :func:`_carry_on`.
+            # 2. A win already finished -- the ordinary case, the win taken
+            #    after its line messages completed. A window of its own, but
+            #    the same spin, so the live view keeps the win's frames and
+            #    this one's are appended to them.
+            # 3. Anything else -- a losing spin, or a strip that has already
+            #    been round. A spin of its own, and the live view starts again.
             run.pending_start = None
+            if run.pass_open and run.pass_kind == WIN_VIDEO:
+                await _carry_on(run, detected)
+                return
+
+            # The win this strip belongs to, if the run has one still waiting
+            # for it. Read before the cycle moves, and cleared either way: a
+            # win's between-spins strip runs once.
+            continues, run.win_cycle = run.win_cycle, None
             run.cycle += 1
             run.position = 0
-            run.live_cycle = run.cycle
+            # Appended rather than replacing when this is the second half of a
+            # spin whose first half is already on the card. That card is what a
+            # tester is watching while they press Take Win, and swapping it for
+            # an empty one at that exact moment is what made the win's frames
+            # look like they had been thrown away -- they had not; they were
+            # filed under a sequence the view had just stopped showing.
+            _live_on(run, run.cycle, kind=IDLE_VIDEO, continues=continues)
             run.pass_regions = settings.cyclic_messages_idle_regions
-            run.pass_kind = _IDLE_VIDEO
+            run.pass_kind = IDLE_VIDEO
             run.pass_open = True
+            # After the cycle is settled and before the first frame: the
+            # between-spins strip's first message was captured by the log line
+            # before this one. See :func:`_adopt`.
+            _adopt(run)
             # Before the first frame, so the clip covers the strip from its
             # first message rather than joining it part-way.
-            await _open_clip(run, kind=_IDLE_VIDEO, replaces=_IDLE_STRIP_STARTED)
+            await _open_clip(run, kind=IDLE_VIDEO, replaces=_IDLE_STRIP_STARTED)
             await _record(run, detected, position=None)
             await _start_sampler(
                 run,
@@ -1810,15 +2512,24 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             # gone. Only closes that strip's own window: the line fires
             # whenever the game leaves idle, including for reasons that have
             # nothing to do with a window being open.
-            if not run.pass_open or run.pass_kind != _IDLE_VIDEO:
+            if not run.pass_open or run.pass_kind not in (
+                IDLE_VIDEO,
+                WIN_THEN_IDLE,
+            ):
                 return
             await _stop_sampler(run)
             run.pass_open = False
             run.pass_kind = ""
+            run.win_cycle = None
             run.cycle_count += 1
             await _record(run, detected, position=None)
             await _close_clip(run, closed_by=_IDLE_STRIP_ENDED)
             await _read_pending(run)
+            # Every clip filed since the last quiet moment -- this window's own
+            # and, after a taken win, the presentation before it -- read back in
+            # the background. Both need it: the stills of either strip miss
+            # captions, for the same reason and to a similar degree.
+            await _start_recovery(run)
             return
 
         if detected.event == _GAME_PAYS:
@@ -1830,10 +2541,15 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             run.position = 1
             # The live view follows this sequence until the next win opens one,
             # rather than following `cycle` on into the attract loops after it.
-            run.live_cycle = run.cycle
+            _live_on(run, run.cycle, kind=WIN_VIDEO, continues=None)
+            # And the between-spins strip that follows this win, whenever the
+            # player takes it, is the rest of this same spin. See
+            # :attr:`_ActiveRun.win_cycle`.
+            run.win_cycle = run.cycle
             run.pass_regions = settings.cyclic_messages_text_regions
-            run.pass_kind = _WIN_VIDEO
+            run.pass_kind = WIN_VIDEO
             run.pass_open = True
+            _adopt(run)
             # Recording starts before the frame is taken, so the GAME PAYS
             # banner this event screenshots is inside the video as well.
             await _open_clip(run)
@@ -1882,10 +2598,12 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
                 # it instead. Keyed on the window rather than on "have we seen
                 # a win yet": the second win of a run whose amount was missed
                 # needs capturing exactly as much as the first.
-                run.live_cycle = run.cycle
+                _live_on(run, run.cycle, kind=WIN_VIDEO, continues=None)
+                run.win_cycle = run.cycle
                 run.pass_regions = settings.cyclic_messages_text_regions
-                run.pass_kind = _WIN_VIDEO
+                run.pass_kind = WIN_VIDEO
                 run.pass_open = True
+                _adopt(run)
                 await _start_sampler(
                     run,
                     detected,
@@ -1899,13 +2617,31 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             return
 
         if detected.event == _LINE_PAYS_CYCLE_DONE:
-            # Only closes the *win* window. Taking the win before the line
-            # messages have been round once makes the game go idle first, and
-            # this line then lands with the between-spins window already open
-            # -- where closing "the current window" ended that strip a second
-            # after it started and lost everything it had to say. Recorded
-            # either way: the line is real and belongs on the timeline.
-            if run.pass_kind != _WIN_VIDEO:
+            # Only closes a window that is still purely the *win* one.
+            # Taking the win before the line messages have been round once
+            # makes the game go idle first, and this line then lands with the
+            # window already carried on into the between-spins strip
+            # (:data:`WIN_THEN_IDLE`) or with a separate between-spins window
+            # already open -- where closing "the current window" ended that
+            # strip a second after it started and lost everything it had to
+            # say. Recorded either way: the line is real, it is a moment on
+            # the strip, and it belongs on the timeline with a frame of its own.
+            if run.pass_open and run.pass_kind == WIN_THEN_IDLE:
+                # A carried-on window, and this is the half of it that knew
+                # when it was finished. The line messages are done; the strip
+                # beneath them is not, and neither is the window. So the pass
+                # is counted and framed like the win pass it half was, and
+                # then handed over to the between-spins strip's own deadline
+                # and lap watch -- which :func:`_carry_on` deliberately did
+                # not arm, because until this line arrived they would have
+                # ended the window on the small band's six-second lap with
+                # the line messages still running.
+                run.cycle_count += 1
+                run.position += 1
+                await _record(run, detected, position=run.position)
+                _watch_for_the_lap(run, detected)
+                return
+            if run.pass_kind != WIN_VIDEO:
                 await _record(run, detected, position=None)
                 return
             # Stop first: the pass is over, and a frame taken after this line
@@ -1927,7 +2663,7 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             # waiting in the log; reading is neither, and only starts once
             # there is truly nothing left to capture.
             await _read_pending(run)
-            await _recover(run)
+            await _start_recovery(run)
             return
 
         if detected.event == _RESULTS_CYCLE_STOPPED:
@@ -1937,9 +2673,13 @@ async def _handle(run: _ActiveRun, raw: str) -> None:
             run.pass_open = False
             run.pass_kind = ""
             await _close_clip(run, closed_by=_RESULTS_CYCLE_STOPPED)
+            # Whatever stopped the strip ended this spin's presentation; the
+            # next `cyclic-idle-strip-started` is not the rest of it.
+            run.win_cycle = None
             await _record(run, detected, position=None)
             run.position = 0
             await _read_pending(run)
+            await _start_recovery(run)
             return
 
         # Anything else the rule set recognises -- 'cyclic-game-over' and the
@@ -1986,6 +2726,10 @@ async def _finish(run: _ActiveRun, *, status: CyclicRunState) -> CyclicRunDetail
     # the replayed lines opening a new one.
     run.finishing = True
     await _stop_sampler(run)
+    # Before the catch-up read below rather than after: the drain is the one
+    # thing that can still be running here, and the final read should have the
+    # machine to itself for the same reason every other read does.
+    await _stop_recovery(run)
 
     # Events logged between the last poll and the stop request still count.
     for raw in run.log.new_lines():
@@ -2001,6 +2745,21 @@ async def _finish(run: _ActiveRun, *, status: CyclicRunState) -> CyclicRunDetail
     # be if the pass had closed on its own -- capturing has stopped either way,
     # so there is nothing left for this to compete with.
     await _read_pending(run)
+
+    # Deliberately *not* noted on `errors`, and deliberately not drained here
+    # either. A queue of long clips is minutes of OCR and Stop should stop, so
+    # a sealed run leaving clips unread is the ordinary way a run ends rather
+    # than a fault -- and `errors` is rendered as the run's problems. Saying
+    # it there put a red line on almost every run to tell a reader something
+    # the "Read the messages" button beside each clip already offers. The
+    # queue itself is still reported: see `CyclicStatus.recovery_pending`.
+    if run.pending_recovery:
+        logger.info(
+            "Cyclic message run %s stopped with %d clip(s) still unread; "
+            "'Read the messages' on each reads it back",
+            run.run_id,
+            len(run.pending_recovery),
+        )
 
     detail = _detail(run, status=status, stopped=datetime.now())
     _write_manifest(run, detail)
@@ -2111,50 +2870,15 @@ def status() -> CyclicStatus:
         video_count=len(run.videos),
         sampling=run.sampler is not None and not run.sampler.done(),
         reading=run.reading_now,
+        recovering=run.recovering is not None and not run.recovering.done(),
+        recovery_pending=len(run.pending_recovery),
+        recovered_count=run.recovered_count,
         no_pay_count=run.no_pay_count,
         queue_depth=len(run.pending_reads),
         read_count=run.read_count,
         sample_rate=run.sample_rate,
         recent_events=sorted(run.events, key=lambda event: event.sequence)[-recent:],
         errors=list(run.errors),
-    )
-
-
-# How much slower than the interval asked for the capture loop may actually
-# run before the pass is called at risk of having skipped messages.
-#
-# 1.3x rather than 1.0x because the loop is `sleep(interval)` *plus* an OBS
-# round trip and can never hit the interval exactly -- and because what
-# actually has to be cleared is the shortest dwell (1.3-1.8s on FortuneOx)
-# against a 1.0s interval, so there is real headroom before a gap costs a
-# message. Deliberately a ratio and not an absolute gap: lowering the interval
-# lowers the bar with it.
-_COVERAGE_SLACK = 1.3
-
-
-def _coverage_warning(run: _ActiveRun) -> str | None:
-    """Whether this pass's frames landed far enough apart to have skipped
-    messages, said in words.
-
-    The one failure this feature could otherwise never report. A message the
-    loop sampled either side of leaves nothing behind -- no gap, no error, just
-    a caption that is missing from a list which looks complete -- so the check
-    has to be made from the rate rather than from the frames. Compared against
-    the interval that was *asked* for, because that is the value chosen to sit
-    under the dwell; the loop failing to keep to it is exactly the thing worth
-    saying.
-    """
-    interval = run.pass_interval
-    if run.sample_rate <= 0 or interval <= 0:
-        return None
-    achieved = 1 / run.sample_rate
-    if achieved <= interval * _COVERAGE_SLACK:
-        return None
-    return (
-        f"Frames landed {achieved:.1f}s apart, against the {interval:g}s asked "
-        "for. A message stays on the strip for less than that, so this pass may "
-        "have skipped some. The clip covers the whole pass either way -- read "
-        "the messages off it below for the complete list."
     )
 
 
@@ -2166,35 +2890,40 @@ def live() -> CyclicLiveView:
     screen as soon as OBS has written it. Never fails -- like :func:`status`,
     an idle backend is an answer and not an error.
 
-    Scoped to :attr:`_ActiveRun.live_cycle`, so the frames stay put once a pass
-    ends instead of being replaced by the attract loop that follows it.
+    Scoped to :attr:`_ActiveRun.live_cycles`, so the frames stay put once a
+    pass ends instead of being replaced by the attract loop that follows it --
+    and so a spin captured as two windows is still shown as one spin. See
+    :func:`_live_on`: taking a win after its line messages have finished opens
+    a sequence of its own, and the card grows by it rather than being emptied
+    and started again.
+
+    ``cycle`` reports the first of them, which is the one the view is named
+    for: the win, when there is a win.
     """
     run = _run
     if run is None:
         return CyclicLiveView(active=False)
 
-    cycle = run.live_cycle
-    frames = (
-        sorted(
-            (event for event in run.events if event.captured and event.cycle == cycle),
-            key=lambda event: event.sequence,
-        )
-        if cycle is not None
-        else []
+    cycles = set(run.live_cycles)
+    frames = sorted(
+        (event for event in run.events if event.captured and event.cycle in cycles),
+        key=lambda event: event.sequence,
     )
     return CyclicLiveView(
         active=True,
         run_id=run.run_id,
         game=run.game,
-        cycle=cycle,
+        cycle=run.live_cycles[0] if run.live_cycles else None,
+        strip=run.live_kind or None,
         capturing=run.pass_open,
         reading=run.reading_now,
+        recovering=run.recovering is not None and not run.recovering.done(),
+        recovery_pending=len(run.pending_recovery),
         spins_without_pay=run.no_pay_since_win,
         queue_depth=len(run.pending_reads),
         read_count=run.read_count,
         sample_rate=run.sample_rate,
         sample_interval_seconds=run.pass_interval,
-        coverage_warning=_coverage_warning(run),
         frame_count=len(frames),
         # The newest, not the oldest: a pass longer than the cap is one whose
         # last frames are the ones still being read.
@@ -2281,6 +3010,7 @@ async def reset() -> None:
         run.pass_open = False
         await _stop_watching(run)
         await _stop_sampler(run)
+        await _stop_recovery(run)
         await _stop_guard(run)
         await _await_closing(run)
     _lock = None

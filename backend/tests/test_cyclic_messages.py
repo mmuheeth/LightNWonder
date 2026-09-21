@@ -100,6 +100,23 @@ ATTRACT_ENDED = (
     "09/08/26 15:55:33.051 00 FortuneOx:12980 DBG: [MessageQueue.Publish] "
     "msg[GDK.Common.ServerAPI.AttractSequenceEndCompleted]"
 )
+# --- the between-spins strip, verbatim -------------------------------------
+# The window a spin *ends* into, whichever way it ended -- a loss within a few
+# hundred milliseconds of its result, a win only once it has been taken. It is
+# bracketed on the state machine rather than on either result line for exactly
+# that reason, so these two lines are what open and close it.
+IDLE_STRIP_STARTED = (
+    "09/08/26 16:36:35.256 01 FortuneOx:12980 INF: "
+    "StateMachine[IdleStateMachine] transitioned from "
+    "[stateEvaluateGameFlowState] to [stateIdleWithCredits] on event "
+    "[GDK.Common.ServerAPI.GameOverMsg]"
+)
+IDLE_STRIP_ENDED = (
+    "09/08/26 16:36:44.019 01 FortuneOx:12980 INF: "
+    "StateMachine[IdleStateMachine] transitioned from "
+    "[stateIdleWithCredits] to [stateStartGameFlow] on event "
+    "[GDK.Client.ClientMessaging.PlayButtonPressedMsg]"
+)
 NOISE = "09/08/26 16:36:37.093 00 FortuneOx:12980 DBG: coin value: 200"
 
 
@@ -242,9 +259,21 @@ def fake_obs(
 
 @pytest.fixture
 def quick_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Sample fast enough for a test. See the module docstring."""
+    """Sample fast enough for a test, both windows. See the module docstring.
+
+    Both, because the two are sampled at their own intervals and against their
+    own deadlines -- a test that patched only the win pass's would wait out the
+    between-spins window's shipped 90s deadline.
+    """
     monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_INTERVAL_SECONDS", 0.05)
     monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_MAX_SECONDS", 5.0)
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_IDLE_MAX_SECONDS", 5.0)
+    # Nothing here can decode the fake one-line mp4 the recorder writes, and a
+    # test asserting about *capture* should not be waiting on an OCR engine to
+    # decide whether it ran. The queue itself is asserted directly instead --
+    # see `test_a_taken_win_queues_its_clip_instead_of_reading_it_back`.
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_RECOVER_FROM_CLIP", False)
 
 
 @pytest.fixture
@@ -304,6 +333,17 @@ async def wait_until(
 
 def events_named(detail: Any, name: str) -> list[Any]:
     return [event for event in detail.events if event.event == name]
+
+
+def live_frames_named(name: str) -> list[Any]:
+    """Frames of the window the live view is showing, by event name.
+
+    Off ``live()`` rather than ``status()`` because that is the payload scoped
+    to one window: the sampled counts on ``status()`` are the run's, so a
+    window still to take its first frame is indistinguishable there from one
+    whose predecessor is still going.
+    """
+    return [frame for frame in cyclic_service.live().frames if frame.event == name]
 
 
 # --- the rules ------------------------------------------------------------
@@ -986,3 +1026,473 @@ async def test_abort_seals_the_record_as_interrupted(
 
     assert cyclic_service.status().active is False
     assert cyclic_service.get_run(run_id).status is CyclicRunState.INTERRUPTED
+
+
+# --- the between-spins strip, and the window after a taken win -------------
+# Both of these are about the *second* set of messages a spin produces: the
+# strip that runs once it is over, which is "GAME OVER", "GAME PAYS n" and
+# "PLAY 880 CREDITS" whether the spin lost or its win has been collected. The
+# game logs not one of those three, so the window is sampled exactly as a win
+# presentation is -- and the bug both tests exist against is the window being
+# *opened late*, which leaves the strip recorded as two boundaries with
+# nothing between them and looks identical to a strip that showed nothing.
+
+
+async def test_a_losing_spin_gets_the_between_spins_window_sampled(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """A loss pays nothing, so it has no win presentation at all -- but the
+    strip it leaves up is a cyclic message strip like any other and is the only
+    thing this feature can capture about that spin."""
+    append(game_log_file, LOSING_SPIN, IDLE_STRIP_STARTED)
+    await wait_until(
+        lambda: cyclic_service.status().sampled_count >= 3,
+        what="the between-spins strip to be sampled",
+    )
+    append(game_log_file, IDLE_STRIP_ENDED)
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    frames = events_named(detail, "cyclic-idle-message-shown")
+    assert len(frames) >= 3
+    # Forced on rather than inherited from the opening line, which takes no
+    # picture: inheriting it made every frame of this strip a marker with no
+    # screenshot, so a losing spin recorded a dozen events and no images.
+    assert all(frame.screenshot is not None for frame in frames)
+    assert all(frame.source is CyclicEventSource.SAMPLED for frame in frames)
+
+
+async def test_the_between_spins_strip_is_sampled_at_its_own_interval(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """Its own setting, and the live view reports *that* one rather than the
+    win pass's -- reading the wrong one told a window it was behind when the
+    interval it asked for was exactly what it got, and raised a coverage
+    warning about it."""
+    append(game_log_file, LOSING_SPIN, IDLE_STRIP_STARTED)
+    await wait_until(
+        lambda: cyclic_service.status().sampled_count >= 2,
+        what="the between-spins strip to be sampled",
+    )
+
+    view = cyclic_service.live()
+    assert view.sample_interval_seconds == pytest.approx(
+        settings.CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS
+    )
+
+
+async def test_taking_a_win_early_carries_the_window_on_without_a_break(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """Take the win before its line messages have been round once.
+
+    On screen nothing stops: the strip runs straight on from "LINE 1 PAYS 250"
+    into "GAME OVER / GAME PAYS n / PLAY 880 CREDITS", and the only thing
+    marking the boundary is a log line. So the window runs straight on with it
+    -- one sequence, one unbroken run of frames, one clip.
+
+    What this replaced closed the win window here and opened a fresh one. That
+    cost the end of the line messages, which on a win taken this early is
+    exactly where the messages it has not shown yet are; and it moved the live
+    view onto the new sequence, which emptied the card of the win a tester was
+    watching at the very moment they pressed the button.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    before = cyclic_service.live()
+    assert before.strip == cyclic_service.WIN_VIDEO
+    win_cycle = before.cycle
+
+    # Take win: the game goes idle while the line messages are still running.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    # Waited on the *strip's own* frames rather than on the sampled count,
+    # which the win pass is still climbing: the claim is that this strip gets
+    # frames of its own, and promptly.
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to start being sampled",
+    )
+
+    # Never stopped, and never on a second sequence. Both halves are the same
+    # window, which is what "no break in the frames" means concretely.
+    carried = cyclic_service.live()
+    assert carried.capturing is True
+    assert carried.cycle == win_cycle
+    assert carried.strip == cyclic_service.WIN_THEN_IDLE
+
+    # And the line messages captured before the button was pressed are still
+    # on the card, with the strip's own frames appended after them.
+    assert len(live_frames_named("cyclic-line-pays-shown")) >= 2
+
+    # The line the game writes *after* going idle. It names the win window, so
+    # read as "close the current window" it tore down the strip a second after
+    # it started -- here it is a moment on the timeline and nothing more.
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-cycle-finished")) == 1,
+        what="the line-message cycle's own finishing line to be recorded",
+    )
+    assert cyclic_service.live().capturing is True
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:34.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    # Both sets of messages, and both under the one sequence: the spin is one
+    # thing that happened, however the log brackets its halves.
+    line_pays = events_named(detail, "cyclic-line-pays-shown")
+    idle = events_named(detail, "cyclic-idle-message-shown")
+    assert line_pays, "the win presentation captured no line messages"
+    assert idle, "the strip after the win was taken captured nothing"
+    assert {event.cycle for event in line_pays} == {event.cycle for event in idle}
+    assert all(frame.screenshot is not None for frame in idle)
+
+
+async def test_a_win_taken_early_is_captured_to_its_own_closing_line(
+    game_log_file: Path,
+    quick_sampling: None,
+    running: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A carried-on window ends on the line messages, not on the strip beneath
+    them.
+
+    Take the win early and two strips run at once: the top band goes on
+    cycling "LINE 4 PAYS 15" for as long as the win takes to pay -- minutes on
+    a 40-line one -- while the small band underneath laps its three
+    between-spins captions every six seconds. Arming the lap watch at the
+    carry-on therefore closed the window on that first six-second lap, with
+    the line messages still running: measured on a real run, six frames and
+    then 69 uncaptured seconds, with ``cyclic-line-pays-cycle-finished``
+    arriving to a window that had already been read and filed.
+
+    The watch is stubbed to fire on its very first frame, so "was it armed"
+    is the only thing this can be measuring.
+    """
+
+    class _AlwaysLooped:
+        """A lap watch that says the strip has come round immediately."""
+
+        # Only read to log how much of the strip a window saw.
+        seen: tuple[object, ...] = ()
+
+        def saw(self, path: Path) -> bool:  # noqa: ARG002 - the stub's point
+            return True
+
+    armed: list[str] = []
+
+    def _stub(run: Any) -> Any:
+        armed.append(run.pass_kind)
+        return _AlwaysLooped()
+
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+
+    monkeypatch.setattr(cyclic_service, "_loop_watch", _stub)
+
+    # Take win, before the line messages have been round once.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 4,
+        what="the carried-on window to go on sampling past the strip's lap",
+    )
+    # Which is the claim: the between-spins strip lapping is not the end of a
+    # window whose line messages have not reported finishing.
+    assert armed == [], "the lap watch was armed while the line messages ran"
+    assert cyclic_service.status().sampling is True
+
+    # And here is the line that really does end them. The window is still one
+    # window -- it now watches for the lap it could not watch for before.
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the strip's own lap to end the window, now the win pass has",
+    )
+    assert armed == [cyclic_service.WIN_THEN_IDLE]
+
+    detail = await cyclic_service.stop()
+    # Every frame of the spin under the one sequence, the closing line's own
+    # included -- it is the last line message, not a marker on a dead window.
+    finished = events_named(detail, "cyclic-line-pays-cycle-finished")
+    assert len(finished) == 1
+    assert finished[0].screenshot is not None
+    idle = events_named(detail, "cyclic-idle-message-shown")
+    assert len(idle) >= 4
+    assert {event.cycle for event in idle} == {finished[0].cycle}
+
+
+async def test_a_carried_window_reads_the_second_line_from_the_moment_it_appears(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """The second band is the point of carrying on, not a side effect.
+
+    A win presentation draws one line and the between-spins strip draws two,
+    and which bands a frame is read for is stamped on it when it is captured
+    (see ``_Pending.regions``) -- so carrying the window on has to widen them
+    at the boundary or every frame after the button press is read for the one
+    band the strip has stopped using.
+
+    Asserted on the pending reads rather than on captions, which need an OCR
+    engine the suite has no business requiring.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    run = cyclic_service._run
+    assert run is not None
+
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to start being sampled",
+    )
+
+    # Asserted as a *shape* rather than against a frame count taken before the
+    # boundary, deliberately: the capture loop is still running while the
+    # watcher reads the line, so where exactly the window widened is a race and
+    # is not the claim. The claim is that it widened once and stayed widened --
+    # one band for as long as only the win presentation was on screen, both
+    # from the boundary on, and never back again.
+    one = settings.cyclic_messages_text_regions
+    both = settings.cyclic_messages_idle_regions
+    bands = [pending.regions for pending in run.pending_reads]
+    assert set(bands) == {one, both}
+    widened = bands.index(both)
+    assert bands[:widened] == [one] * widened
+    assert bands[widened:] == [both] * (len(bands) - widened)
+
+    await cyclic_service.stop()
+
+
+async def test_a_win_taken_early_records_one_clip_of_both_strips(
+    game_log_file: Path,
+    quick_sampling: None,
+    recorder: FakeRecorder,
+    running: None,
+) -> None:
+    """One continuous stretch of strip is one recording.
+
+    The ordinary case still gets a clip each -- a win presentation and the
+    strip after it are two different things to watch. But a win taken early
+    never lets the first one end: stopping and restarting OBS at the boundary
+    is a hole in the recording at the one moment the recording is for, so the
+    clip carries on and becomes a clip of both. Its kind says so, which is
+    what makes ``cyclic_text.clip_regions`` crop both bands out of it.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to start being sampled",
+    )
+    # Still the same recording: nothing was stopped at the boundary.
+    assert recorder.files == []
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:34.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    filed = [video for video in detail.videos if video.file_name]
+    assert len(filed) == 1
+    assert filed[0].kind == cyclic_service.WIN_THEN_IDLE
+    assert cyclic_service.WIN_THEN_IDLE in filed[0].file_name
+
+
+async def test_a_win_taken_after_its_messages_finish_keeps_them_on_the_card(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """The other way round, and the one that is *two* windows.
+
+    Let the line messages finish and the win window closes on its own line, as
+    it should. Taking the win then opens the between-spins strip as a window
+    of its own -- a second sequence, on the record as a second sequence,
+    because that is what it is. But it is the same spin, so the live view
+    keeps the win's frames and files the strip's in after them: the card a
+    tester is watching grows rather than emptying.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the line messages to finish",
+    )
+    finished = cyclic_service.live()
+    win_cycle = finished.cycle
+    won = len(live_frames_named("cyclic-line-pays-shown"))
+    assert won >= 2
+
+    # Take win, a beat later.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:35.500"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to be sampled",
+    )
+
+    live = cyclic_service.live()
+    # Named for the win it began with, and still carrying every frame of it.
+    assert live.cycle == win_cycle
+    assert live.strip == cyclic_service.WIN_THEN_IDLE
+    assert len(live_frames_named("cyclic-line-pays-shown")) == won
+    # In order, and the strip's frames after the win's rather than instead.
+    assert [frame.sequence for frame in live.frames] == sorted(
+        frame.sequence for frame in live.frames
+    )
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:44.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    # Two sequences on the record, unlike the win taken early: here the strip
+    # really did stop and start again, and the manifest should say so.
+    line_pays = events_named(detail, "cyclic-line-pays-shown")
+    idle = events_named(detail, "cyclic-idle-message-shown")
+    assert {event.cycle for event in line_pays} != {event.cycle for event in idle}
+
+
+async def test_a_losing_spin_starts_the_live_view_again(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """The view grows across one spin, never across two.
+
+    A spin's two halves belong together; the spin after it does not. Without
+    this the card would accumulate every window of a session and show a tester
+    the spin before last beside the one in front of them.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:35.500"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the strip after the win to be sampled",
+    )
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:44.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close that window",
+    )
+
+    spin = cyclic_service.live().cycle
+
+    # The next spin loses, so its strip is nobody's second half.
+    append(game_log_file, at(LOSING_SPIN, "16:36:50.000"))
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:50.400"))
+    # Waited on the view *moving*, not on frames named for the strip: the
+    # previous spin's own between-spins frames carry that name too and are
+    # still on the card, so a count of them is satisfied before this spin has
+    # taken a single one.
+    await wait_until(
+        lambda: cyclic_service.live().cycle != spin,
+        what="the losing spin to start the live view again",
+    )
+
+    live = cyclic_service.live()
+    assert live.strip == cyclic_service.IDLE_VIDEO
+    assert live_frames_named("cyclic-line-pays-shown") == []
+
+    await cyclic_service.stop()
+
+
+async def test_a_taken_win_queues_its_clip_instead_of_reading_it_back(
+    game_log_file: Path,
+    quick_sampling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    recorder: FakeRecorder,
+    running: None,
+) -> None:
+    """A clip is queued the moment it is filed, never read back inline.
+
+    The handler that closes a window is very often about to open the next one
+    -- let a win finish and take it, and the between-spins strip is on screen
+    within a beat of the win's clip being filed. A decode costs seconds to
+    tens of seconds, so recovering there cost that strip its first fifteen and
+    the run recorded a window opening and closing with not one frame in
+    between. The queue is what fixed it, and this asserts the queue rather
+    than the symptom.
+    """
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_RECOVER_FROM_CLIP", True)
+    # Nothing in the suite can decode the recorder's one-line mp4, so the real
+    # drain would fail per clip and tell us nothing. Stood in for by one that
+    # merely takes its time, which is the property under test: a recovery is
+    # slow, and the window after a taken win must not wait for it.
+    drained: list[float] = []
+
+    async def slow_drain(_run: Any) -> None:
+        drained.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(0.5)
+
+    monkeypatch.setattr(cyclic_service, "_drain_recovery", slow_drain)
+
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: cyclic_service.status().sampled_count >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: cyclic_service.status().recovery_pending >= 1,
+        what="the win's clip to be queued for recovery",
+    )
+
+    # Queued, and the window that follows it opens anyway -- which is the
+    # whole point. Recovering here, inline, is what left that strip with its
+    # window opened and closed and not one frame in between.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:35.500"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to be sampled while a clip waits",
+    )
+    assert cyclic_service.live().capturing is True
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:44.000"))
+    await wait_until(
+        lambda: cyclic_service.status().recovery_pending >= 2,
+        what="the between-spins clip to be queued too",
+    )
+    detail = await cyclic_service.stop()
+
+    # And the drain did get asked, rather than the queue simply never being
+    # worked: queued is not the same fact as dropped.
+    assert drained
+
+    # Both windows recorded a clip, and both are on the queue: the win
+    # presentation and the strip that followed it.
+    kinds = [video.kind for video in detail.videos if video.file_name]
+    assert cyclic_service.WIN_VIDEO in kinds
+    assert cyclic_service.IDLE_VIDEO in kinds
+    # And it is *not* said on `errors`. A queue left unread is how a run
+    # ordinarily ends -- Stop should stop rather than spend minutes on OCR --
+    # so noting it there put a red line on almost every run to say something
+    # the "Read the messages" button beside each clip already offers.
+    assert not any("read back" in note for note in detail.errors)

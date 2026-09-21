@@ -304,14 +304,27 @@ DEFAULT_LINE_OPTIONS = PaddleLineOptions()
 def _build_recognizer(options: PaddleLineOptions) -> Any:
     """The recogniser, built once and kept.
 
-    No ``enable_mkldnn=False`` here, unlike :func:`_build`: that is required to
-    keep the *detector* from dying on this machine, and there is no detector on
-    this path. Paddle's own defaults (oneDNN, 10 of 12 threads) read a caption
-    correctly and are what the timings above were taken with.
+    ``enable_mkldnn=False`` for the same reason as :func:`_build` but on
+    different evidence. There it is required to keep the *detector* from dying
+    on this machine; here nothing dies either way and oneDNN is simply
+    **slower**, which is the opposite of what it is for. Measured on 31 real
+    caption crops off a FortuneOx clip, same model and same frames:
+
+        enable_mkldnn=False   2.06 s/frame   31/31 fit the caption grammar
+        enable_mkldnn=True    2.67 s/frame   31/31 fit the caption grammar
+
+    Identical strings and identical 98.8 mean confidence, 23% of the clock.
+    A caption band is *tiny* -- 388x38 after the 2x upscale -- and oneDNN's
+    per-op setup costs more on an image that size than the kernels it picks
+    save. Do not turn it back on without re-measuring on real crops: an
+    earlier note here assumed Paddle's defaults were what the model's timings
+    were taken with, and they were 30% worse than the figure quoted.
     """
     paddleocr, _ = _import_paddleocr()
     try:
-        return paddleocr.TextRecognition(model_name=options.model_name)
+        return paddleocr.TextRecognition(
+            model_name=options.model_name, enable_mkldnn=False
+        )
     except Exception as exc:  # paddle raises bare Exception
         raise OcrError(
             f"PaddleOCR could not start the recognition model "

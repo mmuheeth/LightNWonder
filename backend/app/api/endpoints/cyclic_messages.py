@@ -175,22 +175,53 @@ async def read_text(
             "messages without saying so."
         ),
     ),
+    from_seconds: float | None = Query(
+        default=None,
+        ge=0,
+        description=(
+            "Offset into the clip to start reading at. Omit for the "
+            "beginning. This is how a clip is paged: read `to_seconds` off "
+            "the answer and pass it back here for the next window."
+        ),
+    ),
+    to_seconds: float | None = Query(
+        default=None,
+        ge=0,
+        description=(
+            "Offset to stop at. Clamped to "
+            "CYCLIC_MESSAGES_TEXT_WINDOW_SECONDS past `from_seconds`, so a "
+            "caller may ask for the whole clip and be told on the reading how "
+            "much of it it got -- which means paging needs no knowledge of "
+            "the server's budget."
+        ),
+    ),
 ) -> ApiResponse[CyclicTextReading]:
-    """Cut the clip into frames, crop the caption out of each and read it.
+    """Cut one window of the clip into frames, crop the caption out of each
+    and read it.
 
-    Slow by nature -- at one frame a second a 90s clip is ~90 frames and as
-    many OCR passes -- so this is a request that takes tens of seconds rather
-    than milliseconds. Which engine reads is CYCLIC_MESSAGES_TEXT_ENGINE, and
-    the reading says which one did.
+    **One window per request, and the caller pages.** At one frame a second a
+    90s clip is ~90 frames, and on a clip drawing two caption bands that is
+    ~160 OCR passes at seconds each -- several times longer than any browser
+    will wait. So a request reads at most
+    CYCLIC_MESSAGES_TEXT_WINDOW_SECONDS of footage and says on the reading
+    which stretch that was; the caller asks again from `to_seconds` until it
+    reaches `duration_seconds`. Which engine reads is
+    CYCLIC_MESSAGES_TEXT_ENGINE, and the reading says which one did.
     """
     reading = await cyclic_text_service.read_run(
-        run_id, cycle=cycle, interval_seconds=interval_seconds
+        run_id,
+        cycle=cycle,
+        interval_seconds=interval_seconds,
+        from_seconds=from_seconds,
+        to_seconds=to_seconds,
     )
     return ApiResponse[CyclicTextReading].ok(
         data=reading,
         message=(
             f"Read {len(reading.messages)} messages from "
-            f"{reading.frames_sampled} frames of {reading.file_name}"
+            f"{reading.frames_sampled} frames of {reading.file_name} "
+            f"({reading.from_seconds:.0f}-{reading.to_seconds:.0f}s of "
+            f"{reading.duration_seconds:.0f}s)"
         ),
     )
 

@@ -156,20 +156,33 @@ class CyclicMessagesSettings(BaseSettings):
     # stop, a machine nobody is playing is screenshotted until it is.
     CYCLIC_MESSAGES_IDLE_MAX_SECONDS: float = 90.0
 
-    # Gap between frames of *this* strip, and deliberately not the win pass's.
-    # An interval has to clear the shortest time a message stays up, and the
-    # two strips are nowhere near each other: a line message dwells 1.3-1.8s
-    # while the between-spins strip sits on each of its three for the best
-    # part of ten seconds. Sampling that every second would take ten
-    # near-identical frames of each, every one of them costing an OBS round
-    # trip and an OCR pass to say what the frame before it said.
+    # Gap between frames of *this* strip. Same value as the win pass's, and
+    # it was 2.0 on the strength of a guess that turned out to be wrong.
     #
-    # **Not measured as precisely as the win strip's dwell was** -- it is
-    # inferred from the attract loop's ~3 messages per ~34s. It is set well
-    # under that rather than near it, so the margin absorbs being wrong;
-    # `CyclicStatus.sample_rate` and the duplicate counts on the live card are
-    # what to check against a real run.
-    CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS: float = 2.0
+    # An interval has to clear the *shortest* time a message stays up. The two
+    # strips were assumed to be nowhere near each other -- a line message
+    # dwells 1.3-1.8s, while the between-spins strip was taken to sit on each
+    # of its three for the best part of ten seconds, inferred from the attract
+    # loop's ~3 messages per ~34s and never measured. Read back off a real
+    # losing spin's own clip at one frame a second, it is nothing like that:
+    #
+    #   0s  Game Over          3s  (blank)           6s  Game Over
+    #   1s  (blank)            4s  Play 880 Credits  7s  (blank)
+    #   2s  Game Pays 0        5s  (blank)           8s  Game Pays 0
+    #
+    # A caption up for about a second, a blank second between them, and the
+    # whole lap of three in six. So 2.0s sat *above* the dwell and dropped
+    # captions silently, which is exactly what it did: that pass's three
+    # stills caught "Game Pays 0", "Play 880 Credits" and "Game Pays 0" again
+    # -- "Game Over" was never captured at all, and the list looked complete.
+    #
+    # Whether the loop *achieves* 1.0s is a separate question and an OBS one:
+    # a screenshot costs seconds while a recording is running, and that pass
+    # managed 2.6s apart against the 2.0s it asked for. It cannot be fixed by
+    # lowering this further -- what fixes it is
+    # CYCLIC_MESSAGES_RECOVER_FROM_CLIP, which reads the captions the stills
+    # went past back out of the clip afterwards.
+    CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS: float = 1.0
 
     # Stop this window as soon as the strip has been round once, rather than
     # running it to the deadline above.
@@ -201,9 +214,14 @@ class CyclicMessagesSettings(BaseSettings):
     # stills matter more than the clip on a given machine.
     CYCLIC_MESSAGES_RECORD_IDLE_VIDEO: bool = True
 
-    # After a win presentation, fill its messages in from its own clip.
+    # After a window closes, fill its messages in from its own clip.
     #
-    # **Because the stills cannot keep up with that window and the clip can.**
+    # **Both strips**, not just the win presentation. The between-spins strip
+    # was left out while its dwell was believed to be ten seconds a caption; it
+    # is nearer one (see CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS above), so its
+    # stills miss captions for the same reason a win's do.
+    #
+    # **Because the stills cannot keep up with either window and the clip can.**
     # Measured on this machine: a screenshot costs 0.11s with OBS idle, 0.3-0.7s
     # while recording a still screen, and about *six seconds* while recording
     # the win presentation -- the game is animating hard and the encoder has the
@@ -217,7 +235,17 @@ class CyclicMessagesSettings(BaseSettings):
     # difference is that the messages the stills missed appear a few seconds
     # after it rather than during it.
     #
-    # Off leaves the live stills as the only record of a win, which is the
+    # It runs on a queue rather than at the moment a clip is filed, and that
+    # is load-bearing rather than tidiness: the window *after* a clip is very
+    # often already on screen when it is filed -- a win taken before its line
+    # messages have been round once puts the between-spins strip straight
+    # after it -- and recovering inline there took fifteen seconds off a strip
+    # that runs for eight, so the run recorded that window opening and closing
+    # with not one frame in between. Queued, it is read whenever nothing is
+    # being captured and gives way to a window opening after the single frame
+    # it is on. `CyclicStatus.recovery_pending` is how far behind it is.
+    #
+    # Off leaves the live stills as the only record of a window, which is the
     # sparse one -- "Read the messages" on the clip is then the complete list.
     CYCLIC_MESSAGES_RECOVER_FROM_CLIP: bool = True
 
@@ -324,6 +352,41 @@ class CyclicMessagesSettings(BaseSettings):
         """The between-spins strip's lines, top first, as a tuple."""
         return _named(self.CYCLIC_MESSAGES_IDLE_REGIONS)
 
+    # **Which band's cycle means "the strip has been round", and it is one of
+    # them rather than all of them.** The two bands above cycle *independently
+    # and at very different lengths*: band 2 rotates the three between-spins
+    # messages ("GAME OVER", "GAME PAYS n", "PLAY 880 CREDITS") in about five
+    # seconds, while band 1 keeps walking the win's line messages -- forty of
+    # them on a forty-line win, a full minute.
+    #
+    # So a lap is a question about one band, and asking it of both asks it of
+    # neither. Measured on a real run: watching both closed the window on the
+    # frame where band 1 went "Line 35 Pays 25" -> "Line 37 Pays 25" with band 2
+    # blank either side, which looked like a return to the frame the window
+    # opened on -- and "GAME PAYS 1000", the next thing band 2 had to show, was
+    # never captured.
+    #
+    # Band 2 rather than band 1 because band 2 is what this window is *for*:
+    # band 1's line messages were already captured message by message during
+    # the win presentation that preceded it, so waiting out its forty would cost
+    # a minute of frames and OCR to re-read what the run already has. Band 1 is
+    # still cropped, read and reported -- it simply does not get a vote on when
+    # there is nothing left to see.
+    #
+    # Naming several bands here requires *all* of them to have come round, which
+    # is the safe direction (a lap that never closes runs the window to
+    # CYCLIC_MESSAGES_IDLE_MAX_SECONDS) but costs the frames to get there. Empty
+    # falls back to every band in CYCLIC_MESSAGES_IDLE_REGIONS.
+    CYCLIC_MESSAGES_IDLE_LOOP_REGIONS: str = "cyclic_message_2"
+
+    @property
+    def cyclic_messages_idle_loop_regions(self) -> tuple[str, ...]:
+        """The bands whose cycle closes the between-spins window."""
+        return (
+            _named(self.CYCLIC_MESSAGES_IDLE_LOOP_REGIONS)
+            or self.cyclic_messages_idle_regions
+        )
+
     # Gap between sampled frames: one frame a second.
     #
     # What this has to clear is the *shortest* time a message stays up, not the
@@ -389,6 +452,36 @@ class CyclicMessagesSettings(BaseSettings):
     CYCLIC_MESSAGES_TEXT_PADDLE_MODEL: str = Field(
         default="PP-OCRv6_medium_rec", min_length=1
     )
+
+    # How much of a clip one "Read the messages" request reads. **A window,
+    # not a limit on the clip**: the caller asks for the next stretch, gets
+    # told on the reading which stretch it actually got, and comes back for
+    # the rest -- so a clip of any length is readable and no single request
+    # has to fit it.
+    #
+    # It exists because the whole-clip request could not be made to fit, and
+    # not for want of trying. Measured on a real 90.6s `win-then-idle` clip
+    # (two bands, because a win taken early records both strips into one
+    # file), 91 frames at 1.0s:
+    #
+    #   182 bands, oneDNN on, no blank skip     535 s   <- what timed out
+    #   158 bands, oneDNN off, blank skipped    446 s
+    #
+    # against a client that cannot wait past ~290s (Vite's dev proxy cuts the
+    # connection at 300s). The two savings there are real and both are kept,
+    # but neither closes a gap that size, and the things that would are worse
+    # than the problem: the picture-dedupe cannot be loosened (a line message
+    # changing by one glyph measures 0.0169 against same-caption encoder noise
+    # up to 0.0311 -- they overlap, so any cut that saves passes merges two
+    # messages), and the 8x quicker `en_PP-OCRv5_mobile_rec` mangles exactly
+    # the digits the captions are about ("Play 880 Credits" as "Play 0
+    # Credits" on 21 of 158 bands).
+    #
+    # 20s of footage is ~20 frames, so at most ~40 bands and ~110s at the
+    # measured 2.8s a band -- comfortably inside the client's budget with room
+    # for a slower host. Raise it only against a measurement on a real clip:
+    # the cost of getting it wrong is the timeout this replaced.
+    CYCLIC_MESSAGES_TEXT_WINDOW_SECONDS: float = Field(default=20.0, gt=0, le=600)
 
     # 2x, and unlike the orb reader's 1x this one is earned. A caption band is
     # *thin* -- FortuneOx draws it about 2% of the window's height, so the crop

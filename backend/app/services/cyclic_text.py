@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -257,16 +257,73 @@ class _Caption:
 
     ``images`` is one crop per line the strip draws, top first -- the strip is
     stacked and each line has to be recognised on its own. Which lines those
-    are depends on which strip the clip is of: see :func:`_clip_regions`.
+    are depends on which strip the clip is of: see :func:`clip_regions`.
     """
 
     index: int
     at_seconds: float
     images: tuple[Image.Image, ...]
 
+    showing: tuple[bool, ...] = ()
+    """Whether each band has a caption on it at all, by :data:`_SIGNATURE_INK`.
+
+    Per band, and that is the point: the old question was whether *the frame*
+    showed anything, which on a two-band clip is true whenever either band
+    does -- so every frame of a win presentation paid for a recognition of the
+    empty band beneath its line message. A band with nothing on it is not read
+    (:func:`_showing_bands`); its reading was thrown away by
+    :func:`believable` anyway, exactly as the blank-frame case already
+    reasoned.
+
+    Measured once here rather than per reader, because the decode already has
+    the crop open and both engines want the same answer.
+    """
+
+
+def _showing_bands(caption: _Caption) -> tuple[bool, ...]:
+    """Which of a caption's bands are worth handing to an engine.
+
+    Defaults to all of them when the flags were never measured, so a
+    ``_Caption`` built by hand -- a test, a caller outside :func:`_captions` --
+    behaves as it did before this existed rather than reading nothing.
+    """
+    if len(caption.showing) != len(caption.images):
+        return (True,) * len(caption.images)
+    return caption.showing
+
+
+def _window(
+    requested_from: float | None, requested_to: float | None, duration: float
+) -> tuple[float, float]:
+    """The stretch of clip one request reads: where it starts, and where the
+    *server* says it stops.
+
+    The clamp is the point. A caller asks for as much as it likes -- most
+    naturally the whole clip -- and is told how much it is getting, so paging
+    needs no knowledge of the budget on the client at all: ask from 0, read
+    `to_seconds` off the answer, ask again from there, stop at
+    `duration_seconds`. See ``CYCLIC_MESSAGES_TEXT_WINDOW_SECONDS`` for why
+    the budget exists and what it is measured against.
+    """
+    start = max(0.0, requested_from or 0.0)
+    widest = start + settings.CYCLIC_MESSAGES_TEXT_WINDOW_SECONDS
+    stop = widest if requested_to is None else min(requested_to, widest)
+    if duration > 0:
+        stop = min(stop, duration)
+    # Never empty and never backwards: a start past the end of the clip asks
+    # for nothing, which a caller paging correctly cannot do but a hand-typed
+    # offset can, and an empty window that reported `to == from` would leave
+    # it looping forever on no progress.
+    return start, max(stop, start)
+
 
 def _captions(
-    path: Path, regions: tuple[image_roi.Roi, ...], interval: float
+    path: Path,
+    regions: tuple[image_roi.Roi, ...],
+    interval: float,
+    *,
+    from_seconds: float = 0.0,
+    to_seconds: float | None = None,
 ) -> list[_Caption]:
     """Decode the clip and keep only the caption bands out of each sampled frame.
 
@@ -282,11 +339,28 @@ def _captions(
     """
     captions: list[_Caption] = []
     for frame in video_frames.sample(path, interval_seconds=interval):
+        # Decoding still runs from the start of the file, deliberately: see
+        # `utils/video_frames.sample` -- it walks forward with `grab()`, which
+        # does not unpack a frame, so the frames before the window cost their
+        # decode and nothing else. Seeking to the offset instead lands on the
+        # preceding keyframe and decodes forward anyway, which is the slower
+        # of the two and was measured as such for the whole-clip case.
+        if frame.at_seconds < from_seconds:
+            continue
+        if to_seconds is not None and frame.at_seconds >= to_seconds:
+            break
         content = roi_service.content_box(frame.image)
         crops = tuple(
             frame.image.crop(region.to_box_within(content.box)) for region in regions
         )
-        captions.append(_Caption(frame.index, frame.at_seconds, crops))
+        captions.append(
+            _Caption(
+                frame.index,
+                frame.at_seconds,
+                crops,
+                showing=tuple(band_showing(crop) for crop in crops),
+            )
+        )
     return captions
 
 
@@ -303,16 +377,30 @@ def _blank(caption: _Caption, exc: Exception) -> _Read:
     return _Read(caption.index, caption.at_seconds, "", 0.0)
 
 
-def _clip_regions(clip: CyclicRunVideo) -> tuple[str, ...]:
-    """Which of the strip's lines this clip's own strip draws.
+def clip_regions(kind: str) -> tuple[str, ...]:
+    """Which of the strip's lines a clip of ``kind`` draws.
 
-    A run holds two kinds of clip and they are recordings of different things:
-    a win presentation uses one line, and the between-spins strip two. Reading
-    an idle clip against the win presentation's single region is how "Read the
-    messages" came back with nothing at all from a losing spin -- the band it
-    was cropping is the one that strip leaves empty.
+    A run holds three kinds of clip and they are recordings of different
+    things: a win presentation uses one line, and the between-spins strip two.
+    Reading an idle clip against the win presentation's single region is how
+    "Read the messages" came back with nothing at all from a losing spin --
+    the band it was cropping is the one that strip leaves empty.
+
+    ``win-then-idle`` is one file holding both, which happens when the win is
+    taken before its line messages have been round once: the strip runs
+    straight on and so does the recording. It is read for *both* bands, since
+    the half that draws two is in there -- the win half simply leaves the
+    second one empty, which reads as nothing and is dropped, exactly as an
+    empty band is anywhere else.
+
+    Public, and keyed on the kind rather than on the clip, because two callers
+    ask it now: this module's own "Read the messages" and
+    ``cyclic_messages._recover``, which reads a clip back frame by frame while
+    the run is still going. Both have to crop the same bands out of the same
+    file, or a caption recovered live and the same caption read afterwards
+    would disagree about which band it came from.
     """
-    if clip.kind == "idle-video":
+    if kind in (cyclic_service.IDLE_VIDEO, cyclic_service.WIN_THEN_IDLE):
         return settings.cyclic_messages_idle_regions
     return settings.cyclic_messages_text_regions
 
@@ -356,7 +444,11 @@ def _read_tesseract(
 ) -> _Read:
     """Read every band of one caption with Tesseract."""
     lines: list[tuple[str, float]] = []
-    for image in caption.images:
+    for image, showing in zip(caption.images, _showing_bands(caption), strict=True):
+        if not showing:
+            # See the same skip in `_read_paddle`: an empty band costs a
+            # recognition and contributes a reading `_joined` drops anyway.
+            continue
         try:
             result = ocr.read_image(image, executable=executable, options=options)
         except ocr.OcrError as exc:
@@ -382,7 +474,13 @@ def _read_paddle(caption: _Caption, *, options: paddle_ocr.PaddleLineOptions) ->
     the same thing, though a recognise-only read returns just the one.
     """
     lines: list[tuple[str, float]] = []
-    for image in caption.images:
+    for image, showing in zip(caption.images, _showing_bands(caption), strict=True):
+        if not showing:
+            # Nothing on this band, so nothing to recognise. Left out of
+            # `lines` rather than added as a blank -- which is what `_joined`
+            # does with an unreadable band anyway, so this changes what the
+            # read *costs* and never what it says.
+            continue
         try:
             result = paddle_ocr.read_line(image, options=options)
         except ocr.OcrError as exc:
@@ -432,6 +530,103 @@ def _paddle_reader(options: paddle_ocr.PaddleLineOptions) -> _Reader:
         # across cores.
         workers=1,
     )
+
+
+def _plan(captions: list[_Caption]) -> list[int | None]:
+    """For each sampled frame, whose reading it gets: its own, an earlier
+    frame's, or none at all.
+
+    **This is what makes reading a clip finish.** A clip is sampled every
+    second and a caption stays up for several, so most of the frames of one are
+    the frame before it again -- and at about a second and a half per
+    recognition, reading all of them is where "Read the messages" went from
+    slow to not returning: a 90s between-spins clip is ~180 recognitions (two
+    bands a frame) against the client's 290s, and it lost that race. Here the
+    same clip is one recognition per caption the strip actually showed.
+
+    Three answers, one per frame, in order:
+
+    * ``None`` -- **no band is showing.** The strip goes blank between
+      messages, and a recogniser handed an empty crop does not say "nothing",
+      it answers with a character it thinks it found in the artwork. That
+      reading was always thrown away by the character floor
+      (:func:`believable`), so the recognition was pure cost. Taken as blank
+      without asking, which is also what keeps :func:`_group` splitting two
+      showings of one caption either side of a gap.
+    * its own index -- **the caption changed**, so this frame is read.
+    * an earlier index -- **the picture repeated.** Judged by
+      ``_SIGNATURE_REPEATED``, the strict cut, which is 0.000 for a frame the
+      encoder repeated outright against the 0.01-0.03 between two consecutive
+      line messages differing by one glyph -- see :meth:`CaptionChanges.changed`
+      for why anything looser would merge two messages into one. So sharing a
+      reading here is not an approximation: the two frames are the same
+      picture, and reading the second could only have produced the same answer
+      or a worse one.
+
+    Every frame still appears on ``frames`` with its own offset either way --
+    this decides what is *recognised*, never what is reported. What was
+    recognised is ``frames_read`` beside ``frames_sampled``.
+    """
+    plan: list[int | None] = []
+    current: Signature | None = None
+    owner: int | None = None
+    for index, caption in enumerate(captions):
+        try:
+            signature, showing = crop_signature(caption.images)
+        except Exception as exc:  # noqa: BLE001 - a frame is not the clip
+            # Read rather than skipped: this is only an optimisation, and the
+            # safe way to be wrong about a frame is to spend a recognition on it.
+            logger.warning("Could not compare frame %d: %s", caption.index, exc)
+            plan.append(index)
+            current, owner = None, None
+            continue
+        if not showing:
+            plan.append(None)
+            # Deliberately not cleared: the strip going blank between two
+            # showings of one caption does not make the second a new picture,
+            # and `_group` is what keeps them two showings rather than one.
+            continue
+        if owner is not None and current is not None and not signature.changed(current):
+            plan.append(owner)
+            continue
+        current, owner = signature, index
+        plan.append(index)
+    return plan
+
+
+def _read_planned(
+    captions: list[_Caption], plan: list[int | None], reader: _Reader
+) -> list[_Read]:
+    """Read the frames :func:`_plan` chose, then hand their answers to the
+    frames that share them.
+
+    The engine still sees a plain list, so :func:`_read_all` keeps its thread
+    pool and Tesseract keeps its parallelism -- the saving is in the length of
+    that list, not in how it is run.
+    """
+    leaders = [index for index, owner in enumerate(plan) if owner == index]
+    answers = dict(
+        zip(
+            leaders,
+            _read_all([captions[index] for index in leaders], reader),
+            strict=True,
+        )
+    )
+    reads: list[_Read] = []
+    for caption, owner in zip(captions, plan, strict=True):
+        if owner is None:
+            reads.append(_Read(caption.index, caption.at_seconds, "", 0.0))
+            continue
+        shared = answers[owner]
+        reads.append(
+            _Read(
+                caption.index,
+                caption.at_seconds,
+                shared.text,
+                shared.confidence,
+            )
+        )
+    return reads
 
 
 def _read_all(captions: list[_Caption], reader: _Reader) -> list[_Read]:
@@ -519,6 +714,7 @@ def _group(reads: list[_Read]) -> list[CyclicTextMessage]:
         messages.append(
             CyclicTextMessage(
                 text=repaired,
+                key=key,
                 first_seen=read.at_seconds,
                 last_seen=read.at_seconds,
                 frames=1,
@@ -544,11 +740,16 @@ def _distinct(messages: list[CyclicTextMessage]) -> list[CyclicTextCaption]:
     """
     captions: dict[str, CyclicTextCaption] = {}
     for message in messages:
-        key = caption_key(message.text)
+        # The message's own key rather than `caption_key(message.text)` again:
+        # the text shown is the best-scoring *variant* of the readings that
+        # formed the message, so re-deriving here can key a message on a
+        # different string than the one it was grouped under.
+        key = message.key or caption_key(message.text)
         seen = captions.get(key)
         if seen is None:
             captions[key] = CyclicTextCaption(
                 text=message.text,
+                key=key,
                 showings=1,
                 frames=message.frames,
                 first_seen=message.first_seen,
@@ -572,17 +773,28 @@ def _distinct(messages: list[CyclicTextMessage]) -> list[CyclicTextCaption]:
 
 
 def _read(
-    run_id: str, cycle: int | None, interval: float, engine: _Engine
+    run_id: str,
+    cycle: int | None,
+    interval: float,
+    engine: _Engine,
+    from_seconds: float | None = None,
+    to_seconds: float | None = None,
 ) -> CyclicTextReading:
-    """Blocking half of :func:`read_run`: decode, crop, OCR, group."""
+    """Blocking half of :func:`read_run`: decode, crop, OCR, group.
+
+    Reads one *window* of the clip -- see :func:`_window`. Everything below
+    the decode is unchanged by that: the frames of a window are grouped and
+    counted exactly as a whole clip's were, and a caller reading a clip in one
+    window gets byte for byte what it used to.
+    """
     detail = cyclic_service.get_run(run_id)
     clip, file_name = _clip_of(detail, cycle)
     path = cyclic_service.file_path(run_id, file_name)
 
     config = _config_for(detail.game)
     # The lines *this* clip's strip draws, not one fixed band: see
-    # :func:`_clip_regions`.
-    names = _clip_regions(clip)
+    # :func:`clip_regions`.
+    names = clip_regions(clip.kind)
     if not names:
         raise GameConfigInvalidError(
             "No caption region is configured for this clip, so there is "
@@ -596,17 +808,29 @@ def _read(
     reader = engine.reader_for(config, names[0])
 
     info = video_frames.probe(path)
-    captions = _captions(path, regions, interval)
-    reads = _read_all(captions, reader)
+    window_from, window_to = _window(from_seconds, to_seconds, info.duration_seconds)
+    captions = _captions(
+        path, regions, interval, from_seconds=window_from, to_seconds=window_to
+    )
+    # Which frames are worth a recognition at all. See :func:`_plan`: most of a
+    # clip's frames are the frame before them again, and reading every one is
+    # what stopped this request finishing on a long clip.
+    plan = _plan(captions)
+    reads = _read_planned(captions, plan, reader)
 
     messages = _group(reads)
     distinct = _distinct(messages)
     unreadable = sum(1 for read in reads if read.text and not read.reliable)
+    recognised = sum(1 for index, owner in enumerate(plan) if owner == index)
     logger.info(
-        "Read %d frames of %s at %.2fs with %s: %d captions over %d showings, "
-        "%d frames below the confidence floor",
+        "Read %d of %d frames of %s (%.1f-%.1fs of %.1fs) at %.2fs with %s: "
+        "%d captions over %d showings, %d frames below the confidence floor",
+        recognised,
         len(reads),
         file_name,
+        window_from,
+        window_to,
+        info.duration_seconds,
         interval,
         reader.name,
         len(distinct),
@@ -622,7 +846,10 @@ def _read(
         engine=reader.name,
         interval_seconds=interval,
         duration_seconds=info.duration_seconds,
+        from_seconds=window_from,
+        to_seconds=window_to,
         frames_sampled=len(reads),
+        frames_read=recognised,
         frames_unreadable=unreadable,
         captions=distinct,
         messages=messages,
@@ -681,20 +908,39 @@ async def _resolve_engine() -> _Engine:
 
 
 async def read_run(
-    run_id: str, *, cycle: int | None = None, interval_seconds: float | None = None
+    run_id: str,
+    *,
+    cycle: int | None = None,
+    interval_seconds: float | None = None,
+    from_seconds: float | None = None,
+    to_seconds: float | None = None,
 ) -> CyclicTextReading:
-    """Read every message out of one run's clip.
+    """Read one window of messages out of one run's clip.
 
     The engine is resolved first and allowed to fail the request: a reading
     with no OCR behind it is a list of blank frames, which is worse than a 409
     saying the engine is not installed.
+
+    **A window rather than the whole clip, and the caller pages.** Reading a
+    long clip in one request could not be made to fit -- a 90s two-band clip
+    is 158 recognitions at ~2.8s against a client that gives up at 290s -- and
+    the measurements behind that, including the two savings that are in place
+    and the two that were tried and rejected, are on
+    ``CYCLIC_MESSAGES_TEXT_WINDOW_SECONDS``. The reading says which stretch it
+    covers (``from_seconds``/``to_seconds``) beside how long the clip is, so a
+    caller asks again from where the last one stopped and knows when it is
+    done. Asking for no window reads the first one, so a caller that never
+    pages still gets a valid reading of the start of the clip rather than an
+    error.
     """
     engine = await _resolve_engine()
     interval = interval_seconds or settings.CYCLIC_MESSAGES_TEXT_INTERVAL_SECONDS
-    # Decoding a 90s clip and running ~90 OCR passes over it is squarely
-    # blocking work, so it goes to a thread rather than stalling the loop --
-    # the i-deck and the game clicks share this process.
-    return await asyncio.to_thread(_read, run_id, cycle, interval, engine)
+    # Decoding and running OCR passes over a window is squarely blocking work,
+    # so it goes to a thread rather than stalling the loop -- the i-deck and
+    # the game clicks share this process.
+    return await asyncio.to_thread(
+        _read, run_id, cycle, interval, engine, from_seconds, to_seconds
+    )
 
 
 # --- reading a frame while the run is still going -------------------------
@@ -889,6 +1135,11 @@ def _write_crop(crop: Image.Image, frame: Path, region: str) -> str | None:
 #   the same caption, 0.4s and 2.0s apart      0.000, 0.000
 #   different captions of the same strip       0.135 - 0.593
 #
+# Those "different" figures are two *kinds* of message apart, though, and the
+# strip's tightest pair is far closer than they suggest -- see
+# ``_SIGNATURE_SAME``, which is measured on consecutive line messages and is
+# two orders of magnitude below what this population implies.
+#
 # Normalising each grid to zero mean and unit deviation is what makes that gap
 # hold: it takes brightness and contrast out, so the strip fading between
 # messages does not read as a new one.
@@ -913,11 +1164,30 @@ apart by how much the band varies, measured on real frames: 32-38 with a
 message on it, 10.0 caught mid-change, and 6.4 for a band this strip never
 uses at all. The cut sits between, with a wide margin either side.
 """
-_SIGNATURE_SAME = 0.05
-"""Mean absolute difference below which two frames show the same caption.
+_SIGNATURE_SAME = 0.003
+"""Mean absolute difference below which two bands show the same caption.
 
-Sat between the two measured populations rather than near either: three times
-the largest "same" reading and a third of the smallest "different" one.
+**Per band, never across bands** -- see :func:`crop_signature`.
+
+Re-measured over every band-1 pair of a real 68-frame run (2278 of them,
+captions taken from what the recogniser made of each frame), because the
+figures this was first set from came from a strip whose consecutive messages
+differ wholesale and the line messages do not:
+
+    the same caption, 1-40s apart      0.0000 - 0.0010   (n=33)
+    different captions                 0.0046 - 0.2684   (n=2245)
+
+The populations separate, but far lower down than the first cut assumed: 0.05
+called **1350 of those 2245 different pairs the same caption** -- "Line 36 Pays
+25" against "Line 38 Pays 25" scores 0.0046 -- which is what let
+:class:`LoopWatch` declare a lap closed on a strip that had two messages left
+to show. This sits in the measured gap, three times the largest "same" reading
+and two thirds of the smallest "different" one.
+
+Erring low is the safe direction and deliberate: too strict and a lap never
+closes, so the window runs to its deadline and captures more than it needed.
+Too slack and it closes early, which loses a message nobody will know was
+missed.
 """
 
 
@@ -951,10 +1221,17 @@ class LoopWatch:
     """
 
     regions: tuple[tuple[str, image_roi.Roi], ...]
-    seen: list[Any] = field(default_factory=list)
+    """The bands whose cycle decides the lap -- *not* every band the strip has.
+
+    See ``CYCLIC_MESSAGES_IDLE_LOOP_REGIONS``: the bands cycle independently
+    and at very different lengths, so "the strip has come round" is a question
+    about one of them and watching both asks it of neither.
+    """
+
+    seen: list[Signature] = field(default_factory=list)
     """One signature per distinct caption, in the order the strip showed them."""
 
-    current: Any = None
+    current: Signature | None = None
     """The caption on screen, so the repeats of it in a row are not counted."""
 
     blank: int = 0
@@ -990,11 +1267,11 @@ class LoopWatch:
             self.blank += 1
             return False
 
-        if self.current is not None and _alike(signature, self.current):
+        if self.current is not None and signature.alike(self.current):
             return False
         self.current = signature
 
-        if self.seen and _alike(signature, self.seen[0]):
+        if self.seen and signature.alike(self.seen[0]):
             # Back to the caption it started on, which is a whole lap however
             # far into the strip's own cycle the window happened to open. Only
             # once a second caption has been seen, since a strip sitting on one
@@ -1006,17 +1283,17 @@ class LoopWatch:
             # the wrong one -- both of which closed a pass early enough to lose
             # a message that had not been shown yet.
             return len(self.seen) >= 2
-        if not any(_alike(signature, earlier) for earlier in self.seen):
+        if not any(signature.alike(earlier) for earlier in self.seen):
             self.seen.append(signature)
         return False
 
-    def _signature(self, path: Path) -> tuple[Any, bool]:
+    def _signature(self, path: Path) -> tuple[Signature, bool]:
         return band_signature(roi_service.open_frame(path), self.regions)
 
 
 def band_signature(
     image: Image.Image, regions: tuple[tuple[str, image_roi.Roi], ...]
-) -> tuple[Any, bool]:
+) -> tuple[Signature, bool]:
     """One frame's caption bands as a signature, and whether any is showing.
 
     The cheap stand-in for reading a frame: two crops of one caption reduce to
@@ -1026,21 +1303,110 @@ def band_signature(
     (:class:`CaptionChanges`).
     """
     content = roi_service.content_box(image)
+    return crop_signature(
+        tuple(image.crop(roi.to_box_within(content.box)) for _, roi in regions)
+    )
+
+
+def crop_signature(crops: tuple[Image.Image, ...]) -> tuple[Signature, bool]:
+    """The same signature, off caption crops that have already been made.
+
+    Split out rather than duplicated because the clip reader cuts its crops
+    once, before anything looks at them (:func:`_captions`), and re-cropping a
+    1080x1920 frame per comparison is most of what a comparison would cost.
+    Whichever door a caller comes in by, two crops of one caption have to
+    reduce to the same grid or the strip's own repeats stop being recognisable
+    as repeats.
+
+    The bands are kept **apart** rather than concatenated into one grid, and
+    that is the whole of :class:`Signature`'s reason for existing -- see its
+    own note.
+    """
     grids = []
     showing = False
-    for _, roi in regions:
-        crop = (
-            image.crop(roi.to_box_within(content.box))
-            .convert("L")
-            .resize(_SIGNATURE_GRID)
+    for crop in crops:
+        grid = numpy.asarray(
+            crop.convert("L").resize(_SIGNATURE_GRID), dtype=numpy.float32
         )
-        grid = numpy.asarray(crop, dtype=numpy.float32)
         # Read before normalising, which is what removes the very contrast this
         # depends on: a blank band is flat, and dividing it by its own
         # deviation turns it into noise indistinguishable from text.
         showing = showing or bool(grid.std() >= _SIGNATURE_INK)
         grids.append((grid - grid.mean()) / (grid.std() + 1e-6))
-    return numpy.concatenate(grids, axis=0), showing
+    return Signature(bands=tuple(grids)), showing
+
+
+def band_showing(crop: Image.Image) -> bool:
+    """Whether one band has a caption on it, by the same :data:`_SIGNATURE_INK`
+    cut :func:`crop_signature` applies across a whole frame.
+
+    The per-band question, and it is a different one: that function answers
+    "is *anything* on this frame", which is what decides whether the frame is
+    worth comparing at all, while this decides whether one band is worth a
+    recognition. On a two-band clip the two disagree for the whole win
+    presentation -- the line message is on band 1 and band 2 is empty -- which
+    is exactly the case that was paying for an OCR pass over nothing.
+    """
+    grid = numpy.asarray(crop.convert("L").resize(_SIGNATURE_GRID), dtype=numpy.float32)
+    return bool(grid.std() >= _SIGNATURE_INK)
+
+
+@dataclass(frozen=True)
+class Signature:
+    """One frame's caption bands, each reduced to a grid and kept separate.
+
+    **Separate is the point, and joining them is a measured bug.** The strip's
+    bands cycle independently, so most frames change one band and leave the
+    other exactly as it was. Concatenating the two grids and taking one mean
+    across the pair averages the band that changed against a zero from the band
+    that did not, which halves every real difference: on a real run "Line 35
+    Pays 25" becoming "Line 37 Pays 25" scores 0.0298 on its own band and
+    **0.0149** once the unchanged band is averaged in, and the second figure
+    fell under :data:`_SIGNATURE_SAME` where the first did not. That is how a
+    between-spins window came to close while the strip still had "GAME PAYS
+    1000" to show.
+
+    Diluting also throws away the good band: band 2's captions separate at
+    0.326-0.914 alone and at 0.168 once band 1's near-zeros are mixed in.
+
+    So a comparison is per band, and the two questions callers ask of it are
+    different quantifiers over the same pairs -- :meth:`alike` is *every* band
+    (the strip has come round only if nothing on it has changed) and
+    :meth:`changed` is *any* band (a frame is worth reading if anything on it
+    has).
+    """
+
+    bands: tuple[Any, ...]
+
+    def _scores(self, other: Signature) -> tuple[float, ...]:
+        """Each band's mean absolute difference from the same band of
+        ``other``. Raises on a mismatched band count rather than comparing what
+        happens to line up: two frames of one run always have the same bands,
+        so a mismatch is a bug and not a frame to skip."""
+        if len(self.bands) != len(other.bands):
+            raise ValueError(
+                f"cannot compare {len(self.bands)} bands against {len(other.bands)}"
+            )
+        return tuple(
+            float(numpy.abs(mine - theirs).mean())
+            for mine, theirs in zip(self.bands, other.bands, strict=True)
+        )
+
+    def alike(self, other: Signature) -> bool:
+        """Whether this is the same caption as ``other`` -- *every* band of it.
+
+        One band having changed means the strip is showing something it was
+        not, however still the rest of it is.
+        """
+        return all(score < _SIGNATURE_SAME for score in self._scores(other))
+
+    def changed(self, other: Signature) -> bool:
+        """Whether this frame shows something ``other`` did not -- *any* band.
+
+        The strict cousin, asking "is this the same picture" per band rather
+        than "the same caption": see :data:`_SIGNATURE_REPEATED`.
+        """
+        return any(score >= _SIGNATURE_REPEATED for score in self._scores(other))
 
 
 @dataclass
@@ -1063,7 +1429,7 @@ class CaptionChanges:
     """
 
     regions: tuple[tuple[str, image_roi.Roi], ...]
-    current: Any = None
+    current: Signature | None = None
 
     def changed(self, image: Image.Image) -> bool:
         """Whether this frame shows a caption the one before it did not.
@@ -1086,23 +1452,10 @@ class CaptionChanges:
             return True
         if not showing:
             return False
-        if self.current is not None and _identical(signature, self.current):
+        if self.current is not None and not signature.changed(self.current):
             return False
         self.current = signature
         return True
-
-
-def _identical(left: Any, right: Any) -> bool:
-    """Whether two frames are the same picture, not merely the same caption.
-
-    See ``_SIGNATURE_REPEATED``; this is the strict cousin of :func:`_alike`.
-    """
-    return bool(numpy.abs(left - right).mean() < _SIGNATURE_REPEATED)
-
-
-def _alike(left: Any, right: Any) -> bool:
-    """Whether two signatures are the same caption. See ``_SIGNATURE_SAME``."""
-    return bool(numpy.abs(left - right).mean() < _SIGNATURE_SAME)
 
 
 @dataclass(frozen=True)
@@ -1120,7 +1473,7 @@ class ClipFrame:
     image: Image.Image
 
 
-def clip_frames(path: Path, interval: float) -> Iterator[ClipFrame]:
+def clip_frames(path: Path, interval: float) -> Generator[ClipFrame, None, None]:
     """Every frame of a clip at ``interval``, whole rather than cropped.
 
     A generator, like the sampler it wraps: a clip's worth of full frames is
