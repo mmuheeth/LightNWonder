@@ -423,3 +423,62 @@ class ClassifierPredictFailedError(AppException):
     status_code = HTTPStatus.BAD_GATEWAY
     error_code = "CLASSIFIER_PREDICT_FAILED"
     message = "The tiles could not be classified"
+
+
+# --- Replay ---------------------------------------------------------------
+# One scripted sequence over three windows that belong to other processes, so
+# the split is by which of them the caller has to go and fix: 409 the machine
+# (a window is not open, or Windows will not let this process drive it), 404 a
+# control the window no longer captions that way, and 502 either a page that
+# could not be reached or a click that was sent and changed nothing. A step that
+# fails mid-sequence is recorded *on the step* and stops the run there -- the
+# HTTP failures are only about not being able to start one.
+
+
+class ReplayAlreadyRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "REPLAY_ALREADY_RUNNING"
+    message = "A replay sequence is already in progress"
+
+
+class ReplayWindowNotFoundError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "REPLAY_WINDOW_NOT_FOUND"
+    message = "A window the replay sequence drives is not open"
+
+
+class ReplayAccessDeniedError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "REPLAY_ACCESS_DENIED"
+    message = "Windows is blocking input to one of the replay windows"
+
+
+class ReplayControlNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "REPLAY_CONTROL_NOT_FOUND"
+    message = "No control with that caption is in the window"
+
+
+class ReplayScreenshotNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "REPLAY_SCREENSHOT_NOT_FOUND"
+    message = "No replay screenshot with that name has been written"
+
+
+class ReplayMenuUnreachableError(AppException):
+    """The attendant menu is a web page, and its page could not be driven.
+
+    502 rather than 409: unlike a closed window, this is not something the
+    caller can put right by launching an application -- the browser is there
+    and the page is on screen, but the debugging port it is driven through did
+    not answer."""
+
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "REPLAY_MENU_UNREACHABLE"
+    message = "The attendant menu's page could not be driven"
+
+
+class ReplayStepNotConfirmedError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "REPLAY_STEP_NOT_CONFIRMED"
+    message = "The click was sent but nothing the step expected happened"

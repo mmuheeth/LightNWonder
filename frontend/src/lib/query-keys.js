@@ -29,6 +29,10 @@ export const queryKeys = Object.freeze({
     // parameter on one, and the progress stream never invalidates it mid-run.
     report: () => [...queryKeys.analyzeSpin.all, "report"],
   }),
+  replay: Object.freeze({
+    all: ["replay"],
+    status: () => [...queryKeys.replay.all, "status"],
+  }),
   paytable: Object.freeze({
     all: ["paytable"],
     // Parameterised: inspecting another paytable of the same game is a

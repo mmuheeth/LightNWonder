@@ -17,6 +17,7 @@ from app.services import meter as meter_service
 from app.services import obs as obs_service
 from app.services import ocr as ocr_service
 from app.services import paytable as paytable_service
+from app.services import replay as replay_service
 
 
 @pytest.fixture
@@ -55,6 +56,20 @@ def _clean_game_input_state() -> Iterator[None]:
     game_input_service.reset()
     yield
     game_input_service.reset()
+
+
+@pytest.fixture(autouse=True)
+async def _clean_replay_state() -> AsyncIterator[None]:
+    """Drop the running flag and the last run's record, cancelling any walk.
+
+    Async like its event-capture and analyze-spin siblings: a sequence started
+    in the background owns a task, and a task cancelled but never awaited is
+    the pending-task warning that ``filterwarnings = error`` turns into a
+    failure.
+    """
+    await replay_service.reset()
+    yield
+    await replay_service.reset()
 
 
 @pytest.fixture(autouse=True)

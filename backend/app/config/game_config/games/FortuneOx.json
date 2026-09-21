@@ -36,6 +36,8 @@
   "wild_card_replacement" : ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "JJ"],
   "button_targets": {
     "take_win": [0.0713, 0.9724],
-    "gamble": [0.0694, 0.9383]
+    "gamble": [0.0694, 0.9383],
+    "spin": [0.064844, 0.455384],
+    "exit_gameplay": [0.064844, 0.505733]
   }
 }

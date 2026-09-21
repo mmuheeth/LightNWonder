@@ -33,7 +33,7 @@ from app.schemas.game_input import (
     GameInputStatus,
     GameWindowState,
 )
-from app.utils import game_log, win32
+from app.utils import game_log, win32, window_ui
 from app.utils.click_target import ClickTarget, ClickTargetError, named_target
 from app.utils.log_tail import LogTail
 
@@ -232,40 +232,22 @@ async def _watch_log(
         await asyncio.sleep(_POLL_SECONDS)
 
 
-_CURSOR_SETTLE_SECONDS = 0.02
-"""How long to let the target see the cursor arrive before pressing -- Unity
-samples the cursor's position rather than trusting a message's coordinates,
-so the move has to land before the button does."""
-
-
 async def _inject_click(hwnd: int, x: int, y: int, hold_seconds: float) -> bool:
-    """Click a client-area point as real hardware input."""
+    """Click a client-area point as real hardware input. The injection itself
+    lives in :func:`app.utils.window_ui.click_at`, which the replay sequence
+    clicks its own windows with; only the diagnosis is this service's."""
     screen_x, screen_y = win32.client_to_screen(hwnd, x, y)
-    raised = win32.bring_to_front(hwnd)
-
-    previous = win32.get_cursor_pos()
-    win32.set_cursor_pos(screen_x, screen_y)
     try:
-        await asyncio.sleep(_CURSOR_SETTLE_SECONDS)
-
-        # Injected input lands on whatever is topmost under the cursor, not
-        # at this hwnd -- firing blind risks clicking whatever is on top of
-        # the game instead (a File Explorer window, say).
-        topmost = win32.window_at(screen_x, screen_y)
-        if topmost != hwnd:
-            raise GameWindowNotFoundError(
-                f"The window under the target point is 0x{topmost:X}, not "
-                f"the game's 0x{hwnd:X}, so a click there would hit that "
-                "window instead. Bring the game window to the front and "
-                "make sure nothing else covers it, then try again."
-            )
-
-        win32.inject_left_down()
-        await asyncio.sleep(hold_seconds)
-        win32.inject_left_up()
-    finally:
-        win32.set_cursor_pos(*previous)
-    return raised
+        return await window_ui.click_at(
+            hwnd, screen_x, screen_y, hold_seconds=hold_seconds
+        )
+    except window_ui.WindowNotTopmost as exc:
+        raise GameWindowNotFoundError(
+            f"The window under the target point is 0x{exc.found:X}, not "
+            f"the game's 0x{hwnd:X}, so a click there would hit that "
+            "window instead. Bring the game window to the front and "
+            "make sure nothing else covers it, then try again."
+        ) from exc
 
 
 def _require_log_for_verification() -> LogTail:

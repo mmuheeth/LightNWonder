@@ -1,6 +1,7 @@
 import { IDeckPanel } from "@/features/ideck/ideck-panel";
 import { ObsPanel } from "@/features/obs/obs-panel";
 import { PaylinePanel } from "@/features/paylines/payline-panel";
+import { ReplayPanel } from "@/features/replay/replay-panel";
 import { RoiPanel } from "@/features/roi/roi-panel";
 import { GameSelector } from "@/features/games/game-selector";
 
@@ -21,6 +22,7 @@ export function DashboardPage() {
         <ObsPanel />
         <IDeckPanel />
         <RoiPanel />
+        <ReplayPanel />
       </div>
 
       {/* Its own row rather than a cell of the two-column grid: the

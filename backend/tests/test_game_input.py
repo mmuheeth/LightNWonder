@@ -28,7 +28,7 @@ from httpx import AsyncClient
 from app.config.game_config.selection import save_active_game
 from app.config.runtime import settings
 from app.services import game_input as game_input_service
-from app.utils import win32
+from app.utils import win32, window_ui
 from app.utils.click_target import ClickTarget
 from tests.asserts import assert_failure, assert_success
 
@@ -248,6 +248,10 @@ def game_input_env(
     monkeypatch.setattr(settings, "GAME_INPUT_FOCUS_ON_RETRY", True)
     monkeypatch.setattr(game_input_service, "_POLL_SECONDS", 0.0)
     monkeypatch.setattr(game_input_service, "_RESTORE_ATTEMPTS", 2)
+    # A click now waits for its window to really come forward; the fake window
+    # either is or is not under the cursor from the first poll.
+    monkeypatch.setattr(window_ui, "FOCUS_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(window_ui, "FOCUS_POLL_SECONDS", 0.0)
     yield
 
 

@@ -15,6 +15,7 @@ from app.api.endpoints import (
     ocr,
     paylines,
     paytable,
+    replay,
     roi,
 )
 
@@ -38,3 +39,4 @@ api_router.include_router(paytable.router, prefix="/paytable", tags=["paytable"]
 api_router.include_router(
     analyze_spin.router, prefix="/analyze-spin", tags=["analyze-spin"]
 )
+api_router.include_router(replay.router, prefix="/replay", tags=["replay"])

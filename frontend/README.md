@@ -63,6 +63,9 @@ src/
 │   ├── obs/                OBS Studio control: connect, screenshot, record
 │   ├── roi/                crops a configured region out of the latest shot
 │   ├── paylines/           checks a split's tiles against the patterns that pay
+│   ├── replay/             one button that walks the attendant menu to the
+│   │                   latest game-play record, and the record of the eight
+│   │                   clicks it took to get there
 │   ├── paytable/           the maths the running game loaded: symbols, reel
 │   │                   strips, combos, and the payline set in play
 │   ├── image-classifier/   trains ResNet34 or EfficientNet-B0 on the symbol
@@ -95,16 +98,45 @@ feature can be deleted in one directory. Shared plumbing lives in `lib/`.
 
 `features/event-capture/` is the same shape with one twist worth copying: its
 status poll uses a functional `refetchInterval`, so a live run refreshes every
-two seconds while an idle dashboard asks every ten. Its screenshots are the one
-thing fetched outside `apiRequest` -- `captureImageUrl()` builds a URL for an
-`<img>` src, because the backend serves those as files rather than as the
-envelope.
+two seconds while an idle dashboard asks every ten. Its screenshots are fetched outside
+`apiRequest` -- `captureImageUrl()` builds a URL for an `<img>` src, because
+the backend serves those as files rather than as the envelope. That and
+`replayImageUrl()` are the only two.
 
 `features/obs/` is the reference for a slice that both polls and mutates: a
 status query on a short `refetchInterval`, mutations that invalidate
 `queryKeys.obs.all`, and one mutation (`useTakeScreenshot`) whose result is read
 straight from `mutation.data` rather than the cache, so the preview needs no
 component state.
+
+`features/replay/` is the slice to copy for an action whose *failure is still
+data*, and for **a mutation that only starts something**. `POST /api/replay/run`
+answers as soon as the sequence has begun -- it walks three windows over tens of
+seconds -- so the record the panel renders is the *status* query's `run`, not
+`mutation.data`, and starting a run just invalidates the subtree to get the
+poll going. That poll is opt-in on the one thing that earns it
+(`refetchInterval` returns 1s while `data.running`, `false` otherwise), which is
+`useCaptureStatus`'s pattern with a shorter interval because each step is
+seconds rather than a spin.
+
+Four details are deliberate:
+
+- the run's `state` may be `failed` on a 200, so the record is rendered either
+  way and `ApiErrorAlert` is kept for the one case that really is an error -- a
+  refusal to start at all;
+- the step that completed without proving anything is labelled `unconfirmed`
+  rather than drawn as a plain success (ten of the eleven are confirmed against
+  something observed, and a tick beside the eleventh would claim a check nobody
+  made);
+- the **screenshot is an `<img src>` pointing at `/api/replay/screenshot/...`**,
+  not a data URI on the record -- that record is polled once a second while the
+  run walks on, and it is the only place this slice bypasses `apiRequest`. It
+  appears in the card the moment the run takes it, with two steps still to run;
+- a window that is not `ready` gets a sentence about *why* under the badge,
+  since "access_denied" on its own does not tell a reader to restart the backend
+  elevated. The attendant menu's own hint is gated on `menu.probed`, because a
+  live run stops the backend re-reading that page and `reachable: false` then
+  means "nobody asked" rather than "it did not answer".
 
 `features/roi/` is the smallest complete slice, and the one to copy for a
 read-then-act panel: one query for what can be chosen, one mutation whose crop is

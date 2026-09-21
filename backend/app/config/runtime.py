@@ -20,6 +20,7 @@ from app.config.obs import ObsSettings
 from app.config.ocr import OcrSettings
 from app.config.paylines import PaylineSettings
 from app.config.paytable import PaytableSettings
+from app.config.replay import ReplaySettings
 
 Environment = Literal["local", "development", "staging", "production"]
 
@@ -49,6 +50,7 @@ class Settings(
     PaytableSettings,
     AnalyzeSpinSettings,
     ImageClassifierSettings,
+    ReplaySettings,
 ):
     """Complete runtime configuration for the API."""
 

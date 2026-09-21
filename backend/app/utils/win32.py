@@ -103,6 +103,46 @@ class WindowInfo:
     client_width: int
     client_height: int
 
+    visible: bool = True
+    """Whether Windows is showing the window at all. Defaulted so that a
+    hand-built ``WindowInfo`` (the tests' fake windows) still reads as present;
+    it matters for a window that is *hidden* rather than destroyed, which is how
+    a closed dialog often leaves its handle behind."""
+
+
+@dataclass(frozen=True)
+class ControlInfo:
+    """One control inside another application's window, in **screen**
+    coordinates -- unlike :class:`WindowInfo`, whose client size is its own.
+
+    A control exists as a real window only in frameworks that give each one an
+    HWND (WinForms does; a webview or a Unity canvas draws its buttons and
+    exposes nothing), so a caller has to be ready for a window with none."""
+
+    hwnd: int
+    class_name: str
+    text: str
+    enabled: bool
+    visible: bool
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    @property
+    def width(self) -> int:
+        return self.right - self.left
+
+    @property
+    def height(self) -> int:
+        return self.bottom - self.top
+
+    @property
+    def center(self) -> tuple[int, int]:
+        """The point to aim at: a control is clicked in the middle, not at the
+        edge a rounded fraction could land on."""
+        return (self.left + self.width // 2, self.top + self.height // 2)
+
 
 _user32: Any = None
 _kernel32_lib: Any = None
@@ -131,10 +171,22 @@ def _lib() -> Any:
     lib = _WinDLL("user32", use_last_error=True)
     lib.EnumWindows.argtypes = (_proc_type(), ctypes.c_ssize_t)
     lib.EnumWindows.restype = ctypes.c_int
+    lib.EnumChildWindows.argtypes = (
+        ctypes.c_void_p,
+        _proc_type(),
+        ctypes.c_ssize_t,
+    )
+    lib.EnumChildWindows.restype = ctypes.c_int
     lib.IsWindow.argtypes = (ctypes.c_void_p,)
     lib.IsWindow.restype = ctypes.c_int
     lib.IsIconic.argtypes = (ctypes.c_void_p,)
     lib.IsIconic.restype = ctypes.c_int
+    lib.IsWindowVisible.argtypes = (ctypes.c_void_p,)
+    lib.IsWindowVisible.restype = ctypes.c_int
+    lib.IsWindowEnabled.argtypes = (ctypes.c_void_p,)
+    lib.IsWindowEnabled.restype = ctypes.c_int
+    lib.GetWindowRect.argtypes = (ctypes.c_void_p, ctypes.POINTER(_Rect))
+    lib.GetWindowRect.restype = ctypes.c_int
     lib.GetWindowTextW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int)
     lib.GetWindowTextW.restype = ctypes.c_int
     lib.GetClassNameW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int)
@@ -249,6 +301,33 @@ def _describe(lib: Any, hwnd: int) -> WindowInfo | None:
         minimized=bool(lib.IsIconic(hwnd)),
         client_width=rect.right - rect.left,
         client_height=rect.bottom - rect.top,
+        visible=bool(lib.IsWindowVisible(hwnd)),
+    )
+
+
+def _describe_control(lib: Any, hwnd: int) -> ControlInfo | None:
+    """Read one control: its class, caption, state and screen rectangle.
+    ``None`` if it has gone, which a subtree walk can race."""
+    if not lib.IsWindow(hwnd):
+        return None
+
+    text = ctypes.create_unicode_buffer(512)
+    lib.GetWindowTextW(hwnd, text, len(text))
+    class_name = ctypes.create_unicode_buffer(256)
+    lib.GetClassNameW(hwnd, class_name, len(class_name))
+    rect = _Rect()
+    lib.GetWindowRect(hwnd, ctypes.byref(rect))
+
+    return ControlInfo(
+        hwnd=hwnd,
+        class_name=class_name.value,
+        text=text.value,
+        enabled=bool(lib.IsWindowEnabled(hwnd)),
+        visible=bool(lib.IsWindowVisible(hwnd)),
+        left=rect.left,
+        top=rect.top,
+        right=rect.right,
+        bottom=rect.bottom,
     )
 
 
@@ -338,8 +417,27 @@ def is_supported() -> bool:
     return _IS_WINDOWS and _WinDLL is not None and _WINFUNCTYPE is not None
 
 
-def find_window(*, title: str, class_name: str | None = None) -> WindowInfo | None:
-    """Find a top-level window by title, optionally pinned to a window class."""
+def find_window(
+    *,
+    title: str,
+    class_name: str | None = None,
+    class_prefix: str | None = None,
+    visible_only: bool = False,
+) -> WindowInfo | None:
+    """Find a top-level window by title, optionally pinned to a window class.
+
+    ``class_prefix`` is the looser form, for the frameworks that mint a class
+    name per process: every WinForms window is
+    ``WindowsForms10.Window.8.app.0.<hash>``, and the hash is not the same
+    thing twice, so only its prefix can be matched on. ``visible_only`` skips a
+    window that is hidden rather than closed -- the difference between "the
+    dialog is gone" and "its handle outlived it".
+
+    An empty ``title`` means "any title", which is the only way to reach a
+    window that sets none: a caption is usually the cheapest thing to identify
+    a window by, but a webview host is free not to write one, and then its
+    class is all there is. Pair it with ``class_name``/``class_prefix``, or the
+    first window enumerated is the answer."""
     lib = _lib()
     wanted = title.casefold()
     exact: WindowInfo | None = None
@@ -348,9 +446,15 @@ def find_window(*, title: str, class_name: str | None = None) -> WindowInfo | No
     def visit(hwnd: int, _unused: int) -> int:
         nonlocal exact, partial
         info = _describe(lib, hwnd)
-        if info is None or not info.title:
+        if info is None:
+            return _CONTINUE
+        if wanted and not info.title:
             return _CONTINUE
         if class_name is not None and info.class_name != class_name:
+            return _CONTINUE
+        if class_prefix and not info.class_name.startswith(class_prefix):
+            return _CONTINUE
+        if visible_only and not info.visible:
             return _CONTINUE
         found = info.title.casefold()
         if found == wanted:
@@ -369,6 +473,27 @@ def find_window(*, title: str, class_name: str | None = None) -> WindowInfo | No
 def describe(hwnd: int) -> WindowInfo | None:
     """Re-read a window by handle. ``None`` once the window has been destroyed."""
     return _describe(_lib(), hwnd)
+
+
+def descendants(hwnd: int) -> list[ControlInfo]:
+    """Every control below ``hwnd``, at any depth.
+
+    ``EnumChildWindows`` walks the whole subtree rather than one generation, so
+    a button nested in a group box inside a tab page arrives in the same flat
+    list as a top-level one -- which is what a caller searching by caption
+    wants. An empty list is a normal answer: it means the window draws its own
+    buttons instead of owning them."""
+    lib = _lib()
+    found: list[ControlInfo] = []
+
+    def visit(child: int, _unused: int) -> int:
+        info = _describe_control(lib, child)
+        if info is not None:
+            found.append(info)
+        return _CONTINUE
+
+    lib.EnumChildWindows(hwnd, _proc_type()(visit), 0)
+    return found
 
 
 def can_post(hwnd: int) -> bool:
@@ -390,6 +515,16 @@ def focus(hwnd: int) -> bool:
     """Bring a window to the foreground. Best effort -- Windows can refuse a
     foreground change from a process that doesn't already own it."""
     return bool(_lib().SetForegroundWindow(hwnd))
+
+
+def foreground_window() -> int:
+    """The window that currently has the foreground, or ``0`` if none does.
+
+    The question :func:`window_at` cannot answer: that says what is under a
+    *point*, which is what a click needs, while "is this window the active
+    one" is what focusing needs -- and the two differ for a window that is
+    uncovered but not activated."""
+    return int(_lib().GetForegroundWindow() or 0)
 
 
 def post_mouse_move(hwnd: int, x: int, y: int) -> None:

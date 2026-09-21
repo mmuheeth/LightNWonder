@@ -2607,6 +2607,280 @@ lines read short. Each run's record is written to
 `tile-clips/` beside it, and its video under the
 recording root beside it.
 
+## Replay
+
+Replays the latest game play: one scripted walk from the I/O hub simulator,
+through the attendant menu, into the newest game-play record -- ending with **a
+screenshot of that replay on the card** and the cabinet put back where it was
+found:
+
+```
+GET  /api/replay/status             the three windows, the menu's page, and the run in progress; always 200
+POST /api/replay/run                start the whole sequence; answers as soon as it has begun
+GET  /api/replay/screenshot/{file}  the picture a run took, as a file
+```
+
+`app/services/replay.py`'s `run()` is the whole script and the only thing a
+caller needs -- a test, or any other service, composes it as one call. `start()`
+is that same walk on a background task, which is what the endpoint uses and
+what makes a run followable. There is no endpoint that takes a step, a window
+or a raw pixel.
+
+### Three windows, driven three different ways
+
+This is the reason the sequence is not a list of points -- and, after the
+attendant menu turned out to be a web page, the reason **none** of it is:
+
+| window | what it is | how it is driven |
+| --- | --- | --- |
+| **DevTool** | `DevTool.exe`, WinForms | **by caption.** Every button is a real child window with its own text and its own enabled flag, so `Connect` and `Attendant Key` are found by name -- nothing measured, and a moved or resized window still works |
+| **System Admin** | a React app served by `SystemAdmin.exe` on `localhost:9002`, shown in an **app-mode Chrome window** | **by its DOM**, over the Chrome DevTools Protocol. The platform starts that browser with a debugging port, so `app/utils/cdp.py` finds a button by its `id` (or its text) and dispatches the click into the page. Its window is still *raised* -- see below -- but never clicked |
+| the game | the simulator's Unity window | through [game window input](#game-window-input) and the active game's own `button_targets`, like take win and gamble |
+
+`GET /api/replay/status` describes all three the way each is addressed: the
+captions each window owns, and the labels the menu's page is showing. A step
+that cannot find *Attendant Key* is either a window that is not open or a
+button that was renamed, and only the list says which -- the same for the page.
+
+### The menu is a web page, so it is not clicked at all
+
+It looks like a window, and for a while this drove it like one: measure each
+button as a fraction of the client area, raise the window, aim. Every part of
+that was a liability -- fractions to re-measure whenever the page's layout
+changed, DPI scaling between two processes that disagreed about pixels, a
+window that had to be uncovered and in front, and a click that could report
+only that it had been *sent*.
+
+Driving the DOM instead removes all of it:
+
+- **Nothing is measured.** The element reports its own rectangle, in CSS
+  pixels, and the click is dispatched into the renderer -- so the window needs
+  no focus, needs nothing uncovered, and the cursor never moves. A resized or
+  restyled menu needs no change here at all.
+- **An `id` beats text, where there is one.** The nav buttons carry
+  `id="Events / History"` and `id="Game Play"` -- the label *is* the id -- which
+  is exact and survives restyling. *View* is a plain MUI `<button>` with no id,
+  so it resolves by text; both matter, which is why both are tried in that
+  order and the step records which one answered.
+- **The id is matched the way a caption is**: collapsed whitespace, folded
+  case. Not tidiness -- the menu writes `id="exit"` for a button reading
+  *Exit*, so an exact comparison missed it, fell through to the text, and
+  clicked a different element reading *Exit* that closes nothing. The step then
+  failed reporting that the menu was still open, which was true and was not the
+  problem. An id differing from its label only in case is still the exact
+  answer.
+- **Text matches are narrowed to the innermost.** A button and every panel
+  wrapped around it share their text; clicking the wrapper is how a click lands
+  on padding. Where more than one survives that, DOM order decides -- which is
+  right for a record list (the first row is newest) and is exactly why a decoy
+  higher up the page beats the real button on text alone.
+- **Loading stops being a guess.** "Is the button there yet?" is a question the
+  page answers, so `REPLAY_DOM_WAIT_SECONDS` is a *wait for something* rather
+  than a grace period: a slow menu costs only the time it takes, and a page
+  that never shows the button fails saying what it was showing instead.
+- **Clicks can be confirmed.** Reading the page back is what turns a sent click
+  into a proven one -- see below.
+- **A row scrolled out of view is refused, not clicked.** CSS-visible is not
+  the same as on screen: a record below the fold is drawn, and its coordinates
+  belong to whatever *is* at that point in the viewport.
+- **And the point is hit-tested before the click, which is the one thing
+  driving a page does not get for free.** A dispatched click goes to a
+  coordinate; an element's box says where it was when the page was *read*. The
+  two part company whenever the page moves in between, and the menu does
+  exactly that where it matters most: leaving the game play view brings it
+  back with the drawer still sliding in, so Exit's box is hundreds of pixels
+  from where it settles. The click went to empty space and nothing noticed --
+  the element was found, by its id, and dispatched without error; the step
+  failed a timeout later reporting that the menu was still open, which was
+  true and pointed nowhere. So `_aimed` asks the page `elementFromPoint` and
+  re-reads until the answer is the button, and refuses -- naming what is there
+  instead -- rather than clicking in hope. It is the same bargain
+  `window_ui.click_at` makes for a window that will not come forward.
+
+The one thing this adds is a dependency on that debugging port. When it does
+not answer the step fails with `REPLAY_MENU_UNREACHABLE` naming the endpoint,
+which is a deployment fact rather than something to retry.
+
+**Its window is raised anyway, and not for the clicks.** `focus-menu` exists
+for two other reasons: somebody watching the sequence should see the menu being
+walked rather than a DevTool window with three invisible clicks happening
+behind it, and a browser window that is minimized or fully covered is one
+Chromium may throttle -- animation frames and timers included, which is the
+difference between a React route that draws in 200ms and one that draws when
+someone looks at it. Best effort throughout, because everything after it is in
+the page: a foreground change Windows refuses, or no window at all, is reported
+and the walk carries on.
+
+### The record list is somebody else's round-trip
+
+Opening *Game Play* sends the menu's own server off to fetch game-play history,
+so the table is empty for a while after the click lands. That is why it has its
+own setting -- `REPLAY_RECORDS_WAIT_SECONDS`, 90s, an order above the DOM
+timeout the other steps use -- and it is still a wait *for something*: the page
+is asked whether a row's own *View* button has appeared, so a fast fetch costs
+one poll and a slow one costs only what it takes. Sleeping for the worst case
+would pay it every time and still click into an empty table whenever the fetch
+ran long.
+
+A list that never arrives is either a server that did not answer or a cabinet
+with no history to replay. The step cannot tell, so it names both rather than
+picking one.
+
+### Connect is idempotent, because the panel says which state it is in
+
+A DevTool that is already connected greys *Connect* out and lights *Attendant
+Key* up. So the step reads those two flags rather than guessing: already
+connected is `skipped`, not failed and not clicked again. A *Connect* that is
+greyed out while *Attendant Key* is also disabled is neither state, and says so
+instead of pressing on.
+
+### It ends with a picture of the replay, and the cabinet put back
+
+Pressing *View* starts the replay in the **game's** window, behind the
+attendant menu -- so the sequence brings that window to the front and captures
+it through OBS, **before** either Exit. Three things about that:
+
+- **The game is focused first, deliberately.** It is what makes the replay
+  visible to someone watching, and it stops OBS capturing a covered window.
+  Windows can refuse a foreground change, so the result is *reported*
+  (`confirmed: false` with a detail saying so) rather than treated as a
+  failure: the replay is running either way, and the picture is still worth
+  taking.
+- **OBS is pointed at the game first.** Without that the shot is of whatever
+  the window-capture source was last aimed at, which comes back as a
+  plausible-looking picture of the wrong thing. A scene with no window-capture
+  source is *noted* rather than fatal -- it is the aim that is unverified, not
+  the capture.
+- **One copy is probed, and it is the copy that gets shown.** OBS answers
+  `GetSourceScreenshot` (a data URI) and `SaveSourceScreenshot` (a file) with
+  two separate calls, and measured here they disagree: the **first inline copy
+  after a connect or a re-point is entirely black** while the file written a
+  moment later is the real picture. Probing one and displaying the other is
+  exactly how a card ends up showing a black rectangle over a step that passed
+  -- so the record carries a **file name and no data URI**,
+  `GET /api/replay/screenshot/{file}` serves that file, and `roi.is_blank`
+  probes the same one. The file is black on the first attempt often enough that
+  the retry is load-bearing rather than defensive. A picture that stays empty
+  comes back `blank: true` and **fails its step**, without raising, so the run
+  still puts the cabinet back.
+
+It lands on the run as its own `screenshot` block -- one picture of one moment,
+and the thing a reader of a replay actually wants -- naming the file OBS wrote,
+the source it captured, and how many attempts it took.
+
+**Then it exits, and that is only safe because the button is measured.** The
+replay's *Spin*, *Previous* and *Exit* are the replay's own controls, drawn over
+the game while one is on screen and on no other screen -- so
+`button_targets.exit_gameplay` and `button_targets.spin` were measured off a
+frame captured *during* a replay (`obs-captured-files/replay/`). They sit
+**~22px apart** on a 2006px-tall content box with *Previous* between them, and
+*Previous* replays the record before the one that was asked for, so the centre
+is what matters rather than the text baseline. `spin` is never pressed by a
+run: it is measured and reported because it is only reachable in the state a
+run leaves the cabinet in.
+
+`REPLAY_EXIT_AFTER_SCREENSHOT` is **on**. Turned off, the run stops with the
+replay on screen to be looked at by hand, and those two steps are left out of
+the run's `steps` entirely rather than listed as skipped -- the same bargain
+`ANALYZE_SPIN_RECORD` makes with its recording steps, and what keeps `pending`
+meaning *unreached*.
+
+### Following a run while it runs
+
+The sequence takes tens of seconds, and most of them are spent waiting on
+something off-machine -- a menu server fetching history, a window coming
+forward. So `POST /run` answers **as soon as the walk has started**, with every
+step listed and `pending`, and `GET /status` carries that same record filling
+in under `data.run`:
+
+- **the steps** fill in as they happen, so a run that stalls says which step it
+  is stalled on;
+- **`run.logs`** is the run's own commentary, oldest first -- one line in and
+  one line out per step, written by the step wrapper rather than by each step
+  remembering to announce itself, plus what it found on the way: a window it
+  had to restore, a record list it waited 40s for, a screenshot it had to
+  retake. Capped at `REPLAY_LOG_LIMIT` lines, and each line's `sequence` comes
+  off a counter rather than the list's length, so dropping the oldest does not
+  renumber what a poller has already shown;
+- **the screenshot** lands on the record the moment it is taken, while the two
+  Exit steps are still to come.
+
+Two deliberate absences. There is **no second WebSocket** -- `analyze-spin`'s is
+still the only one -- because this is a poll a second at human speed, not a
+stream. And there is **no data URI** on the record: it is polled while the run
+walks, and a base64 copy of a portrait cabinet canvas costs more per poll than
+the sequence it is reporting. Hence the file route.
+
+While a run is walking, `/status` also stops probing the menu's page
+(`menu.probed: false`): reading every label off the DOM once a second, on the
+machine driving the cabinet, to answer a question the run's own log is already
+answering.
+
+A second run is refused the moment the first one starts -- the flag is read and
+set with no `await` in between, which is the whole of the mutual exclusion.
+There is deliberately no lock: a lock would make the loser *wait* for the
+cursor and the foreground window, and by the time it got them it would be
+replaying a different record than its caller asked about.
+
+### A step proves its own click, and the ones that cannot say so
+
+Most have something to wait for, and none of them reports a click it merely
+sent:
+
+| step | proof |
+| --- | --- |
+| `open-devtool` | the window is there and this process may drive it |
+| `connect` | *Attendant Key* became enabled |
+| `attendant-key` | the System Admin window opened |
+| `focus-menu` | the menu window became the foreground one -- *reported*, not required |
+| `events-history` | the *Game Play* tab appeared on the page |
+| `game-play` | the record list came up -- there is a *View* to press |
+| `view-latest` | **none**: what it starts is a replay in the *game's* window, which the menu's page knows nothing about |
+| `focus-game` | the game window became the foreground one -- *reported*, not required |
+| `screenshot` | a non-blank frame came back |
+| `exit-gameplay` | the attendant menu came back |
+| `exit-attendant` | the menu closed |
+
+*View* carries `confirmed: false` for exactly that reason, and the picture two
+steps later is what shows whether it worked. Every awarded confirmation is
+something that was waited for and observed.
+
+All eleven steps exist before they run, so a failure at step four leaves the
+rest visibly `pending` -- unreached is a different fact from `skipped`,
+which is a different fact from `failed`. The first failure stops the run: there
+is no clicking *Game Play* in a menu that never opened.
+
+A failed step is **not** an HTTP failure. It comes back on a 200 with
+`data.state` of `failed` and the error on the step that stopped it, because how
+far the sequence got is the useful part and the envelope carries no data on a
+failure. The only HTTP failures are refusals to start: 409 for a run already in
+progress (two would fight over the cursor and the foreground window), and 503
+for a host with no Windows API.
+
+### Configuration
+
+Every setting is in [.env.example](.env.example) under *Replay*, and **none of
+them is a coordinate**. What can need changing per deployment:
+
+- `REPLAY_ADMIN_CDP_URL` and `REPLAY_ADMIN_PAGE_URL_CONTAINS`, if the platform
+  ever starts that browser on another port or serves the menu from another one.
+- the four label settings, if a button is relabelled.
+- `REPLAY_RECORDS_WAIT_SECONDS`, if a cabinet's menu server is slower than 90s
+  at returning game-play history.
+- `REPLAY_EXIT_AFTER_SCREENSHOT`, turned off to leave the replay on screen
+  instead of having the run tidy up after itself.
+- `exit_gameplay` and `spin` in the active game's `button_targets` -- the
+  replay's own controls. They belong to a game, not the platform, so they are
+  measured per game beside take win and gamble, off a frame captured during a
+  replay. `GET /api/replay/status` reports `game_exit_configured` and
+  `game_spin_configured`, so an unmeasured game is readable up front rather
+  than a surprise nine steps in.
+
+The **integrity level** rule applies to the two windows that *are* clicked on
+screen -- DevTool and the game, both elevated on these machines, so the backend
+must be too (`GET /api/replay/status` reports `access_denied` per window). It
+does not apply to the menu: its clicks go over a socket, not the desktop.
+
 ## Logging
 
 One line per request, correlated by request id:

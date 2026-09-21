@@ -5,10 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A Windows-hosted control surface for slot-game simulators. The FastAPI backend
-(`backend/`, port 8001) drives five local integrations — OBS Studio over
+(`backend/`, port 8001) drives six local integrations — OBS Studio over
 obs-websocket v5, a Virtual OLED button deck served by `OledPanelSvc.exe`, a
-log-following screenshot recorder, Tesseract OCR over the frames OBS wrote, and
-posted mouse clicks into the game's own Unity window — and the React dashboard
+log-following screenshot recorder, Tesseract OCR over the frames OBS wrote,
+posted mouse clicks into the game's own Unity window, and the cabinet's own
+attendant tooling (`DevTool.exe`'s WinForms buttons, plus the React attendant
+menu `SystemAdmin.exe` serves, driven over its browser's debugging port) —
+and the React dashboard
 (`frontend/`, port 3001) is the UI for them. Every one is host-machine specific:
 they talk to processes, windows and log files on the developer's own PC, not to a
 network service.
@@ -21,8 +24,9 @@ dependency but a lazily imported one, so a machine without it still boots.
 The dashboard covers the first three, plus `features/games` for choosing the
 active game, `features/roi` for cropping a configured region out of the latest
 screenshot, `features/paylines` for checking which of the game's winning patterns
-those tiles satisfy, and `features/paytable` for the maths the running game
-actually loaded. `game-input` and `ocr` are backend-only so far — endpoints
+those tiles satisfy, `features/paytable` for the maths the running game
+actually loaded, and `features/replay` for the one button that walks the
+attendant menu to the latest game-play record. `game-input` and `ocr` are backend-only so far — endpoints
 and services with no `src/features/` slice — so don't go hunting for their UI.
 **`features/grid` no longer exists**: the frontend slice was deleted in
 `f0b5721` ("Dashboard Cleanup") while `/api/grid` and its `queryKeys.grid` entry
@@ -105,8 +109,10 @@ Every backend response — success *and* failure — is
 - `frontend/src/lib/api.js` unwraps the envelope; `api-error.js` normalises every
   failure into one `ApiError` with `fieldErrors` ready for form binding. Feature
   code never sees the envelope.
-- The one exception: `GET /api/event-capture/runs/{id}/screenshots/{file}`
-  returns a raw image, because an `<img>` src cannot unwrap JSON.
+- The two exceptions are both images, because an `<img>` src cannot unwrap
+  JSON: `GET /api/event-capture/runs/{id}/screenshots/{file}` and
+  `GET /api/replay/screenshot/{file}`. Both resolve the name through
+  `utils/paths.py` — it came off a URL.
 - `tests/asserts.py` (`assert_success`, `assert_failure`) enforces the shape;
   use it in new endpoint tests.
 
@@ -117,20 +123,21 @@ Adding a backend resource is three files plus one line: `app/schemas/<thing>.py`
 ## Backend architecture
 
 **Services are module-level singletons, not classes.** `obs.py`, `ideck.py`,
-`event_capture.py`, `game_input.py`, `ocr.py`, `analyze_spin.py` and
-`image_classifier.py` each hold their state (client, lock, running run, cached
+`event_capture.py`, `game_input.py`, `ocr.py`, `analyze_spin.py`, `replay.py`
+and `image_classifier.py` each hold their state (client, lock, running run, cached
 engine, loaded model) in module globals and expose a `reset()` that
 `tests/conftest.py` calls autouse before and after every test. Callers import the
 namespace, not the functions: `from app.services import obs as obs_service`.
-`event_capture.reset()` and `analyze_spin.reset()` are async because both have a
-task to cancel; `image_classifier` splits the two — a sync `reset()` for the
-caches and an async `abort()` for the training task, and `conftest.py` awaits the
-latter.
+`event_capture.reset()`, `analyze_spin.reset()` and `replay.reset()` are async
+because each has a task to cancel; `image_classifier` splits the two — a sync
+`reset()` for the caches and an async `abort()` for the training task, and
+`conftest.py` awaits the latter.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
 inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
 `GameInputSettings`, `OcrSettings`, `FrameSettings`, `PaylineSettings`,
-`PaytableSettings`, `AnalyzeSpinSettings` and `ImageClassifierSettings`
+`PaytableSettings`, `AnalyzeSpinSettings`, `ReplaySettings` and
+`ImageClassifierSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
@@ -179,6 +186,14 @@ separate — `SpecificMaxBets` and `AllowedBetsTbl` both carry only the product)
 `win_geometry.py` (`winGeometry.xml`, plus the conversion between its
 0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
 `win32.py` (the only ctypes),
+`window_ui.py` (policy over it: the control of another app's window to click,
+found by caption, and the one click primitive `game_input` and `replay` share --
+which raises the target window and *waits* for it, since injected input lands on
+whatever is topmost),
+`cdp.py` (the Chrome DevTools Protocol: find a page in a browser started with a
+debugging port, read what is on it, ask what is *at a point* of it, click
+something in it -- how the attendant menu is driven, since it is a web page and
+not a window full of controls),
 `ocr.py` (runs the Tesseract program and reads its TSV back),
 `image_roi.py` (crops a named region out of a frame),
 `letterbox.py` (finds the part of a frame the game fills),
@@ -748,6 +763,159 @@ first, because a one-way stream that never reads would only notice a closed tab
 on its next send. Vite needs `ws: true` on the `/api` proxy or the upgrade gets
 the HTML index.
 
+**`services/replay.py` is the second orchestrator, and the thing it exists to
+get right is that its three windows are driven three different ways.** `run()`
+is the whole script -- from the I/O hub simulator through the attendant menu to
+the newest game-play record, ending with a screenshot of that replay and the
+cabinet put back where it was found -- and it is the only way to walk it: no
+endpoint takes a step, a window or a raw pixel. Nine things:
+
+- **DevTool owns its controls, so nothing about it is measured.** It is
+  WinForms, so *Connect* and *Attendant Key* are real child windows with real
+  captions and a real enabled flag; `utils/window_ui.py` finds them by name.
+  **Every step that clicks it goes through `_ready_devtool` first** -- find,
+  un-minimize, raise, wait for the foreground, *then* re-read the window --
+  because a minimized window reports its control rectangles at -32000, and it
+  can be minimized at any point in the sequence rather than only before it: the
+  attendant key hands the foreground to the menu, so DevTool is behind
+  something by the time anything returns to it.
+  That flag is also what makes step two idempotent rather than a guess: a
+  connected hub greys *Connect* out and lights *Attendant Key* up, so already
+  connected is `skipped`. Don't replace the caption lookup with coordinates --
+  a resized DevTool would then need re-measuring, and a renamed button would
+  click whatever moved into its place.
+- **The attendant menu is a web page, and is driven through its DOM, not its
+  window.** `SystemAdmin.exe` serves a React app on `localhost:9002` and shows
+  it in an app-mode Chrome window that the platform starts with a debugging
+  port, so `utils/cdp.py` finds a button and dispatches the click into the
+  renderer. This replaced four measured fractions, and everything they dragged
+  with them: no re-measuring when the layout changes, no DPI mismatch between
+  two processes that disagree about a pixel, no window to raise or uncover, no
+  cursor to move. **An `id` is tried before text** -- the nav buttons carry
+  `id="Events / History"` and `id="Game Play"`, the label being the id -- and
+  the id is matched **the way a caption is**: collapsed whitespace, folded
+  case. That last part is load-bearing, not tidiness. The menu writes
+  `id="exit"` for a button reading *Exit*, so an exact comparison missed it,
+  fell through to the text, and clicked a different element reading *Exit* that
+  closes nothing -- the step then failed saying the menu was still open, which
+  was true and not the problem. Text matches are narrowed to the *innermost*,
+  because a button and every panel around it read the same and clicking the
+  wrapper lands on padding; DOM order decides between what is left, so a decoy
+  higher up the page wins a text match and only the id gets the real button. A
+  match that is CSS-visible but **scrolled out of the viewport is refused, not
+  clicked**: its coordinates belong to whatever is at that point instead.
+  Don't reintroduce a coordinate path as a fallback; the page is the better
+  answer in every case, and the one thing it needs -- that debugging port --
+  fails loudly by name (`REPLAY_MENU_UNREACHABLE`) rather than silently.
+- **A click still goes to a *point*, so the point is hit-tested first.**
+  `_aimed` asks the page `elementFromPoint` before dispatching and re-reads
+  the element until the two agree -- the DOM's version of `click_at`'s wait
+  for the window to really be topmost, and it exists for a measured failure.
+  The menu comes back after the game play view closes with its drawer still
+  sliding in, so the box read then is hundreds of pixels from where the button
+  settles; the click went to empty space while every layer reported success
+  (found, by its id, dispatched without error), and only the step's own
+  confirmation caught it twenty seconds later saying the menu was still open --
+  true, and no help. Running the budget out is a refusal naming what *is*
+  there, never a click sent in hope. `cdp.hit_test` returns the whole ancestor
+  chain because a MUI button's centre is covered by its own ripple `<span>`.
+- **Its window is still raised, and that is not about the clicks.** A DOM click
+  needs no focus, so `focus-menu` is there for two other reasons: somebody
+  watching should see the menu being walked rather than a DevTool window with
+  three invisible clicks happening behind it, and a browser window that is
+  minimized or fully covered is one Chromium may throttle -- animation frames
+  and timers included. Best effort throughout, because the work that follows is
+  all in the page: a refused foreground change, or no window at all, is
+  reported and the walk carries on.
+- **The record list is the one wait that is somebody else's round-trip.**
+  Opening *Game Play* sends the menu's server off to fetch game-play history,
+  so `REPLAY_RECORDS_WAIT_SECONDS` (90s) is its own setting, an order above the
+  DOM timeout the other steps use. It is still a wait *for something* -- the
+  page is asked whether a row's *View* button has appeared -- so a fast fetch
+  costs one poll and a slow one costs only what it takes, where sleeping for
+  the worst case would pay it every time and still click into an empty table
+  when the fetch ran long. A list that never arrives is either a server that
+  did not answer or a cabinet with no history, and the step cannot tell, so it
+  names both.
+- **The game's own buttons come from the game config, and they exist only
+  during a replay.** *Spin*, *Previous* and *Exit* are the replay's own
+  controls drawn over the game, so `button_targets.exit_gameplay` and
+  `button_targets.spin` had to be measured off a frame captured *during* a
+  replay -- which is also why they are stacked 22px apart, with *Previous*
+  (replaying the record before the one asked for) between them. The click goes
+  through `game_input.click` deliberately with `verify=False`: that service
+  retries an unconfirmed click with the window focused, and a *second* Exit
+  lands on whatever replaced the first. The proof used instead is stronger and
+  belongs to the sequence -- the attendant menu coming back. `spin` is never
+  pressed by a run; it is measured and reported because it is only reachable in
+  the state a run leaves the cabinet in.
+- **A run ends with a picture of the replay, and then puts the cabinet back.**
+  *View* starts the replay in the **game's** window, behind the menu, so
+  `_focus_game` brings that window forward -- which is what makes the replay
+  visible and stops OBS capturing a covered window -- and `_screenshot` takes
+  it through OBS onto `run.screenshot`, *before* either Exit. Two things are
+  deliberate there: a foreground change Windows *refuses* is reported rather
+  than failed (the replay is running either way, so the picture is still worth
+  taking), and OBS is **pointed at the game** before capturing, since otherwise
+  the shot is of whatever its window source was last aimed at.
+  `REPLAY_EXIT_AFTER_SCREENSHOT` is **on**, which is only safe because that
+  Exit is measured; turned off, the two steps are left out of `steps` entirely
+  rather than listed as skipped -- exactly as `ANALYZE_SPIN_RECORD` does with
+  its recording steps -- and the run stops with the replay on screen to be
+  looked at by hand.
+- **One copy of the screenshot is probed, and it is the copy that gets shown.**
+  OBS answers `GetSourceScreenshot` (a data URI) and `SaveSourceScreenshot` (a
+  file) with two separate calls, and measured on this cabinet they disagree:
+  the first inline copy after a connect or a re-point is **entirely black**
+  while the file holds the real picture. So the record carries a *file name* and
+  no data URI, `GET /api/replay/screenshot/{file}` serves that file, and
+  `roi.is_blank` probes the same one -- checking one and showing the other is
+  how a card displays a black rectangle over a step that passed. The file is
+  black often enough on the first attempt that the retry is load-bearing, and a
+  picture that stays empty fails its step *without raising*, because a black
+  picture of a replay looks like a result.
+- **The record is readable while it is being written.** `start()` walks the
+  script as a background task and `GET /api/replay/status` carries the live run
+  under `data.run`, so the steps fill in as they happen, every step appends a
+  line to `run.logs` (written by `_step` itself, not by each step remembering
+  to), and the screenshot lands on the record the moment it is taken rather
+  than when the run ends. The mutual exclusion is `_create` and nothing else --
+  the flag is read and set with no `await` in between, which is why there is no
+  lock: a lock would make the loser *wait* for the cursor and then replay a
+  different record than its caller asked about. There is deliberately **no
+  second WebSocket** (`analyze_spin`'s is still the only one) and no data URI on
+  the record: this is polled once a second while the run walks, and a base64
+  copy of a portrait canvas costs more per poll than the sequence it reports.
+  `run()` is still the whole script for anything composing it -- `start()` is
+  that same walk on a task.
+- **Most steps prove their own click, and the ones that cannot say so.**
+  Reading the page back is what makes that possible: *Events / History* is
+  confirmed by the *Game Play* tab appearing, *Game Play* by the record list
+  coming up, the game's Exit by the menu coming back, and the menu's Exit by the
+  window going away. Only *View* has nothing to read -- what it starts happens
+  in the game's window -- so it carries `confirmed: false`, and the picture two
+  steps later is what shows whether it worked. Never award a confirmation that
+  nothing waited for.
+- **Every click on a *window* raises it and waits for it.** Injected input
+  lands on whatever is *topmost*, not at the hwnd it was aimed at, and these
+  windows sit in the background. Worse,
+  `BringWindowToTop`/`SetForegroundWindow` return before the desktop has
+  restacked, so believing the return value is what makes a background window
+  fail a click it should have made: `window_ui.click_at` polls until the target
+  is really under the cursor (asking again halfway through) and only then
+  presses. Running the budget out is still a **refusal**, not a blind click --
+  `REPLAY_FOCUS_WAIT_SECONDS`, and the error names what was in front instead.
+  None of this applies to the menu, which is the point of driving it as a page.
+- **A failed step is a 200, not an HTTP failure.** Every step the run will
+  attempt exists before it runs, so a failure at four leaves the rest visibly
+  `pending` (unreached, `skipped` and `failed` are three different facts), and
+  the verdict is derived from the *steps* rather than from something raising --
+  which is what lets a blank screenshot fail its own step without stopping the
+  run. The record of how far it got is the useful part -- which the envelope
+  cannot carry on a failure. The only HTTP failures are refusals to start: 409
+  for a run already in progress (two would fight over the cursor and the
+  foreground window), 503 for no Windows API.
+
 **Request correlation.** `RequestContextMiddleware` is registered last, so it
 runs outermost. The id lives both in a `ContextVar` (for loggers and envelope
 builders) and on the ASGI scope, because Starlette's `ServerErrorMiddleware`
@@ -823,8 +991,11 @@ one directory. Shared plumbing is in `src/lib/`.
   subtree, so an action still refreshes status immediately. Don't reintroduce a
   standing poll for these. `useCaptureStatus` in `features/event-capture/` is the
   reference for a functional `refetchInterval` — 2s while a run is live,
-  `false` when idle, so no panel polls without a reason to. That slice also
-  owns `captureImageUrl()`, the one fetch that bypasses `apiRequest`.
+  `false` when idle, so no panel polls without a reason to; `features/replay/`
+  does the same at 1s, because each of its steps is seconds rather than a spin.
+  Those two slices also own the only fetches that bypass `apiRequest`
+  (`captureImageUrl()` and `replayImageUrl()`), both `<img>` srcs for a backend
+  route that serves a file.
 - **`features/analyze-spin/` is the one live view that is not react-query.** A
   run pushes a snapshot per step over a WebSocket, so `useSpinStream` holds it in
   component state and `useSpinReport` fetches only the pictures (which the stream
@@ -864,6 +1035,28 @@ one directory. Shared plumbing is in `src/lib/`.
   A target's `confirm` key names a `game_log` event, which proves *which* button
   was hit; without one the fallback is `TOUCH_REGISTERED`, which proves only that
   input arrived. The two are reported apart, never blurred — don't collapse them.
+- **The cabinet's own tools are not Unity, and none of them is clicked the
+  same way.** `DevTool.exe` is WinForms, so every button is a real child window
+  with a caption and an enabled flag -- `win32.descendants` plus
+  `window_ui.find_control` reach them by name, and nothing needs measuring.
+  `SystemAdmin.exe` is not a window problem at all: it serves a React app on
+  `localhost:9002` and shows it in an app-mode Chrome window with a debugging
+  port, so `utils/cdp.py` drives its DOM and the window is only *watched* --
+  it opening proves the attendant key landed, and it closing proves the menu
+  exited. Check `win32.descendants` and `GET /api/replay/status` before
+  assuming a window needs coordinates; a page almost never does.
+- **Some buttons only exist in a state you have to get the cabinet into.**
+  The replay's own *Spin*, *Previous* and *Exit* are drawn over the game while
+  a replay is on screen and are on no other screen, so measuring them meant
+  capturing a frame mid-replay -- `obs-captured-files/replay/` is where those
+  frames are, and a fraction read off one lands where the game config says it
+  does -- checked against `take_win`/`gamble`, which are measurable any time,
+  and then confirmed by a real run: `exit_gameplay` resolved to (41, 506) in a
+  638x1000 client and the attendant menu came back, which is the proof that
+  click landed.
+  They are stacked ~22px apart on a 2006px-tall content box, so the *centre*
+  is what matters: a target measured to a text baseline lands on *Previous*,
+  which replays the record before the one that was asked for.
 - **OBS window selection needs the game running.** The window identifier is
   `title:class:executable` matched against the list OBS enumerates itself; one
   built from the process name alone binds to nothing and fails silently as a

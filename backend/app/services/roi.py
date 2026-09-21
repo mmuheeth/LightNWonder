@@ -133,11 +133,14 @@ def is_blank(path: Path) -> bool:
     try:
         with Image.open(path) as image:
             image.load()
-            return letterbox.is_blank(
-                image, threshold=settings.FRAME_LETTERBOX_THRESHOLD
-            )
+            return is_blank_image(image)
     except OSError:
         return False
+
+
+def is_blank_image(image: Image.Image) -> bool:
+    """Whether an already-open frame has nothing in it."""
+    return letterbox.is_blank(image, threshold=settings.FRAME_LETTERBOX_THRESHOLD)
 
 
 def content_box(image: Image.Image) -> letterbox.ContentBox:

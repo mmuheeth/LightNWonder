@@ -14,6 +14,14 @@ asyncpg~=0.31.0
 # OBS Studio control (obs-websocket v5)
 simpleobsws~=1.4.3
 
+# Driving the attendant menu's page over the Chrome DevTools Protocol
+# (app/utils/cdp.py): HTTP to find the page, then a websocket to it. Both are
+# already installed -- httpx by fastapi's test client and uvicorn[standard]
+# pulling in websockets -- but they are imported directly here, so they are
+# named rather than relied on as somebody else's transitive dependency.
+httpx~=0.28.1
+websockets~=16.1.1
+
 # Reading and cropping the frames OBS writes (app/utils/image_roi.py)
 pillow~=12.3.0
 
