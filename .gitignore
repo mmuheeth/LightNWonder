@@ -7,6 +7,9 @@ __pycache__/
 *.so
 dataset/
 obs-captured-files/
+OBS-capture
+OBS-capture/
+backend/OBS-capture
 
 # Distribution / packaging
 # These setuptools artifacts only ever appear at the repo root, so they are

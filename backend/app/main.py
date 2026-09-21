@@ -20,6 +20,7 @@ from app.middleware import RequestContextMiddleware
 from app.schemas.response import ApiResponse
 from app.schemas.system import ServiceInfo
 from app.services import analyze_spin as analyze_spin_service
+from app.services import cyclic_messages as cyclic_messages_service
 from app.services import database as database_service
 from app.services import event_capture as event_capture_service
 from app.services import image_classifier as image_classifier_service
@@ -56,6 +57,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Before OBS goes: a run still going needs its manifest sealed, and
         # sealing it takes one last screenshot-free read, not a live socket.
         await event_capture_service.abort()
+        # This one needs the socket for the same reason analyze-spin does: it
+        # holds a running OBS recording, and shutting down without stopping it
+        # leaves the cabinet recording into the next session.
+        await cyclic_messages_service.abort()
         # This one needs the socket, not just the absence of it: a spin
         # interrupted mid-run would otherwise leave OBS still recording.
         await analyze_spin_service.abort()
