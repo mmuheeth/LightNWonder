@@ -1,10 +1,13 @@
-"""Reads the game's on-screen text with Tesseract."""
+"""Reads the game's on-screen text with Tesseract, and the number printed on a
+symbol orb with PaddleOCR -- see :func:`read_tile` for why that one crop uses a
+different engine."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import binascii
+import dataclasses
 import io
 import time
 from collections.abc import Mapping, Sequence
@@ -42,9 +45,15 @@ from app.schemas.ocr import OcrOptions as OcrOptionsPayload
 from app.services import event_capture as capture_service
 from app.services import obs as obs_service
 from app.services import roi as roi_service
-from app.utils import image_roi, letterbox, ocr
+from app.utils import image_roi, letterbox, ocr, paddle_ocr
+from app.utils.game_math import GameMath
 
 logger = get_logger("ocr")
+
+# The `ocr` block key a game overrides symbol-tile reading under. Not a region in
+# `roi` -- a tile is cut by the reel grid, not by a named screen rectangle -- so
+# it shares that block's shape without appearing in the region catalogue.
+_TILE_REGION = "symbol_tile"
 
 
 @dataclass(frozen=True)
@@ -318,6 +327,167 @@ def _read_region(
             "duration_ms": _elapsed_ms(started),
         }
     )
+
+
+# The fewest digits a real prize figure is drawn with, when no loaded maths says
+# otherwise. The engine is asked for a single word, so it answers with one even
+# for a tile carrying no number, and this is what tells the two apart.
+#
+# **Not a confidence floor, which cannot work here.** Measured over every written
+# split: all 16 misreads are a *single* digit (`1`, `7`, `3`, `0`, `4`) and all 21
+# genuine figures are two or three (50 … 600) -- while the confidences of the two
+# groups overlap outright, a stray `1` scoring 40.0 against a true `150` at 17.8
+# and a true `100` at 19.1. So any floor rejects real prizes and admits noise;
+# digit count separates the same sample perfectly.
+#
+# **This is a fallback, not a universal truth.** It was measured against one
+# game's own orb tables, which happen to declare no single-digit prize -- a
+# different game's maths can and does (FortuneOx's SC table carries 2, 4, 5, 6
+# and 8 alongside 10 … 100), and for that game "a prize is never one digit" is
+# simply false. `min_digits_for` reads the real floor out of the maths that is
+# actually loaded and only falls back to this constant when there is none to
+# read -- see its own docstring.
+TILE_MIN_DIGITS = 2
+
+
+def min_digits_for(math: GameMath | None) -> int:
+    """The digit floor a prize reading must clear, for whichever maths is loaded.
+
+    Prefers the loaded game's own answer (:meth:`GameMath.min_prize_digits`)
+    over the constant above, because a fixed floor tuned against one game's
+    figures silently rejects a different game's genuine single-digit prizes --
+    see :data:`TILE_MIN_DIGITS`. Falls back to that constant when there is no
+    maths loaded (nothing to read yet) or its orb tables declare no non-jackpot
+    value to measure.
+    """
+    if math is not None:
+        measured = math.min_prize_digits()
+        if measured is not None:
+            return measured
+    return TILE_MIN_DIGITS
+
+# The weight every Paddle candidate carries in `TileReading.candidates`. The
+# field dates from when several Tesseract crops were weighed against each
+# other; with one engine and one reading per tile there is nothing left to
+# weigh, so every candidate gets the same constant.
+_BAND_WEIGHT = 2.0
+
+
+@dataclass(frozen=True)
+class TileReading:
+    """What a prize tile read as, and how sure the reading is.
+
+    ``text`` is ``None`` when nothing was read well enough to believe -- which is
+    both a tile carrying no figure and a tile whose figure could not be made out,
+    deliberately not told apart: neither is a prize.
+    """
+
+    text: str | None
+    confidence: float | None
+    candidates: tuple[tuple[str, float, float], ...]
+    """Every reading taken, as ``(text, confidence, weight)`` -- kept so a
+    surprising answer can be explained without re-running the read."""
+
+    label: str | None = None
+    """The jackpot tier printed on the orb where it carries a word instead of a
+    figure -- 'MAJOR', 'MINI', whatever the game draws. Never set at the same
+    time as ``text``."""
+
+
+def _paddle_options() -> paddle_ocr.PaddleOptions:
+    """The options an orb is read with, straight out of the environment."""
+    return paddle_ocr.PaddleOptions(
+        language=settings.OCR_ORB_PADDLE_LANGUAGE,
+        upscale=settings.OCR_ORB_PADDLE_UPSCALE,
+        min_confidence=settings.OCR_ORB_PADDLE_MIN_CONFIDENCE,
+        min_digits=TILE_MIN_DIGITS,
+        timeout_seconds=settings.OCR_ORB_PADDLE_TIMEOUT_SECONDS,
+    )
+
+
+def _read_tile_paddle(tile: Image.Image, *, min_digits: int) -> TileReading:
+    """Read the figure on one orb with PaddleOCR.
+
+    Raises :class:`app.utils.ocr.OcrUnavailableError`/``OcrError`` when Paddle
+    cannot answer at all -- there is no other engine left to ask. An orb with
+    no figure on it is not one of those failures: it is a real reading of
+    "nothing" (a feature scatter is drawn without a prize), reported as
+    ``TileReading(text=None, ...)`` rather than raised.
+    """
+    options = _paddle_options()
+    value, label, result = paddle_ocr.read_prize(
+        tile, options=dataclasses.replace(options, min_digits=min_digits)
+    )
+
+    candidates = tuple(
+        # Scaled to 0-100, matching the scale a reading is always reported at.
+        (word.text, word.confidence * 100.0, _BAND_WEIGHT)
+        for word in result.words
+    )
+    if value is None:
+        # A word rather than a figure: a jackpot orb says MAJOR/MINI/GRAND where
+        # a prize orb says a number, and that is a reading, not a failure.
+        if label is not None:
+            logger.debug("PaddleOCR read the jackpot tier %s on an orb", label)
+            return TileReading(
+                text=None,
+                confidence=(result.confidence or 0.0) * 100.0,
+                candidates=candidates,
+                label=label,
+            )
+        logger.debug(
+            "PaddleOCR read no figure on an orb (candidates: %s)",
+            ", ".join(f"{text} @{confidence:.1f}" for text, confidence, _ in candidates)
+            or "none",
+        )
+        return TileReading(text=None, confidence=None, candidates=candidates)
+    # `str(Decimal)` so a figure keeps the digits it was read with.
+    digits = "".join(character for character in str(value) if character.isdigit())
+    confidence = (result.confidence or 0.0) * 100.0
+    logger.debug("PaddleOCR read %s on an orb at %.1f", digits, confidence)
+    return TileReading(
+        text=digits,
+        confidence=confidence,
+        candidates=candidates,
+    )
+
+
+def read_tile(tile: Image.Image, *, math: GameMath | None = None) -> TileReading:
+    """Read the prize figure printed on one symbol tile with PaddleOCR -- the one
+    engine in this service that can read it: measured on this project's own
+    tiles, it reads ``160`` at 0.9998 off a tile Tesseract returns nothing for.
+
+    ``math`` is the loaded game's own maths, when the caller has it, so the
+    digit floor a reading must clear is that game's own smallest declared
+    prize rather than a constant tuned against a different one's -- see
+    :func:`min_digits_for`. ``None`` when no maths is loaded yet falls back to
+    :data:`TILE_MIN_DIGITS`.
+
+    Raises :class:`app.utils.ocr.OcrUnavailableError`/``OcrError`` when Paddle
+    itself cannot answer (not installed, or the engine errored) -- there is no
+    Tesseract fallback to fall through to.
+    """
+    return _read_tile_paddle(tile, min_digits=min_digits_for(math))
+
+
+async def engine_for_reading() -> Path:
+    """The Tesseract executable, identified once. Public because a caller reading
+    many crops wants to fail before the first of them rather than per crop."""
+    return await _engine_for_reading()
+
+
+def read_crop(
+    crop: Image.Image,
+    *,
+    executable: Path,
+    options: ocr.OcrOptions,
+) -> ocr.OcrResult:
+    """Read one already-cut picture. The whole of what this module adds over
+    :func:`app.utils.ocr.read_image` is resolving the engine and the options,
+    which the two helpers above do -- so a caller that holds its own crop (a
+    symbol tile, not a named region of a frame) has a door in that does not make
+    it re-derive either. Raises :class:`app.utils.ocr.OcrError`."""
+    return ocr.read_image(crop, executable=executable, options=options)
 
 
 def _crop_data_uri(crop: Image.Image, options: ocr.OcrOptions) -> str | None:

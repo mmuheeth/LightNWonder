@@ -74,6 +74,17 @@ class GameConfig:
     installed. :class:`app.utils.paylines.WildRule` is what turns it into the
     substitution rule."""
 
+    scatter_symbols: Sequence[str]
+    """Symbol codes this game pays by counting anywhere on the grid rather than
+    along a line, upper-cased and in the order declared -- the complement of
+    :attr:`wild_card_replacement`, and declared for the same reason.
+
+    Read by :mod:`app.services.analyze_spin`, which reports every scatter that
+    landed and where. Some of them are drawn with a number on the tile (a
+    prize orb); that is not declared, because it is a property of the *tile that
+    landed* and not of the code -- the analyse step OCRs each scatter crop and
+    reports a value for the ones that turn out to carry digits."""
+
     roi: Mapping[str, Any]
     """Named screen regions, as fractions of the game's content box (not the
     OBS canvas -- see :mod:`app.utils.letterbox`). Shape enforced at use by

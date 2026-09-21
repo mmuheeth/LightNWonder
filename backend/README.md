@@ -501,7 +501,7 @@ Things worth knowing:
   worth seeing. None of that gets a rule. `DEFAULT_RULES` in
   `app/utils/game_log.py` is the list of things a person watching the screen
   would see change: the spin cycle (`spin-started`, `reels-stopped`,
-  `free-spin-reels-stopped`, `win-collected`), what the player set
+  `free-spin-reels-stopped`, `win-collected`, `big-win-delay-completed`), what the player set
   (`bet-changed`, `denomination-changed`, `paytable-changed`), gamble
   (`gamble-offered`, `gamble-accepted`, `gamble-declined`, `gamble-picked`,
   `gamble-result`, `gamble-ended`), features (`bonus-triggered`,
