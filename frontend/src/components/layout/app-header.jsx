@@ -10,7 +10,6 @@ const NAV_ITEMS = [
   // still the Captures page.
   { to: "/", label: "Dashboard", end: true },
   { to: "/event-captures", label: "Event Capture" },
-  { to: "/cyclic-messages", label: "Cyclic Messages" },
   { to: "/game-config", label: "Game Config" },
   { to: "/analyze-spin", label: "Analyze Spin" },
   { to: "/evaluate-screen", label: "Evaluate Screen" },

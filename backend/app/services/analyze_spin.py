@@ -1453,7 +1453,6 @@ async def _read_scatters(
         crop_error = None
 
     scatters: list[SpinScatterReading] = []
-
     async def read_one(tile: SpinSymbolReading) -> _ScatterValue:
         """One tile's reading, or the reason there isn't one."""
         crop = tiles.get(tile.name)

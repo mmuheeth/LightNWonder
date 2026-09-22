@@ -114,13 +114,8 @@ def _identify(executable: Path) -> _Engine:
     return engine
 
 
-async def engine_for_reading() -> Path:
-    """The engine, identified once so a broken install fails before any cropping.
-
-    Public because this module owns the question of *which* Tesseract, the way
-    ``roi.py`` owns "the latest screenshot" -- a second caller resolving it
-    again could disagree about whether OCR is available at all.
-    """
+async def _engine_for_reading() -> Path:
+    """The engine, identified once so a broken install fails before any cropping."""
     executable = _executable()
     try:
         return (await asyncio.to_thread(_identify, executable)).executable
@@ -128,37 +123,6 @@ async def engine_for_reading() -> Path:
         raise OcrEngineUnavailableError(
             f"The Tesseract install at {executable} is not usable: {exc}"
         ) from exc
-
-
-async def paddle_line_engine_for_reading(options: paddle_ocr.PaddleLineOptions) -> str:
-    """PaddleOCR's line recogniser, built before any cropping, reporting the
-    model that will read.
-
-    The Paddle counterpart of :func:`engine_for_reading` and public for the
-    same reason: this module owns *which* engine, so a caller does not resolve
-    one for itself and reach a different answer about whether OCR is available
-    at all. Both raise the same 409 rather than each having their own way of
-    saying "no engine".
-
-    Deliberately no fallback to Tesseract, unlike :func:`read_tile`'s orb
-    reader. One orb falling back is one tile read by the other engine; a clip
-    falling back is a hundred frames silently read by a different engine at a
-    confidence floor that was not measured for it.
-    """
-    if not settings.OCR_ENABLED:
-        raise OcrEngineUnavailableError(
-            "OCR is disabled; set OCR_ENABLED=true to turn it on"
-        )
-    try:
-        model = await asyncio.to_thread(paddle_ocr.prepare_line, options)
-    except ocr.OcrUnavailableError as exc:
-        raise OcrEngineUnavailableError(str(exc)) from exc
-    except ocr.OcrError as exc:
-        raise OcrEngineUnavailableError(
-            f"PaddleOCR is installed but would not start: {exc}"
-        ) from exc
-    logger.info("OCR engine: PaddleOCR line recogniser %s", model)
-    return model
 
 
 # --- options --------------------------------------------------------------
@@ -190,15 +154,11 @@ def _request_overrides(overrides: OcrOptionOverrides | None) -> Mapping[str, Any
     return overrides.model_dump(exclude_unset=True)
 
 
-def options_for(
-    config: GameConfig, region: str, overrides: OcrOptionOverrides | None = None
+def _options_for(
+    config: GameConfig, region: str, overrides: OcrOptionOverrides | None
 ) -> ocr.OcrOptions:
     """Resolve the options one region is read with: environment, then the game
-    config's ``ocr`` block, then the request.
-
-    Public for the same reason as :func:`engine_for_reading`: the precedence is
-    this module's to state, and a caller rebuilding it would be a second answer.
-    """
+    config's ``ocr`` block, then the request."""
     resolved = _defaults().merged(config.ocr.get(region), where=f"ocr.{region}")
     try:
         return resolved.merged(_request_overrides(overrides), where="options")
@@ -400,38 +360,6 @@ def min_digits_for(math: GameMath | None) -> int:
     maths loaded (nothing to read yet) or its orb tables declare no non-jackpot
     value to measure.
     """
-    grey = _flattened(tile).convert("L")
-    seen: set[tuple[int, int, int, int]] = set()
-    variants: list[tuple[Image.Image, float]] = []
-
-    for ink_level in _TILE_INK_LEVELS:
-        box = _ink_band(grey, ink_level)
-        if box is not None and box not in seen:
-            seen.add(box)
-            variants.append((grey.crop(box), _BAND_WEIGHT))
-
-    width, height = grey.size
-    for horizontal, vertical in _TILE_INSETS:
-        box = (
-            int(width * (1 - horizontal) / 2),
-            int(height * (1 - vertical) / 2),
-            int(width * (1 + horizontal) / 2),
-            int(height * (1 + vertical) / 2),
-        )
-        if box not in seen:
-            seen.add(box)
-            variants.append((grey.crop(box), _FIX_WEIGHT))
-    return variants
-
-
-def _prepared_variant(crop: Image.Image, target_height: int) -> Image.Image:
-    """One crop at the glyph height the engine is given it at, padded with white."""
-    scale = max(1.0, target_height / max(1, crop.height))
-    resized = crop.resize(
-        (round(crop.width * scale), round(crop.height * scale)),
-        Image.Resampling.LANCZOS,
-    )
-    return ImageOps.expand(ImageOps.autocontrast(resized), border=_TILE_PAD, fill=255)
     if math is not None:
         measured = math.min_prize_digits()
         if measured is not None:
@@ -480,15 +408,6 @@ def _paddle_options() -> paddle_ocr.PaddleOptions:
 def _read_tile_paddle(tile: Image.Image, *, min_digits: int) -> TileReading:
     """Read the figure on one orb with PaddleOCR.
 
-def _read_tile_paddle(tile: Image.Image, *, min_digits: int) -> TileReading | None:
-    """Read the figure on one orb with PaddleOCR, or ``None`` when Paddle cannot
-    answer and Tesseract should be asked instead.
-
-    ``None`` is returned only when the *engine* is unavailable or errored -- not
-    when it ran and found no number. An orb with no figure on it is a real
-    reading of "nothing" (a feature scatter is drawn without a prize), and
-    falling back to the Tesseract voting reader for those would reintroduce
-    exactly the invented digits that reader has to weigh away.
     Raises :class:`app.utils.ocr.OcrUnavailableError`/``OcrError`` when Paddle
     cannot answer at all -- there is no other engine left to ask. An orb with
     no figure on it is not one of those failures: it is a real reading of
@@ -533,72 +452,6 @@ def _read_tile_paddle(tile: Image.Image, *, min_digits: int) -> TileReading | No
     )
 
 
-def read_tile(
-    tile: Image.Image,
-    *,
-    executable: Path,
-    options: ocr.OcrOptions,
-    min_digits: int = TILE_MIN_DIGITS,
-) -> TileReading:
-    """Read the prize figure printed on one symbol tile.
-
-    PaddleOCR reads the orb when it is installed and ``OCR_ORB_PADDLE_ENABLED``
-    is on: it is the one crop in this service Tesseract measurably cannot manage,
-    reading ``160`` at 0.9998 off a tile Tesseract returns nothing for. **Only the
-    orb moved** -- meters, named regions and whole frames are still Tesseract's,
-    which is why this function keeps its ``executable`` and ``options``.
-
-    Without Paddle it falls back to reading the tile several ways with Tesseract
-    -- cut to the digit ink at a few grey levels, cut to fixed insets, each at a
-    couple of glyph heights -- and returns the reading the evidence supports, or
-    nothing when it supports none. See the block comment above for why one crop
-    is not enough there.
-    """
-    if settings.OCR_ORB_PADDLE_ENABLED:
-        reading = _read_tile_paddle(tile, min_digits=min_digits)
-        if reading is not None:
-            return reading
-
-    candidates: list[tuple[str, float, float]] = []
-    for crop, weight in _tile_variants(tile):
-        for target_height in _TILE_TARGET_HEIGHTS:
-            prepared = _prepared_variant(crop, target_height)
-            try:
-                result = ocr.read_image(
-                    prepared, executable=executable, options=options
-                )
-            except ocr.OcrError:
-                # One variant failing is not the tile failing; the others still
-                # have something to say.
-                continue
-            digits = "".join(
-                character for character in result.text if character.isdigit()
-            )
-            if len(digits) >= min_digits:
-                candidates.append((digits, result.confidence or 0.0, weight))
-
-    if not candidates:
-        return TileReading(text=None, confidence=None, candidates=())
-
-    support: dict[str, float] = {}
-    weighted: dict[str, float] = {}
-    peak: dict[str, float] = {}
-    for text, confidence, weight in candidates:
-        # Confidence gates the support a crop lends, so agreement between
-        # readings none of which was any good stays worth nothing.
-        support[text] = support.get(text, 0.0) + (
-            weight if confidence >= _MIN_PEAK_CONFIDENCE else 0.0
-        )
-        weighted[text] = weighted.get(text, 0.0) + weight * confidence
-        peak[text] = max(peak.get(text, 0.0), confidence)
-
-    best = max(support, key=lambda text: (support[text], weighted[text]))
-    # Strongest first, so a caller reporting a refused reading names the figure
-    # that came closest rather than whichever variant happened to run first.
-    ranked = tuple(sorted(candidates, key=lambda entry: entry[1], reverse=True))
-    if peak[best] < _MIN_PEAK_CONFIDENCE or support[best] < _MIN_SUPPORT:
-        return TileReading(text=None, confidence=None, candidates=ranked)
-    return TileReading(text=best, confidence=peak[best], candidates=ranked)
 def read_tile(tile: Image.Image, *, math: GameMath | None = None) -> TileReading:
     """Read the prize figure printed on one symbol tile with PaddleOCR -- the one
     engine in this service that can read it: measured on this project's own
@@ -610,18 +463,17 @@ def read_tile(tile: Image.Image, *, math: GameMath | None = None) -> TileReading
     :func:`min_digits_for`. ``None`` when no maths is loaded yet falls back to
     :data:`TILE_MIN_DIGITS`.
 
-def read_tile_options(config: GameConfig, region: str = _TILE_REGION) -> ocr.OcrOptions:
-    """The options a symbol tile is read with: the environment's, then the tile
-    defaults above, then whatever the game config's ``ocr`` block says for
-    ``region`` -- so a game whose orbs are drawn dark can say so without a code
-    change, exactly as it can for a named screen region."""
-    base = _defaults().merged(_TILE_OPTIONS, where="ocr.tile defaults")
-    return base.merged(config.ocr.get(region), where=f"ocr.{region}")
     Raises :class:`app.utils.ocr.OcrUnavailableError`/``OcrError`` when Paddle
     itself cannot answer (not installed, or the engine errored) -- there is no
     Tesseract fallback to fall through to.
     """
     return _read_tile_paddle(tile, min_digits=min_digits_for(math))
+
+
+async def engine_for_reading() -> Path:
+    """The Tesseract executable, identified once. Public because a caller reading
+    many crops wants to fail before the first of them rather than per crop."""
+    return await _engine_for_reading()
 
 
 def read_crop(
@@ -731,9 +583,9 @@ async def read(request: OcrReadRequest) -> OcrReadResult:
     # Resolved before anything expensive happens, so a bad override is a 400
     # rather than a screenshot followed by a 400.
     options = {
-        region: options_for(config, region, request.options) for region in wanted
+        region: _options_for(config, region, request.options) for region in wanted
     }
-    executable = await engine_for_reading()
+    executable = await _engine_for_reading()
 
     if request.run_id is not None:
         if not request.file_name:

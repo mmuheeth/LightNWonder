@@ -11,7 +11,6 @@ from pydantic_settings import NoDecode, SettingsConfigDict
 
 from app.config.agents import AgentSettings
 from app.config.analyze_spin import AnalyzeSpinSettings
-from app.config.cyclic_messages import CyclicMessagesSettings
 from app.config.event_capture import EventCaptureSettings
 from app.config.frame import FrameSettings
 from app.config.game_input import GameInputSettings
@@ -43,7 +42,6 @@ class Settings(
     ObsSettings,
     IDeckSettings,
     EventCaptureSettings,
-    CyclicMessagesSettings,
     GameInputSettings,
     OcrSettings,
     FrameSettings,
