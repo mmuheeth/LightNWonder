@@ -32,6 +32,7 @@ import pytest
 from httpx import AsyncClient
 from PIL import Image
 
+from app.config.game_config import load_game_config
 from app.config.game_config.selection import save_active_game
 from app.config.runtime import settings
 from app.exceptions.base import ObsRequestError, ReplayScreenshotNotFoundError
@@ -71,16 +72,42 @@ CONNECT_RECT = (499, 131, 613, 165)
 ATTENDANT_RECT = (254, 250, 375, 273)
 
 EXIT_GAMEPLAY = [0.5, 0.94]
+SPIN = [0.5, 0.40]
 
 GAME_CONFIG: dict[str, Any] = {
     "name": GAME_TITLE,
     "process": "FortuneOx.exe",
+    # Filled in by `replay_env` with a file under tmp_path: the spin waits on
+    # what the game writes, so the fake has to have somewhere to write it.
     "log": "",
     "button_targets": {
         "take_win": [0.0713, 0.9724],
         "exit_gameplay": EXIT_GAMEPLAY,
+        "spin": SPIN,
     },
 }
+
+# Verbatim from the cabinet's own log, timestamps aside -- these two lines are
+# the entire basis for "the spin has ended", so a fake that paraphrased them
+# would be testing a pattern against itself.
+REPLAY_STARTED_LINE = (
+    "09/17/26 11:58:44.478 02 FortuneOx:22440 INF: StateMachine[IdleStateMachine] "
+    "transitioned from [stateIdleHistoryDisplay] to [statePlayingHistory] "
+    "on event [replay_button]"
+)
+REPLAY_ENDED_LINE = (
+    "09/17/26 11:59:03.931 04 FortuneOx:22440 INF: StateMachine[IdleStateMachine] "
+    "transitioned from [statePlayingHistory] to [stateIdleHistoryDisplay] "
+    "on event [GDK.Common.ServerAPI.GameOverMsg]"
+)
+# A line the follower must read past without mistaking it for the end: a
+# replayed spin logs the same reels-stopped transition a live one does, three
+# seconds in, with the whole win count-up still to come.
+REELS_STOPPED_LINE = (
+    "09/17/26 11:58:47.692 00 FortuneOx:22440 INF: "
+    "StateMachine[SlotGameStateMachine] transitioned from [stateSpinWithStops] "
+    "to [stateReelSpinDone] on event [GDK.Common.ServerAPI.SpinDoneMsg]"
+)
 
 # Somebody else's window, for modelling a foreground this process cannot take:
 # an always-on-top window or a dialog sitting over the target.
@@ -337,6 +364,7 @@ class FakeCabinet:
         obs: FakeObs | None = None,
         game_focuses: bool = True,
         admin_focuses: bool = True,
+        spin_logs: str = "both",
         game: bool = True,
     ) -> None:
         self.supported = supported
@@ -349,6 +377,11 @@ class FakeCabinet:
         self.obs = obs if obs is not None else FakeObs()
         self.game_focuses = game_focuses
         self.admin_focuses = admin_focuses
+        # What the game writes when Spin is pressed: "both" the start and the
+        # end, only the "start" (a replay that never finishes), or "none" at
+        # all (a press that missed the button).
+        self.spin_logs = spin_logs
+        self.log_path: Path | None = None
         self.has_game = game
 
         self.devtool = win32.WindowInfo(
@@ -573,7 +606,26 @@ class FakeCabinet:
             self.menu.screen = "home"
             self.menu.reads = 0
 
+    def _append_log(self, *lines: str) -> None:
+        """Write what the game would write, where the game would write it."""
+        if self.log_path is None:
+            return
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            for line in lines:
+                handle.write(line + "\n")
+
     def _press_game(self, x: int, y: int) -> None:
+        spin_x = GAME_ORIGIN[0] + round(SPIN[0] * GAME_CLIENT[0])
+        spin_y = GAME_ORIGIN[1] + round(SPIN[1] * GAME_CLIENT[1])
+        if abs(spin_x - x) <= HIT_RADIUS and abs(spin_y - y) <= HIT_RADIUS:
+            self.pressed.append("spin")
+            if self.spin_logs in {"both", "start"}:
+                # The reels stopping lands between the two, and is not the end.
+                self._append_log(REPLAY_STARTED_LINE, REELS_STOPPED_LINE)
+            if self.spin_logs == "both":
+                self._append_log(REPLAY_ENDED_LINE)
+            return
+
         at_x = GAME_ORIGIN[0] + round(EXIT_GAMEPLAY[0] * GAME_CLIENT[0])
         at_y = GAME_ORIGIN[1] + round(EXIT_GAMEPLAY[1] * GAME_CLIENT[1])
         if abs(at_x - x) <= HIT_RADIUS and abs(at_y - y) <= HIT_RADIUS:
@@ -695,6 +747,11 @@ def install(monkeypatch: pytest.MonkeyPatch, cabinet: FakeCabinet) -> FakeCabine
     monkeypatch.setattr(obs_service, "take_screenshot", cabinet.obs.take_screenshot)
     monkeypatch.setattr(roi_service, "is_blank", cabinet.obs.is_blank)
 
+    # Wherever the active game config says the log is, which is where the
+    # service will look for it.
+    config = load_game_config(settings.ideck_game_config_path_for(GAME_TITLE))
+    cabinet.log_path = config.log_path
+
     menu = cabinet.menu
 
     @contextlib.asynccontextmanager
@@ -734,7 +791,10 @@ def replay_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None
     """Point both services at temp config and make every wait instant."""
     games = tmp_path / "games"
     games.mkdir()
-    (games / f"{GAME_TITLE}.json").write_text(json.dumps(GAME_CONFIG), encoding="utf-8")
+    log = tmp_path / "FortuneOx_Client.log"
+    log.write_text("", encoding="utf-8")
+    config = {**GAME_CONFIG, "log": str(log)}
+    (games / f"{GAME_TITLE}.json").write_text(json.dumps(config), encoding="utf-8")
     monkeypatch.setattr(settings, "IDECK_GAME_CONFIG_DIR", games)
     save_active_game(settings.ideck_active_game_path, GAME_TITLE)
 
@@ -770,6 +830,9 @@ def replay_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None
     monkeypatch.setattr(settings, "REPLAY_GAME_EXIT_TARGET", "exit_gameplay")
     monkeypatch.setattr(settings, "REPLAY_GAME_SPIN_TARGET", "spin")
     monkeypatch.setattr(settings, "REPLAY_LOG_LIMIT", 400)
+    monkeypatch.setattr(settings, "REPLAY_SPIN_PRESS_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "REPLAY_SPIN_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "REPLAY_LOG_POLL_SECONDS", 0.0)
     monkeypatch.setattr(window_ui, "FOCUS_POLL_SECONDS", 0.0)
     yield
 
@@ -782,6 +845,11 @@ def cabinet(monkeypatch: pytest.MonkeyPatch) -> FakeCabinet:
 def steps_of(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """A run's steps, keyed for assertion."""
     return {step["key"]: step for step in data["steps"]}
+
+
+def shots_of(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """A run's screenshots, keyed by the moment each was taken."""
+    return {shot["moment"]: shot for shot in data["screenshots"]}
 
 
 def logged(data: dict[str, Any], text: str) -> bool:
@@ -854,7 +922,7 @@ async def test_run_presses_every_button_in_order(
     """
     data = await walk()
 
-    assert cabinet.pressed == ["Connect", "Attendant Key", "exit_gameplay"]
+    assert cabinet.pressed == ["Connect", "Attendant Key", "spin", "exit_gameplay"]
     assert cabinet.menu.clicked == [
         "Events / History",
         "Game Play",
@@ -872,13 +940,15 @@ async def test_run_presses_every_button_in_order(
         "view-latest",
         "focus-game",
         "screenshot",
+        "spin",
+        "screenshot-spun",
         "exit-gameplay",
         "exit-attendant",
     ]
     assert all(step["state"] == "completed" for step in data["steps"]), data["steps"]
-    # The picture was taken before either Exit, which is the ordering that
-    # makes the whole thing worth running.
-    assert data["screenshot"]["file_name"].startswith("replay-")
+    # Two pictures of one record, before and after it was spun -- which is
+    # the whole reason the sequence bothers pressing Spin.
+    assert list(shots_of(data)) == ["before-spin", "after-spin"]
     # And the cabinet is back where it was found: out of the replay, out of
     # the menu.
     assert cabinet.menu.open is False
@@ -1206,8 +1276,7 @@ async def test_the_screenshot_is_on_the_run_for_the_card_to_show(
     so it is a block on the run rather than a field of the step that took it."""
     data = await walk()
 
-    shot = data["screenshot"]
-    assert shot is not None
+    shot = shots_of(data)["before-spin"]
     assert shot["source_name"] == "FortuneOx Window"
     # No data URI on the record: it is polled while the run walks on, and the
     # picture is served from the file that was probed. Carrying both would let
@@ -1217,7 +1286,10 @@ async def test_the_screenshot_is_on_the_run_for_the_card_to_show(
     assert shot["blank"] is False
     assert shot["attempts"] == 1
     assert shot["file_name"].startswith("replay-")
-    assert cabinet.obs.connects == 1
+    # Asked once per picture rather than once per run: `obs.connect()` is
+    # idempotent, and a screenshot step that assumed an earlier one had
+    # already connected would be relying on the step before it having run.
+    assert cabinet.obs.connects == 2
 
 
 async def test_devtool_is_focused_before_every_click_on_it(
@@ -1255,8 +1327,10 @@ async def test_the_obs_window_capture_is_pointed_at_the_game_first(
     which comes back a plausible-looking picture of the wrong thing."""
     steps = steps_of(await walk())
 
-    assert cabinet.obs.selections == 1
+    # Once per picture: the source can be re-pointed by anything between them.
+    assert cabinet.obs.selections == 2
     assert "re-pointed" in steps["screenshot"]["detail"]
+    assert "re-pointed" in steps["screenshot-spun"]["detail"]
 
 
 async def test_a_scene_with_no_window_source_still_gets_a_screenshot(
@@ -1268,7 +1342,7 @@ async def test_a_scene_with_no_window_source_still_gets_a_screenshot(
     data = await walk()
 
     assert data["state"] == "completed"
-    assert data["screenshot"]["file_name"].startswith("replay-")
+    assert shots_of(data)["before-spin"]["file_name"].startswith("replay-")
     assert "re-pointed" not in (steps_of(data)["screenshot"]["detail"] or "")
 
 
@@ -1286,14 +1360,15 @@ async def test_the_picture_shown_is_the_picture_that_was_probed(
     probed and what gets served."""
     cabinet = install(monkeypatch, FakeCabinet(obs=FakeObs(blank_until=1)))
     data = await walk()
-    shot = data["screenshot"]
+    shot = shots_of(data)["before-spin"]
 
-    assert len(cabinet.obs.shots) == 2
+    # Three captures for two pictures: the first came back empty.
+    assert len(cabinet.obs.shots) == 3
     assert shot["attempts"] == 2
     assert shot["blank"] is False
     # The name is the whole of the picture on the record, and it is the second
     # shot -- the one that came back with something in it.
-    assert shot["file_name"] == f"{cabinet.obs.shots[-1]}.png"
+    assert shot["file_name"] == f"{cabinet.obs.shots[1]}.png"
     assert shot["file_path"].endswith(shot["file_name"])
     assert data["state"] == "completed"
 
@@ -1306,11 +1381,13 @@ async def test_a_blank_screenshot_is_read_back_and_retried(
     about its own captures."""
     cabinet = install(monkeypatch, FakeCabinet(obs=FakeObs(blank_until=2)))
     data = await walk()
+    shot = shots_of(data)["before-spin"]
 
     assert data["state"] == "completed"
-    assert data["screenshot"]["blank"] is False
-    assert data["screenshot"]["attempts"] == 3
-    assert len(cabinet.obs.shots) == 3
+    assert shot["blank"] is False
+    assert shot["attempts"] == 3
+    # Three for the first picture, one for the second: by then OBS is warm.
+    assert len(cabinet.obs.shots) == 4
 
 
 async def test_a_screenshot_that_stays_blank_fails_its_step_without_raising(
@@ -1325,7 +1402,7 @@ async def test_a_screenshot_that_stays_blank_fails_its_step_without_raising(
     assert steps["screenshot"]["state"] == "failed"
     assert steps["screenshot"]["confirmed"] is False
     assert "empty" in steps["screenshot"]["error"]
-    assert data["screenshot"]["blank"] is True
+    assert shots_of(data)["before-spin"]["blank"] is True
     # The verdict comes from the steps, not only from something raising.
     assert data["state"] == "failed"
     # And the earlier steps still stand.
@@ -1340,7 +1417,9 @@ async def test_a_game_windows_refuses_to_come_forward_without_failing(
 
     Exiting is turned off because the in-game Exit is a click *at a point*, and
     a point in a window that could not be raised is a different failure with
-    its own test; this one is about the focus step's own verdict."""
+    its own test; this one is about the focus step's own verdict. The spin is
+    the same kind of click and fails for the same reason, which is why the
+    run's own verdict is not what this asserts."""
     monkeypatch.setattr(settings, "REPLAY_EXIT_AFTER_SCREENSHOT", False)
     cabinet = install(monkeypatch, FakeCabinet(game_focuses=False))
     data = await walk()
@@ -1349,7 +1428,8 @@ async def test_a_game_windows_refuses_to_come_forward_without_failing(
     assert steps["focus-game"]["state"] == "completed"
     assert steps["focus-game"]["confirmed"] is False
     assert "kept the foreground elsewhere" in steps["focus-game"]["detail"]
-    assert data["state"] == "completed"
+    # The picture was taken regardless, which is the point of not failing.
+    assert steps["screenshot"]["state"] == "completed"
     assert cabinet.obs.shots
 
 
@@ -1372,15 +1452,24 @@ async def test_the_screenshot_is_taken_before_either_exit(
 ) -> None:
     """The ordering the whole sequence exists for.
 
-    Exit is pressed at a point measured off a replay, so the picture has to be
-    taken while that replay is still on screen -- and it lands on the record
-    there too, rather than at the end, so it can be looked at while the run is
-    still putting the cabinet back."""
+    Every picture is taken while the replay is still on screen, and Exit is
+    pressed at a point that only exists there -- so both shots have to land
+    before it. They land on the record as they happen, too, rather than at the
+    end, so the first can be looked at while the spin it precedes is playing.
+    """
     data = await walk()
     steps = steps_of(data)
+    shots = shots_of(data)
 
-    assert steps["screenshot"]["finished_at"] <= steps["exit-gameplay"]["started_at"]
-    assert data["screenshot"]["blank"] is False
+    assert (
+        steps["screenshot"]["finished_at"]
+        <= steps["spin"]["started_at"]
+        <= steps["spin"]["finished_at"]
+        <= steps["screenshot-spun"]["started_at"]
+        <= steps["exit-gameplay"]["started_at"]
+    )
+    assert shots["before-spin"]["blank"] is False
+    assert shots["after-spin"]["blank"] is False
     assert cabinet.menu.open is False
 
 
@@ -1543,7 +1632,7 @@ async def test_status_says_whether_a_run_will_exit(
     # Never pressed by a run, and reported anyway: it is measured in the same
     # place, off the same frame, and exists only in the same state.
     assert data["game_spin_target"] == "spin"
-    assert data["game_spin_configured"] is False
+    assert data["game_spin_configured"] is True
 
 
 # --- following a run while it runs ---------------------------------------
@@ -1633,7 +1722,7 @@ async def test_the_run_logs_every_step_as_it_happens(
     # The run's own lines carry no step: they are about the run, not a step.
     assert data["logs"][0]["step"] is None
     assert data["logs"][0]["level"] == "info"
-    assert "starting: 11 steps" in data["logs"][0]["message"]
+    assert "starting: 13 steps" in data["logs"][0]["message"]
     assert "finished in" in data["logs"][-1]["message"]
 
 
@@ -1676,9 +1765,9 @@ async def test_the_endpoint_starts_the_walk_rather_than_waiting_for_it(
 
     assert started["state"] == "running"
     assert started["finished_at"] is None
-    assert len(started["steps"]) == 11
+    assert len(started["steps"]) == 13
     assert all(step["state"] == "pending" for step in started["steps"])
-    assert started["screenshot"] is None
+    assert started["screenshots"] == []
 
     finished = (await settled(client))["run"]
     assert finished["run_id"] == started["run_id"]
@@ -1727,10 +1816,10 @@ async def test_the_screenshot_is_on_the_record_before_the_run_ends(
 
     monkeypatch.setattr(replay_service, "_exit_gameplay", held)
     await client.post("/api/replay/run")
-    run = await until(client, lambda record: record["screenshot"] is not None)
+    run = await until(client, lambda record: bool(record["screenshots"]))
 
     assert run["state"] == "running"
-    assert run["screenshot"]["file_name"].startswith("replay-")
+    assert run["screenshots"][0]["file_name"].startswith("replay-")
     assert steps_of(run)["exit-gameplay"]["state"] in {"pending", "running"}
 
     gate.set()
@@ -1870,3 +1959,104 @@ async def test_a_page_that_never_settles_refuses_the_click(
     # And nothing was: the menu is untouched rather than half-driven.
     assert "exit" not in cabinet.menu.clicked
     assert cabinet.menu.open is True
+
+
+# --- spinning the replay --------------------------------------------------
+
+
+async def test_the_replay_is_spun_between_the_two_pictures(
+    replay_env: None, cabinet: FakeCabinet
+) -> None:
+    """The flow this exists for: photograph the record as View left it, press
+    the replay's own Spin, wait for that replay to play out, photograph it
+    again. Both halves of the wait are lines in the game's log."""
+    data = await walk()
+    step = steps_of(data)["spin"]
+
+    assert step["state"] == "completed"
+    assert step["confirmed"] is True
+    assert step["target"] == "spin"
+    assert "the replay played and finished" in step["detail"]
+    assert "spin" in cabinet.pressed
+    assert [shot["moment"] for shot in data["screenshots"]] == [
+        "before-spin",
+        "after-spin",
+    ]
+    # Two pictures of one record are two different files.
+    assert len({shot["file_name"] for shot in data["screenshots"]}) == 2
+
+
+async def test_the_reels_stopping_is_not_the_end_of_the_replay(
+    replay_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trap this wait is written against.
+
+    A replayed spin logs the same `stateReelSpinDone` transition a live one
+    does -- measured at 3s into a replay that ran 19.5s, with the win count-up
+    and the results iteration still to come. A waiter that stopped there would
+    photograph a spin mid-celebration and call it the result, so the fake
+    writes that line too and it must not be mistaken for the end.
+    """
+    install(monkeypatch, FakeCabinet(spin_logs="start"))
+    data = await walk()
+    step = steps_of(data)["spin"]
+
+    assert step["state"] == "failed"
+    assert "had not finished" in step["error"]
+    # And the run carried on: the second picture and putting the cabinet back
+    # are both still worth having.
+    assert steps_of(data)["screenshot-spun"]["state"] == "completed"
+    assert steps_of(data)["exit-attendant"]["state"] == "completed"
+
+
+async def test_a_spin_press_that_never_reaches_the_game_says_so(
+    replay_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A posted click is silent, and this one has no on-screen effect a
+    screenshot could tell from the replay already showing -- so the log line
+    is the only thing that separates "pressed Spin" from "pressed 22 pixels
+    away from it"."""
+    cabinet = install(monkeypatch, FakeCabinet(spin_logs="none"))
+    data = await walk()
+    step = steps_of(data)["spin"]
+
+    assert step["state"] == "failed"
+    assert "did not land on Spin" in step["error"]
+    assert "22 pixels" in step["error"]
+    # The click *was* sent; what failed is the proof that it landed.
+    assert "spin" in cabinet.pressed
+    assert steps_of(data)["exit-attendant"]["state"] == "completed"
+
+
+async def test_a_game_with_no_log_cannot_be_waited_on(
+    replay_env: None,
+    cabinet: FakeCabinet,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a log there is no way to tell a finished replay from one still
+    playing, which is a thing to say rather than a wait to fake."""
+    without = {**GAME_CONFIG, "log": ""}
+    (tmp_path / "games" / f"{GAME_TITLE}.json").write_text(
+        json.dumps(without), encoding="utf-8"
+    )
+    game_input_service.reset_game_config()
+
+    data = await walk()
+    step = steps_of(data)["spin"]
+
+    assert step["state"] == "failed"
+    assert "declares no log" in step["error"]
+    assert "spin" not in cabinet.pressed, "nothing is pressed that cannot be watched"
+    assert len(data["screenshots"]) == 2
+
+
+async def test_the_spin_log_is_opened_before_the_press(
+    replay_env: None, cabinet: FakeCabinet
+) -> None:
+    """A follower opened after the click starts reading past the line that
+    proves it -- the log cursor begins at the end of the file."""
+    data = await walk()
+
+    assert steps_of(data)["spin"]["confirmed"] is True
+    assert logged(data, "the replay is playing; waiting for it to finish")

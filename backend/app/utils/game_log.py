@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+
+from app.utils.log_tail import LogTail
 
 __all__ = [
     "BET_CHANGED",
@@ -17,6 +21,7 @@ __all__ = [
     "TOUCH_REGISTERED",
     "DetectedEvent",
     "EventRule",
+    "LogFollower",
     "LogLine",
     "LogRuleError",
     "compile_rules",
@@ -245,6 +250,52 @@ def resolve_rules(
 _QUALIFIER = r"(?:[\w.]+\.)?"
 
 
+class LogFollower:
+    """A one-way read over a live game log, from wherever it was opened.
+
+    The join between :mod:`app.utils.log_tail` (where a rotation-aware cursor
+    has got to) and the rules above (what a line *means*), which is a pairing
+    both orchestrators need: `analyze_spin` waits for the reels to stop and
+    `replay` waits for a replayed spin to finish, and neither wants to know
+    about offsets.
+
+    Opening it is what fixes "from now" -- the cursor starts at the end of the
+    file, so a caller reads only what the game writes after this point. Do that
+    *before* the click whose effect is being waited for, or the line proving it
+    lands in the part that was skipped."""
+
+    def __init__(
+        self,
+        path: Path,
+        rules: tuple[EventRule, ...],
+        *,
+        poll_seconds: float,
+    ) -> None:
+        self._tail = LogTail(path, poll_seconds=poll_seconds)
+        self._rules = rules
+        self._cursor = self._tail.offset()
+        self._pending: deque[str] = deque()
+        self.poll_seconds = poll_seconds
+
+    def drain(self) -> None:
+        """Take in whatever the game has appended since the last look."""
+        chunk, self._cursor = self._tail.read_since(self._cursor)
+        if chunk:
+            self._pending.extend(chunk.splitlines())
+
+    def next_event(self) -> DetectedEvent | None:
+        """The next recognised event in the buffer, consuming everything before
+        it. ``None`` once the buffer holds nothing recognisable."""
+        while self._pending:
+            line = parse_line(self._pending.popleft())
+            if line is None:
+                continue
+            found = match(line, self._rules)
+            if found is not None:
+                return found
+        return None
+
+
 def _message(message_name: str) -> str:
     """Match one message being handled: a publish line or the state transition it
     caused, never the "not handled by state" echo."""
@@ -335,6 +386,39 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
         summary="Free spin reels stopped",
         delay_ms=800,
     ),
+    # --- replaying a recorded game play -----------------------------------
+    # Pressing the replay's own Spin, and that replay finishing. Read off the
+    # cabinet's log: `replay_button` moves IdleStateMachine into
+    # statePlayingHistory, and a GameOverMsg some 19s later moves it back.
+    # Between the two the game logs the *same* stateReelSpinDone transition a
+    # live spin does, which is why the reels stopping is not the end: on the
+    # measured replay it lands 3s in, with the win count-up and the results
+    # iteration still to come.
+    EventRule(
+        event="replay-started",
+        pattern=re.compile(
+            _state(
+                "IdleStateMachine",
+                frm="stateIdleHistoryDisplay",
+                to="statePlayingHistory",
+            )
+            + _on("replay_button")
+        ),
+        summary="Replay started",
+    ),
+    EventRule(
+        event="replay-ended",
+        # Deliberately not pinned to GameOverMsg: this is "the replay stopped
+        # playing", and however it stopped is the answer a waiter needs.
+        pattern=re.compile(
+            _state(
+                "IdleStateMachine",
+                frm="statePlayingHistory",
+                to="stateIdleHistoryDisplay",
+            )
+        ),
+        summary="Replay finished",
+    ),
     EventRule(
         event="win-collected",
         # Logged bare in FortuneOx and published as a message in HuffNPuffLink,
@@ -408,7 +492,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
             r"msg\[RED_BLACK_(?P<pick>[A-Z]+)_CARD\]"
         ),
         summary="Gamble pick: {pick}",
-            capture=False,
+        capture=False,
     ),
     EventRule(
         event="gamble-result",

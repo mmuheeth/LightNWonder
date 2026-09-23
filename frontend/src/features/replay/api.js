@@ -44,8 +44,9 @@ export function getReplayStatus({ signal } = {}) {
  *   string|null}>} steps
  * @property {Array<{sequence: number, at: string, level: "info"|"warning"|"error",
  *   step: string|null, message: string}>} logs
- * @property {{source_name: string, file_name: string, file_path: string|null,
- *   attempts: number, blank: boolean}|null} screenshot
+ * @property {Array<{moment: "before-spin"|"after-spin", source_name: string,
+ *   file_name: string, file_path: string|null, attempts: number,
+ *   blank: boolean}>} screenshots
  * @property {string} started_at
  * @property {string|null} finished_at
  * @property {number} duration_ms

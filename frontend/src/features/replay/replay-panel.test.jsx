@@ -33,11 +33,12 @@ function step(key, label, state, extra = {}) {
   };
 }
 
-function shot({ blank = false, attempts = 1 } = {}) {
+function shot({ moment = "before-spin", blank = false, attempts = 1 } = {}) {
   return {
+    moment,
     source_name: "FortuneOx Window",
-    file_name: "replay-abc123-1.png",
-    file_path: "C:/obs-captured-files/replay/replay-abc123-1.png",
+    file_name: `replay-abc123-${moment}-1.png`,
+    file_path: `C:/obs-captured-files/replay/replay-abc123-${moment}-1.png`,
     attempts,
     blank,
   };
@@ -57,7 +58,7 @@ function run({
   state = "completed",
   steps,
   logs,
-  screenshot = shot(),
+  screenshots = [shot(), shot({ moment: "after-spin" })],
   message = "Replayed the latest game play",
 } = {}) {
   return {
@@ -65,7 +66,7 @@ function run({
     game: "FortuneOx",
     state,
     message,
-    screenshot,
+    screenshots,
     steps: steps ?? [
       step("open-devtool", "Open the DevTool window", "completed"),
       step("connect", "Connect the I/O hub", "completed"),
@@ -196,7 +197,7 @@ describe("ReplayPanel", () => {
         record: run({
           state: "failed",
           message: "Replay stopped at press the attendant key",
-          screenshot: null,
+          screenshots: [],
           steps: [
             step("attendant-key", "Press the attendant key", "failed", {
               confirmed: false,
@@ -260,13 +261,16 @@ describe("ReplayPanel", () => {
 
     renderWithProviders(<ReplayPanel />);
 
-    const picture = await screen.findByRole("img", { name: /replayed game/i });
-    // Served as a file, not carried on a record that is polled once a second.
-    expect(picture).toHaveAttribute(
+    const pictures = await screen.findAllByRole("img", { name: /replayed game/i });
+    // Served as files, not carried on a record that is polled once a second.
+    expect(pictures[0]).toHaveAttribute(
       "src",
-      "/api/replay/screenshot/replay-abc123-1.png",
+      "/api/replay/screenshot/replay-abc123-before-spin-1.png",
     );
-    expect(screen.getByText(/replay-abc123-1\.png/)).toBeInTheDocument();
+    // Both moments are named, because which is which is the whole point of
+    // taking two.
+    expect(screen.getByText("Before the spin")).toBeInTheDocument();
+    expect(screen.getByText("After the spin")).toBeInTheDocument();
     expect(screen.getByText("running")).toBeInTheDocument();
   });
 
@@ -302,13 +306,16 @@ describe("ReplayPanel", () => {
     // A black frame looks like a result, and OBS reports writing it happily.
     serve({
       statuses: status({
-        record: run({ state: "failed", screenshot: shot({ blank: true }) }),
+        record: run({
+          state: "failed",
+          screenshots: [shot({ blank: true }), shot({ moment: "after-spin" })],
+        }),
       }),
     });
 
     renderWithProviders(<ReplayPanel />);
 
-    expect(await screen.findByText(/screenshot came back empty/)).toBeInTheDocument();
+    expect(await screen.findByText(/came back empty/)).toBeInTheDocument();
   });
 
   it("will not start a second run while one is walking", async () => {
@@ -449,7 +456,7 @@ describe("ReplayPanel", () => {
     // The record says a screenshot was written and not blank, so a broken
     // image icon leaves a reader unable to tell that from "the replay itself
     // came out empty".
-    serve({ statuses: status({ record: run() }) });
+    serve({ statuses: status({ record: run({ screenshots: [shot()] }) }) });
 
     renderWithProviders(<ReplayPanel />);
     const picture = await screen.findByRole("img", { name: /replayed game/i });

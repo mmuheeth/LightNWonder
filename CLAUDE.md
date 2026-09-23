@@ -182,7 +182,9 @@ by one `_symbol_codes` helper, so they accept the same shape.
 
 **Foreign formats get their own `app/utils` module**, deliberately ignorant of
 who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
-log), `game_log.py` (game log → named events, plus `DEFAULT_RULES`),
+log), `game_log.py` (game log → named events, plus `DEFAULT_RULES` and
+`LogFollower`, which joins a `log_tail` cursor to those rules -- both
+orchestrators wait on a line, and neither wants to know about offsets),
 `log_tail.py` (rotation-aware cursor), `log_search.py` (the opposite
 question — reads a log *backwards* for the last line matching a pattern),
 `game_math.py` (a paytable folder's `math.xml` and `gameConfig.cfg`),
@@ -894,21 +896,42 @@ endpoint takes a step, a window or a raw pixel. Nine things:
   names both.
 - **The game's own buttons come from the game config, and they exist only
   during a replay.** *Spin*, *Previous* and *Exit* are the replay's own
-  controls drawn over the game, so `button_targets.exit_gameplay` and
-  `button_targets.spin` had to be measured off a frame captured *during* a
-  replay -- which is also why they are stacked 22px apart, with *Previous*
-  (replaying the record before the one asked for) between them. The click goes
-  through `game_input.click` deliberately with `verify=False`: that service
-  retries an unconfirmed click with the window focused, and a *second* Exit
-  lands on whatever replaced the first. The proof used instead is stronger and
-  belongs to the sequence -- the attendant menu coming back. `spin` is never
-  pressed by a run; it is measured and reported because it is only reachable in
-  the state a run leaves the cabinet in.
-- **A run ends with a picture of the replay, and then puts the cabinet back.**
-  *View* starts the replay in the **game's** window, behind the menu, so
-  `_focus_game` brings that window forward -- which is what makes the replay
-  visible and stops OBS capturing a covered window -- and `_screenshot` takes
-  it through OBS onto `run.screenshot`, *before* either Exit. Two things are
+  controls drawn over the game, so `button_targets.spin` and
+  `button_targets.exit_gameplay` had to be measured off a frame captured
+  *during* a replay -- which is also why the centre matters: they are stacked
+  22px apart with *Previous* (replaying the record **before** the one asked
+  for) between them. Both go through `game_input.click` deliberately with
+  `verify=False`: that service retries an unconfirmed click with the window
+  focused, and a *second* Exit lands on whatever replaced the first. The
+  proofs used instead are stronger and belong to the sequence -- a line in the
+  game's log for Spin, the attendant menu coming back for Exit.
+- **The replay is spun between the two pictures, and the game's log is what
+  says when that is over.** Pressing Spin logs `replay_button` and moves
+  `IdleStateMachine` into `statePlayingHistory`, which is the only proof the
+  press landed -- a posted click is silent, and this one has no on-screen
+  effect a screenshot could tell from the replay already showing. The replay
+  *finishing* moves that machine back, which is what the second picture waits
+  for. **The reels stopping is not the end**, and that is the trap: a replayed
+  spin logs the same `stateReelSpinDone` transition a live one does, measured
+  3s into a replay that ran 19.5s, with the win count-up and the results
+  iteration still to come -- a picture taken there catches a spin
+  mid-celebration and looks like a result. Nothing in that step raises: a
+  press that cannot be confirmed, a replay that overruns, a game config with
+  no log to read -- each records the step failed and lets the run carry on,
+  because the second picture and putting the cabinet back are both still worth
+  having. The follower is opened **before** the click, since its cursor starts
+  at the end of the file and one opened afterwards reads past the line that
+  proves the press.
+- **A run ends with two pictures of the replay, and then puts the cabinet
+  back.** *View* starts the replay in the **game's** window, behind the menu,
+  so `_focus_game` brings that window forward -- which is what makes the
+  replay visible and stops OBS capturing a covered window -- and `_screenshot`
+  runs twice through OBS onto `run.screenshots`, once as *View* left the
+  record and once after spinning it, both *before* either Exit. Each carries
+  its own `moment` (`before-spin` / `after-spin`) rather than being told apart
+  by its position in the list, and each lands on the record as it is taken, so
+  the first is readable while the spin it precedes is still playing. Two
+  things are
   deliberate there: a foreground change Windows *refuses* is reported rather
   than failed (the replay is running either way, so the picture is still worth
   taking), and OBS is **pointed at the game** before capturing, since otherwise
@@ -946,8 +969,9 @@ endpoint takes a step, a window or a raw pixel. Nine things:
 - **Most steps prove their own click, and the ones that cannot say so.**
   Reading the page back is what makes that possible: *Events / History* is
   confirmed by the *Game Play* tab appearing, *Game Play* by the record list
-  coming up, the game's Exit by the menu coming back, and the menu's Exit by the
-  window going away. Only *View* has nothing to read -- what it starts happens
+  coming up, Spin by the game logging a replay starting, the game's Exit by
+  the menu coming back, and the menu's Exit by the window going away. Only
+  *View* has nothing to read -- what it starts happens
   in the game's window -- so it carries `confirmed: false`, and the picture two
   steps later is what shows whether it worked. Never award a confirmation that
   nothing waited for.

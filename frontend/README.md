@@ -128,10 +128,12 @@ Four details are deliberate:
   rather than drawn as a plain success (ten of the eleven are confirmed against
   something observed, and a tick beside the eleventh would claim a check nobody
   made);
-- the **screenshot is an `<img src>` pointing at `/api/replay/screenshot/...`**,
-  not a data URI on the record -- that record is polled once a second while the
-  run walks on, and it is the only place this slice bypasses `apiRequest`. It
-  appears in the card the moment the run takes it, with two steps still to run;
+- the **screenshots are `<img src>`s pointing at `/api/replay/screenshot/...`**,
+  not data URIs on the record -- that record is polled once a second while the
+  run walks on, and it is the only place this slice bypasses `apiRequest`. A
+  run takes two, before and after it spins the replay, and each appears in the
+  card the moment it is taken: the first while the spin it precedes is still
+  playing. Each is captioned from its own `moment` rather than its position;
 - a window that is not `ready` gets a sentence about *why* under the badge,
   since "access_denied" on its own does not tell a reader to restart the backend
   elevated. The attendant menu's own hint is gated on `menu.probed`, because a

@@ -59,7 +59,8 @@ async def run() -> ApiResponse[ReplayRun]:
     """Start the whole sequence: open DevTool, connect it, press the attendant
     key, bring the attendant menu forward, open Events / History, open the Game
     Play tab and wait for its records, view the newest one, bring the game
-    forward, photograph the replay, then exit the replay and the menu.
+    forward, photograph the replay, spin it and wait for it to play out,
+    photograph it again, then exit the replay and the menu.
 
     **Returns as soon as it has started**, with every step listed and pending.
     The sequence takes tens of seconds -- most of them waiting on the menu's

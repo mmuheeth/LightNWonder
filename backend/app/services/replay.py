@@ -25,14 +25,24 @@ sequence is not a list of points because only one of the windows needs points:
   game config's own ``button_targets``, exactly like take-win and gamble. The
   game play view's Exit belongs to a game, not to the platform.
 
-**A run ends with the replay on screen, a picture of it, and the cabinet put
-back.** Pressing *View* starts the replay in the game's own window, behind the
-attendant menu, so the sequence brings that window to the front and captures it
-through OBS -- which is the thing a reader of a replay actually wants -- and
-then presses the replay's own *Exit* and the menu's. Both of those are a
-*choice* (``REPLAY_EXIT_AFTER_SCREENSHOT``, on): a run that was not asked to
-exit leaves the two steps out of its record entirely rather than listing them as
-skipped, and stops with the replay still on screen to be looked at by hand.
+**A run photographs the replay, spins it, photographs it again, and puts the
+cabinet back.** Pressing *View* starts the replay in the game's own window,
+behind the attendant menu, so the sequence brings that window to the front and
+captures it through OBS -- which is the thing a reader of a replay actually
+wants -- then presses the replay's own *Spin*, waits for that replay to play
+out, captures it a second time, and finally presses the replay's *Exit* and the
+menu's. The pair of pictures is the deliverable: one record, before and after
+it was spun. Exiting is a *choice* (``REPLAY_EXIT_AFTER_SCREENSHOT``, on): a
+run that was not asked to exit leaves those two steps out of its record
+entirely rather than listing them as skipped, and stops with the replay still
+on screen to be looked at by hand.
+
+**Waiting for the spin is reading the game's log**, because the cabinet is what
+knows when a replay is over. Pressing *Spin* logs ``replay_button`` and moves
+``IdleStateMachine`` into ``statePlayingHistory`` -- the only proof a silent
+posted click landed -- and the replay finishing moves it back. The reels
+stopping is *not* the end: a replayed spin logs the same ``stateReelSpinDone``
+transition a live one does, measured 3s into a replay that ran 19.5s.
 
 **The record is readable while it is being written.** :func:`start` walks the
 script as a background task and :func:`status` carries the live run, so the
@@ -46,8 +56,9 @@ file inside an elevated console window.
 **Most steps prove their own click, and the ones that cannot say so.**
 *Connect* enables *Attendant Key*; *Attendant Key* opens the menu's window;
 *Events / History* makes the *Game Play* tab appear; *Game Play* lists records
-to *View*; and, on a run that exits, the game's Exit brings the menu back and
-the menu's Exit sends it away. Each of those is waited for, and a step that
+to *View*; *Spin* is logged by the game as a replay starting; and, on a run
+that exits, the game's Exit brings the menu back and the menu's Exit sends it
+away. Each of those is waited for, and a step that
 cannot show its effect fails rather than reporting a click it merely sent.
 
 *View* is the honest exception: what that click starts is a replay in the
@@ -93,6 +104,7 @@ from app.schemas.replay import (
     ReplayLogEntry,
     ReplayLogLevel,
     ReplayMenuInfo,
+    ReplayMoment,
     ReplayRun,
     ReplayRunState,
     ReplayScreenshot,
@@ -106,7 +118,7 @@ from app.schemas.replay import (
 from app.services import game_input as game_input_service
 from app.services import obs as obs_service
 from app.services import roi as roi_service
-from app.utils import cdp, win32, window_ui
+from app.utils import cdp, game_log, win32, window_ui
 from app.utils.paths import UnsafeNameError, resolve_within
 
 logger = get_logger("replay")
@@ -134,6 +146,8 @@ STEP_GAME_PLAY = "game-play"
 STEP_VIEW_LATEST = "view-latest"
 STEP_FOCUS_GAME = "focus-game"
 STEP_SCREENSHOT = "screenshot"
+STEP_SPIN = "spin"
+STEP_SCREENSHOT_SPUN = "screenshot-spun"
 STEP_EXIT_GAMEPLAY = "exit-gameplay"
 STEP_EXIT_ATTENDANT = "exit-attendant"
 
@@ -150,7 +164,9 @@ _STEPS: tuple[tuple[str, str, ReplayWindow], ...] = (
     (STEP_GAME_PLAY, "Open the Game Play tab", ReplayWindow.SYSTEM_ADMIN),
     (STEP_VIEW_LATEST, "View the latest record", ReplayWindow.SYSTEM_ADMIN),
     (STEP_FOCUS_GAME, "Bring the game to the front", ReplayWindow.GAME),
-    (STEP_SCREENSHOT, "Screenshot the replayed game", ReplayWindow.GAME),
+    (STEP_SCREENSHOT, "Screenshot the replay", ReplayWindow.GAME),
+    (STEP_SPIN, "Spin the replay and wait for it", ReplayWindow.GAME),
+    (STEP_SCREENSHOT_SPUN, "Screenshot the replay again", ReplayWindow.GAME),
     (STEP_EXIT_GAMEPLAY, "Exit the game play view", ReplayWindow.GAME),
     (STEP_EXIT_ATTENDANT, "Exit the attendant menu", ReplayWindow.SYSTEM_ADMIN),
 )
@@ -171,6 +187,21 @@ _MENU_LABELS: tuple[tuple[str, str], ...] = (
 # Restoring a window is asynchronous: the client rect stays 0x0 for a frame or
 # two after ShowWindow returns.
 _RESTORE_ATTEMPTS = 20
+
+EVENT_REPLAY_STARTED = "replay-started"
+EVENT_REPLAY_ENDED = "replay-ended"
+
+# The two log lines this sequence is defined in terms of, taken from the
+# *shipped* vocabulary rather than the active game's resolved rules. A game's
+# `disable` list is about what an event-capture run screenshots; letting it
+# also decide whether a replay can be waited for would turn a display
+# preference into a silently broken sequence. Narrowed to two because every
+# other rule matched here is a line read and thrown away.
+_SPIN_EVENTS: tuple[game_log.EventRule, ...] = tuple(
+    rule
+    for rule in game_log.DEFAULT_RULES
+    if rule.event in {EVENT_REPLAY_STARTED, EVENT_REPLAY_ENDED}
+)
 
 
 # --- records --------------------------------------------------------------
@@ -239,9 +270,10 @@ class _Run:
     exits: bool = False
     """Whether this run ends by exiting the game play view and the menu."""
 
-    screenshot: ReplayScreenshot | None = None
-    """The replayed game, once it has been captured. Set by its own step, so a
-    poller has the picture while the two Exit steps are still running."""
+    screenshots: list[ReplayScreenshot] = field(default_factory=list)
+    """The replayed game, before and after it was spun. Appended by each
+    screenshot step as it happens, so a poller has the first picture while the
+    spin it precedes is still playing."""
 
     logs: list[ReplayLogEntry] = field(default_factory=list)
     """What the run has reported so far, oldest first and capped."""
@@ -1204,8 +1236,12 @@ async def _focus_game(run: _Run) -> None:
         await _settle()
 
 
-async def _screenshot(run: _Run) -> None:
+async def _screenshot(run: _Run, key: str, moment: ReplayMoment) -> None:
     """Capture the replayed game through OBS, and put it on the run.
+
+    Run twice -- once as *View* left the replay and once after spinning it --
+    so the ``moment`` travels with the picture rather than being inferred from
+    its position in the list.
 
     **One copy, probed and served.** OBS answers ``GetSourceScreenshot`` (a
     data URI) and ``SaveSourceScreenshot`` (a file) with two separate calls,
@@ -1225,7 +1261,7 @@ async def _screenshot(run: _Run) -> None:
     black picture of a replay is worse than none, because it looks like one)
     but not the run: it is set without raising, so the two Exit steps still
     put the cabinet back."""
-    async with _step(run, STEP_SCREENSHOT) as step:
+    async with _step(run, key) as step:
         # Idempotent: a live session is reused. Done here rather than at the
         # start of the run so that nothing about OBS is touched by a sequence
         # that never gets this far.
@@ -1244,7 +1280,7 @@ async def _screenshot(run: _Run) -> None:
             _log(
                 run,
                 f"could not re-point the OBS window capture: {exc.message}",
-                step=STEP_SCREENSHOT,
+                step=key,
                 level=_WARNING,
             )
         else:
@@ -1252,7 +1288,7 @@ async def _screenshot(run: _Run) -> None:
                 run,
                 f"pointed the OBS window capture {pointed!r} at "
                 f"{selection.window_title!r}",
-                step=STEP_SCREENSHOT,
+                step=key,
             )
         # OBS renders nothing for a moment after a source is re-pointed.
         await _settle()
@@ -1267,7 +1303,7 @@ async def _screenshot(run: _Run) -> None:
                 ScreenshotRequest(
                     image_format="png",
                     width=settings.REPLAY_SCREENSHOT_WIDTH,
-                    file_name=f"replay-{run.run_id}-{attempts}",
+                    file_name=f"replay-{run.run_id}-{moment.value}-{attempts}",
                     output_dir=settings.REPLAY_SCREENSHOT_SUBDIR,
                 )
             )
@@ -1283,7 +1319,7 @@ async def _screenshot(run: _Run) -> None:
             _log(
                 run,
                 f"{path.name} came back empty; retaking it",
-                step=STEP_SCREENSHOT,
+                step=key,
                 level=_WARNING,
             )
             await _settle()
@@ -1296,12 +1332,15 @@ async def _screenshot(run: _Run) -> None:
                 "screenshot directory it was asked to write into."
             )
 
-        run.screenshot = ReplayScreenshot(
-            source_name=result.source_name,
-            file_name=path.name,
-            file_path=str(path),
-            attempts=attempts,
-            blank=blank,
+        run.screenshots.append(
+            ReplayScreenshot(
+                moment=moment,
+                source_name=result.source_name,
+                file_name=path.name,
+                file_path=str(path),
+                attempts=attempts,
+                blank=blank,
+            )
         )
         step.detail = (
             f"captured {result.source_name!r} to {path.name}"
@@ -1318,6 +1357,129 @@ async def _screenshot(run: _Run) -> None:
             )
         else:
             step.confirmed = True
+
+
+def _follower() -> game_log.LogFollower | None:
+    """Open the active game's log at its current end, or report why not.
+
+    Opened *before* the click whose effect is waited for: the cursor starts
+    where the file ends, so a follower opened afterwards would be reading past
+    the line that proves the press."""
+    config = _game_config()
+    if config is None or config.log_path is None:
+        return None
+    return game_log.LogFollower(
+        config.log_path,
+        _SPIN_EVENTS,
+        poll_seconds=settings.REPLAY_LOG_POLL_SECONDS,
+    )
+
+
+async def _await_game_event(
+    follower: game_log.LogFollower, wanted: str, *, timeout: float
+) -> bool:
+    """Wait for the game to log one named event. Everything else it writes in
+    the meantime is read and dropped -- the follower is narrowed to two rules,
+    so "everything else" is already almost nothing."""
+    deadline = time.monotonic() + timeout
+    while True:
+        follower.drain()
+        while (found := follower.next_event()) is not None:
+            if found.event == wanted:
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(follower.poll_seconds)
+
+
+async def _spin(run: _Run) -> None:
+    """Press the replay's own *Spin*, and wait for that replay to play out.
+
+    **The game's log is what makes both halves answerable**, and they are two
+    different questions. Pressing Spin logs `replay_button` and moves
+    `IdleStateMachine` into `statePlayingHistory`, which proves the click
+    landed -- a posted click is otherwise silent, and this one has no
+    on-screen effect that a screenshot could tell from the replay already
+    showing. The replay *finishing* moves that machine back, which is what the
+    picture after it is waiting for.
+
+    **The reels stopping is not the end**, which is the trap here: a replayed
+    spin logs the same `stateReelSpinDone` transition a live one does, and on
+    the measured run that lands 3s in with the win count-up and the results
+    iteration still to come -- 19.5s before the replay actually finished. A
+    second picture taken at the reels would catch a spin mid-celebration and
+    look like a result.
+
+    Nothing here raises. A press that cannot be confirmed, a replay that
+    overruns, a game config with no log to read: each records the step failed
+    and lets the run carry on, because the second picture and putting the
+    cabinet back are both still worth having -- the `_step` convention
+    `analyze_spin` uses for a step that did its work and knows the result is
+    unusable.
+    """
+    async with _step(run, STEP_SPIN) as step:
+        target = settings.REPLAY_GAME_SPIN_TARGET
+        step.target = target
+
+        follower = _follower()
+        if follower is None:
+            step.error = (
+                f"{run.game or 'The active game'} declares no log to read, so "
+                "there is no way to tell when a replayed spin has finished. "
+                "Set the game config's 'log' key."
+            )
+            return
+
+        started_at = time.monotonic()
+        try:
+            result = await game_input_service.click(target, verify=False)
+        except AppException as exc:
+            # Recorded, not raised, for the same reason as the rest of this
+            # step: the second picture and putting the cabinet back are both
+            # still worth having.
+            step.error = f"Could not press {target!r}: {exc.message}"
+            step.error_code = exc.error_code
+            return
+        step.detail = (
+            f"clicked {target!r} on {result.game} at "
+            f"({result.client_x}, {result.client_y})"
+        )
+        if not await _await_game_event(
+            follower,
+            EVENT_REPLAY_STARTED,
+            timeout=settings.REPLAY_SPIN_PRESS_WAIT_SECONDS,
+        ):
+            step.error = (
+                f"Clicked {target!r} but the game never logged a replay "
+                f"starting within {settings.REPLAY_SPIN_PRESS_WAIT_SECONDS}s, "
+                "so that press did not land on Spin. The target may need "
+                "re-measuring against a current screenshot -- it sits about "
+                "22 pixels from 'Previous'."
+            )
+            return
+
+        _log(
+            run,
+            "the replay is playing; waiting for it to finish (the reels "
+            "stopping is not the end -- the win count-up follows it)",
+            step=STEP_SPIN,
+        )
+        if not await _await_game_event(
+            follower, EVENT_REPLAY_ENDED, timeout=settings.REPLAY_SPIN_WAIT_SECONDS
+        ):
+            step.error = (
+                "The replay started but had not finished after "
+                f"{settings.REPLAY_SPIN_WAIT_SECONDS}s, so the picture after "
+                "it would catch a spin still playing. Raise "
+                "REPLAY_SPIN_WAIT_SECONDS if this game's replays run longer."
+            )
+            return
+
+        step.confirmed = True
+        step.detail = (
+            f"{step.detail}; the replay played and finished after "
+            f"{time.monotonic() - started_at:.1f}s"
+        )
 
 
 async def _exit_gameplay(run: _Run) -> None:
@@ -1476,7 +1638,7 @@ def _snapshot(run: _Run) -> ReplayRun:
         message=message,
         steps=steps,
         logs=list(run.logs),
-        screenshot=run.screenshot,
+        screenshots=list(run.screenshots),
         started_at=run.started_at,
         finished_at=finished,
         duration_ms=max(0, int((until - run.started_at).total_seconds() * 1000)),
@@ -1514,7 +1676,9 @@ async def _walk(active: _Run) -> ReplayRun:
         await _game_play(active)
         await _view_latest(active)
         await _focus_game(active)
-        await _screenshot(active)
+        await _screenshot(active, STEP_SCREENSHOT, ReplayMoment.BEFORE_SPIN)
+        await _spin(active)
+        await _screenshot(active, STEP_SCREENSHOT_SPUN, ReplayMoment.AFTER_SPIN)
         if active.exits:
             await _exit_gameplay(active)
             await _exit_attendant(active)
@@ -1538,7 +1702,8 @@ async def run() -> ReplayRun:
 
     Opens the I/O hub simulator, connects it, presses the attendant key, brings
     the attendant menu forward, walks it to the newest game-play record, views
-    it, brings the game forward, photographs the replay and -- unless
+    it, brings the game forward, photographs the replay, spins it and waits for
+    it to play out, photographs it again, and -- unless
     ``REPLAY_EXIT_AFTER_SCREENSHOT`` is off -- exits the replay and the menu.
 
     Awaits the whole sequence and returns the finished record, so this is the

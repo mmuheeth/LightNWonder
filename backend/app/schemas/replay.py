@@ -12,6 +12,7 @@ __all__ = [
     "ReplayLogEntry",
     "ReplayLogLevel",
     "ReplayMenuInfo",
+    "ReplayMoment",
     "ReplayRun",
     "ReplayRunState",
     "ReplayScreenshot",
@@ -70,6 +71,18 @@ class ReplayRunState(StrEnum):
 
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class ReplayMoment(StrEnum):
+    """Which of a run's two pictures this is.
+
+    A run photographs the replay as *View* left it, spins that replay, and
+    photographs it again -- so the pair is one record before and after, and
+    which is which has to travel with the picture rather than be inferred from
+    its position in a list."""
+
+    BEFORE_SPIN = "before-spin"
+    AFTER_SPIN = "after-spin"
 
 
 class ReplayLogLevel(StrEnum):
@@ -178,12 +191,13 @@ class ReplayLogEntry(BaseModel):
 
 
 class ReplayScreenshot(BaseModel):
-    """The picture the run took of the replayed game.
+    """One picture the run took of the replayed game.
 
     Its own block on the run rather than a field on the step that captured it:
     it is one picture of one moment, and it is the thing a reader of a replay
     actually wants -- worth having whether or not the steps after it ran."""
 
+    moment: ReplayMoment = Field(description="Where in the run this was taken.")
     source_name: str = Field(description="OBS source the shot was taken of.")
     file_name: str = Field(description="File OBS wrote, inside its own subdirectory.")
     file_path: str | None = Field(
@@ -226,11 +240,13 @@ class ReplayRun(BaseModel):
             "REPLAY_LOG_LIMIT lines."
         ),
     )
-    screenshot: ReplayScreenshot | None = Field(
-        default=None,
+    screenshots: list[ReplayScreenshot] = Field(
+        default_factory=list,
         description=(
-            "The replayed game, captured through OBS once it was in front. Null "
-            "when the run did not get that far."
+            "The replayed game, captured through OBS once it was in front: one "
+            "before the replay is spun and one after, in the order they were "
+            "taken. Each lands here the moment it is taken, so the first is "
+            "readable while the spin it precedes is still playing."
         ),
     )
     started_at: datetime = Field(description="When the sequence began.")

@@ -2610,9 +2610,9 @@ recording root beside it.
 ## Replay
 
 Replays the latest game play: one scripted walk from the I/O hub simulator,
-through the attendant menu, into the newest game-play record -- ending with **a
-screenshot of that replay on the card** and the cabinet put back where it was
-found:
+through the attendant menu, into the newest game-play record -- which it
+**photographs, spins, and photographs again** on the card before putting the
+cabinet back where it was found:
 
 ```
 GET  /api/replay/status             the three windows, the menu's page, and the run in progress; always 200
@@ -2734,11 +2734,15 @@ connected is `skipped`, not failed and not clicked again. A *Connect* that is
 greyed out while *Attendant Key* is also disabled is neither state, and says so
 instead of pressing on.
 
-### It ends with a picture of the replay, and the cabinet put back
+### It ends with two pictures of the replay, and the cabinet put back
 
 Pressing *View* starts the replay in the **game's** window, behind the
 attendant menu -- so the sequence brings that window to the front and captures
-it through OBS, **before** either Exit. Three things about that:
+it through OBS, spins the replay, captures it again, and only then exits. Each
+picture carries its own `moment` (`before-spin` / `after-spin`) rather than
+being told apart by its position in `run.screenshots`, and each lands on the
+record as it is taken -- so the first is readable while the spin it precedes
+is still playing. Three things about the capture:
 
 - **The game is focused first, deliberately.** It is what makes the replay
   visible to someone watching, and it stops OBS capturing a covered window.
@@ -2768,16 +2772,42 @@ It lands on the run as its own `screenshot` block -- one picture of one moment,
 and the thing a reader of a replay actually wants -- naming the file OBS wrote,
 the source it captured, and how many attempts it took.
 
-**Then it exits, and that is only safe because the button is measured.** The
-replay's *Spin*, *Previous* and *Exit* are the replay's own controls, drawn over
-the game while one is on screen and on no other screen -- so
-`button_targets.exit_gameplay` and `button_targets.spin` were measured off a
-frame captured *during* a replay (`obs-captured-files/replay/`). They sit
+**Spinning it, and exiting, are only safe because those buttons are
+measured.** The replay's *Spin*, *Previous* and *Exit* are the replay's own
+controls, drawn over the game while one is on screen and on no other screen --
+so `button_targets.spin` and `button_targets.exit_gameplay` were measured off
+a frame captured *during* a replay (`obs-captured-files/replay/`). They sit
 **~22px apart** on a 2006px-tall content box with *Previous* between them, and
-*Previous* replays the record before the one that was asked for, so the centre
-is what matters rather than the text baseline. `spin` is never pressed by a
-run: it is measured and reported because it is only reachable in the state a
-run leaves the cabinet in.
+*Previous* replays the record **before** the one that was asked for, so the
+centre is what matters rather than the text baseline.
+
+### Waiting for the spin is reading the game's log
+
+"The spin has ended" is a question the cabinet answers, so it is read rather
+than timed:
+
+| moment | the line |
+| --- | --- |
+| Spin pressed | `IdleStateMachine` `stateIdleHistoryDisplay` → `statePlayingHistory` on `replay_button` |
+| reels stopped | `SlotGameStateMachine` `stateSpinWithStops` → `stateReelSpinDone` |
+| **replay finished** | `IdleStateMachine` `statePlayingHistory` → `stateIdleHistoryDisplay` |
+
+- **The first line is the only proof the press landed.** A posted click is
+  silent, and this one has no on-screen effect a screenshot could tell from
+  the replay that was already showing -- so without it, "pressed Spin" and
+  "pressed 22 pixels away from it" look identical.
+- **The middle line is the trap.** A replayed spin logs the same reels-stopped
+  transition a live one does; measured on this cabinet it lands **3s** into a
+  replay that ran **19.5s**, with the win count-up and the results iteration
+  still to come. A second picture taken there catches a spin mid-celebration
+  and looks like the result.
+- **Nothing in that step raises.** A press that cannot be confirmed, a replay
+  that overruns `REPLAY_SPIN_WAIT_SECONDS`, or a game config with no `log` to
+  read: each records the step failed and lets the run carry on, because the
+  second picture and putting the cabinet back are both still worth having.
+- The follower (`game_log.LogFollower`, shared with `analyze_spin`) is opened
+  **before** the click -- its cursor starts at the end of the file, so one
+  opened afterwards would be reading past the line that proves the press.
 
 `REPLAY_EXIT_AFTER_SCREENSHOT` is **on**. Turned off, the run stops with the
 replay on screen to be looked at by hand, and those two steps are left out of
@@ -2802,8 +2832,9 @@ in under `data.run`:
   retake. Capped at `REPLAY_LOG_LIMIT` lines, and each line's `sequence` comes
   off a counter rather than the list's length, so dropping the oldest does not
   renumber what a poller has already shown;
-- **the screenshot** lands on the record the moment it is taken, while the two
-  Exit steps are still to come.
+- **the screenshots** land on the record the moment each is taken -- the first
+  while the spin it precedes is still playing, both while the two Exit steps
+  are still to come.
 
 Two deliberate absences. There is **no second WebSocket** -- `analyze-spin`'s is
 still the only one -- because this is a poll a second at human speed, not a
@@ -2838,6 +2869,8 @@ sent:
 | `view-latest` | **none**: what it starts is a replay in the *game's* window, which the menu's page knows nothing about |
 | `focus-game` | the game window became the foreground one -- *reported*, not required |
 | `screenshot` | a non-blank frame came back |
+| `spin` | the game logged a replay starting, and then finishing |
+| `screenshot-spun` | a non-blank frame came back |
 | `exit-gameplay` | the attendant menu came back |
 | `exit-attendant` | the menu closed |
 
@@ -2845,7 +2878,7 @@ sent:
 steps later is what shows whether it worked. Every awarded confirmation is
 something that was waited for and observed.
 
-All eleven steps exist before they run, so a failure at step four leaves the
+All thirteen steps exist before they run, so a failure at step four leaves the
 rest visibly `pending` -- unreached is a different fact from `skipped`,
 which is a different fact from `failed`. The first failure stops the run: there
 is no clicking *Game Play* in a menu that never opened.
@@ -2867,6 +2900,8 @@ them is a coordinate**. What can need changing per deployment:
 - the four label settings, if a button is relabelled.
 - `REPLAY_RECORDS_WAIT_SECONDS`, if a cabinet's menu server is slower than 90s
   at returning game-play history.
+- `REPLAY_SPIN_WAIT_SECONDS`, if this game's replays run longer than 180s --
+  a feature replays everything it originally played.
 - `REPLAY_EXIT_AFTER_SCREENSHOT`, turned off to leave the replay on screen
   instead of having the run tidy up after itself.
 - `exit_gameplay` and `spin` in the active game's `button_targets` -- the

@@ -72,6 +72,12 @@ const STEP_TONES = {
   pending: "text-muted-foreground/50",
 };
 
+/** Which of a run's two pictures this is. */
+const MOMENT_LABELS = {
+  "before-spin": "Before the spin",
+  "after-spin": "After the spin",
+};
+
 const LOG_TONES = {
   info: "text-muted-foreground",
   warning: "text-amber-600 dark:text-amber-500",
@@ -182,6 +188,7 @@ function RunLog({ logs, live }) {
  */
 function ReplayShot({ shot }) {
   const [failed, setFailed] = useState(false);
+  const moment = MOMENT_LABELS[shot.moment] ?? shot.moment;
 
   if (failed) {
     return (
@@ -196,9 +203,10 @@ function ReplayShot({ shot }) {
 
   return (
     <figure className="space-y-1">
+      <figcaption className="text-xs font-medium">{moment}</figcaption>
       <img
         src={replayImageUrl(shot.file_name)}
-        alt={`The replayed game, captured from ${shot.source_name}`}
+        alt={`The replayed game ${moment.toLowerCase()}, captured from ${shot.source_name}`}
         onError={() => setFailed(true)}
         className="w-full rounded-md border"
       />
@@ -206,6 +214,14 @@ function ReplayShot({ shot }) {
         {shot.file_name}
         {shot.attempts > 1 ? ` · ${shot.attempts} attempts` : null}
       </figcaption>
+      {/* A black frame looks like a result, so it is called one thing it is
+          not: OBS reports writing it happily. */}
+      {shot.blank ? (
+        <p className="text-destructive text-xs">
+          This one came back empty, so it shows nothing of the replay. Check that the
+          OBS window-capture source is pointed at the game.
+        </p>
+      ) : null}
     </figure>
   );
 }
@@ -356,23 +372,20 @@ export function ReplayPanel() {
                 </div>
                 <p className="text-muted-foreground text-xs">{run.message}</p>
 
-                {/* The picture first: it is what a reader of a replay came for,
-                    and it lands here as soon as it is taken, while the steps
-                    after it are still running. Served as a file, so the record
-                    it came from stays cheap enough to poll. */}
-                {run.screenshot?.file_name ? (
-                  // Keyed on the file, so a new run's picture starts with a
-                  // clean slate rather than inheriting the last one's verdict.
-                  <ReplayShot key={run.screenshot.file_name} shot={run.screenshot} />
-                ) : null}
-
-                {/* A black frame looks like a result, so it is called one thing
-                    it is not: OBS reports writing it happily. */}
-                {run.screenshot?.blank ? (
-                  <p className="text-destructive text-xs">
-                    The screenshot came back empty, so it shows nothing of the replay.
-                    Check that the OBS window-capture source is pointed at the game.
-                  </p>
+                {/* The pictures first: they are what a reader of a replay
+                    came for, and each lands here as soon as it is taken --
+                    the first while the spin it precedes is still playing.
+                    Served as files, so the record they came from stays cheap
+                    enough to poll. */}
+                {run.screenshots?.length ? (
+                  <div className="space-y-3">
+                    {run.screenshots.map((shot) => (
+                      // Keyed on the file, so a new run's picture starts with
+                      // a clean slate rather than inheriting the last one's
+                      // verdict.
+                      <ReplayShot key={shot.file_name} shot={shot} />
+                    ))}
+                  </div>
                 ) : null}
 
                 <ul className="space-y-2">

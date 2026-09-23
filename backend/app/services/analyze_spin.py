@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -70,7 +69,6 @@ from app.utils import game_log, paddle_ocr
 from app.utils import ocr as ocr_util
 from app.utils import paylines as payline_config
 from app.utils.game_math import ANY_SYMBOL, GameMath, GameMathError, load_game_math
-from app.utils.log_tail import LogTail
 from app.utils.paths import UnsafeNameError, resolve_subdirectory, resolve_within
 
 logger = get_logger("analyze_spin")
@@ -285,44 +283,6 @@ def _log_for(name: str, config: GameConfig) -> Path:
             "Start the game and try again."
         )
     return config.log_path
-
-
-# --- reading the log ------------------------------------------------------
-
-
-class _LogReader:
-    """A one-way read over the game's log, from where the run opened it."""
-
-    def __init__(
-        self,
-        path: Path,
-        rules: tuple[game_log.EventRule, ...],
-        *,
-        poll_seconds: float,
-    ) -> None:
-        self._tail = LogTail(path, poll_seconds=poll_seconds)
-        self._rules = rules
-        self._cursor = self._tail.offset()
-        self._pending: deque[str] = deque()
-        self.poll_seconds = poll_seconds
-
-    def drain(self) -> None:
-        """Take in whatever the game has appended since the last look."""
-        chunk, self._cursor = self._tail.read_since(self._cursor)
-        if chunk:
-            self._pending.extend(chunk.splitlines())
-
-    def next_event(self) -> game_log.DetectedEvent | None:
-        """The next recognised event in the buffer, consuming everything before
-        it. ``None`` once the buffer holds nothing recognisable."""
-        while self._pending:
-            line = game_log.parse_line(self._pending.popleft())
-            if line is None:
-                continue
-            found = game_log.match(line, self._rules)
-            if found is not None:
-                return found
-        return None
 
 
 # --- progress -------------------------------------------------------------
@@ -543,7 +503,7 @@ async def _sleep(run: _ActiveRun, seconds: float) -> None:
 
 async def _wait_for(
     run: _ActiveRun,
-    reader: _LogReader,
+    reader: game_log.LogFollower,
     wanted: frozenset[str],
     *,
     timeout: float,
@@ -714,9 +674,9 @@ async def _capture(run: _ActiveRun, key: str, step_key: str) -> None:
             _note_error(run, f"{step.label}: {step.error}")
 
 
-async def _spin(run: _ActiveRun) -> _LogReader:
+async def _spin(run: _ActiveRun) -> game_log.LogFollower:
     """Press the spin key, and wait for the game to agree that it spun."""
-    reader = _LogReader(
+    reader = game_log.LogFollower(
         run.log_path, run.rules, poll_seconds=settings.ANALYZE_SPIN_POLL_SECONDS
     )
     button = settings.ANALYZE_SPIN_SPIN_BUTTON
@@ -740,7 +700,7 @@ async def _spin(run: _ActiveRun) -> _LogReader:
     return reader
 
 
-async def _wait_reels(run: _ActiveRun, reader: _LogReader) -> None:
+async def _wait_reels(run: _ActiveRun, reader: game_log.LogFollower) -> None:
     """Wait for the reels to settle."""
     timeout = settings.ANALYZE_SPIN_REELS_TIMEOUT_SECONDS
     async with _step(run, STEP_REELS_STOP) as step:
@@ -758,7 +718,7 @@ async def _wait_reels(run: _ActiveRun, reader: _LogReader) -> None:
         step.detail = detected.summary
 
 
-async def _detect_win(run: _ActiveRun, reader: _LogReader) -> None:
+async def _detect_win(run: _ActiveRun, reader: game_log.LogFollower) -> None:
     """Decide whether this spin paid, by whether the win meter counts up."""
     wait = settings.ANALYZE_SPIN_WIN_WAIT_SECONDS
     async with _step(run, STEP_WIN_DETECT) as step:
@@ -1453,6 +1413,7 @@ async def _read_scatters(
         crop_error = None
 
     scatters: list[SpinScatterReading] = []
+
     async def read_one(tile: SpinSymbolReading) -> _ScatterValue:
         """One tile's reading, or the reason there isn't one."""
         crop = tiles.get(tile.name)
