@@ -12,7 +12,7 @@ const NAV_ITEMS = [
   { to: "/event-captures", label: "Event Capture" },
   { to: "/game-config", label: "Game Config" },
   { to: "/analyze-spin", label: "Analyze Spin" },
-  { to: "/evaluate-screen", label: "Evaluate Screen" },
+  // { to: "/evaluate-screen", label: "Evaluate Screen" },
   { to: "/scatter-value-validation", label: "Scatter Value Validation" },
   { to: "/image-classifier", label: "Image Classifier" },
 ];

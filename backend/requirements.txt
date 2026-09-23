@@ -56,3 +56,16 @@ psycopg[binary,pool]~=3.3.4
 # winget install --id UB-Mannheim.TesseractOCR
 # The backend finds it without PATH; see the OCR section of README.md. Reading is
 # optional -- an install without it starts and runs, and only OCR requests fail.
+
+# Orb/prize-figure OCR (app/utils/paddle_ocr.py) -- the engine that reads the
+# number on a scatter, where Tesseract measurably cannot (see that module's
+# docstring). Windows wheels come from Paddle's own index, not PyPI:
+# pip install paddlepaddle -f https://www.paddlepaddle.org.cn/whl/windows.html
+# pip install paddleocr
+# Needs Python 3.13 or lower -- paddlepaddle publishes no wheels for 3.14.
+# Optional at runtime like Tesseract: the import is lazy, so a venv without it
+# still boots and only orb/meter Paddle reads fail (`app.utils.paddle_ocr.available()`
+# reports False). enable_mkldnn=False in `_build()` is tied to this exact
+# paddlepaddle release -- see that function's docstring before bumping it.
+paddlepaddle~=3.3.1
+paddleocr~=3.7.0
