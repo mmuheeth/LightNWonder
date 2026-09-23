@@ -125,25 +125,12 @@ class ScreenshotRequest(BaseModel):
             "root, for example 'ir-inspection/session-01'."
         ),
     )
-    include_image_data: bool = Field(
-        default=True,
-        description=(
-            "Whether to also fetch the inline base64 preview. OBS answers "
-            "'GetSourceScreenshot' (the preview) and 'SaveSourceScreenshot' (the "
-            "file) with two separate full re-encodes of the frame, so a caller "
-            "that only wants the file and never reads `image_data` back pays for "
-            "an encode nobody uses. Requires `file_name` -- with nothing else "
-            "requested, turning this off would ask OBS for nothing at all."
-        ),
-    )
 
     @model_validator(mode="after")
     def _output_dir_requires_file(self) -> ScreenshotRequest:
         """Do not silently ignore a requested output directory."""
         if self.output_dir is not None and self.file_name is None:
             raise ValueError("output_dir requires file_name")
-        if not self.include_image_data and self.file_name is None:
-            raise ValueError("include_image_data=false requires file_name")
         return self
 
 
