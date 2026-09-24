@@ -40,12 +40,27 @@ export function getCyclicStatus({ signal } = {}) {
  * schedule is the backend's only priority while a pass is open, so nothing
  * reads a caption until the pass closes, and then every one of its frames is
  * read in one batch. `capturing` and `reading` are never both true; a frame's
- * `reading` is null until that batch reaches it, and `queue_depth` counts down
- * from `frame_count` to 0 while it does.
+ * `readings` is empty until that batch reaches it, and `queue_depth` counts
+ * down from `frame_count` to 0 while it does. Empty is the only thing that
+ * says "not yet": a frame the batch has reached carries one entry per region
+ * even where the band was blank, so a read frame that said nothing is
+ * non-empty and must not be rendered as one still waiting.
+ *
+ * `recovering` is the third state and the one that finishes the list. The
+ * stills cannot keep up with either strip — an OBS screenshot costs seconds
+ * while a recording is running and a caption stays up for about one — so each
+ * window's own clip is read back afterwards and the captions the stills went
+ * past arrive as `cyclic-message-recovered` frames. `recovery_pending` is how
+ * many clips are still waiting; non-zero while a window is open is normal,
+ * because recovery gives way to capture.
+ *
+ * `strip` says which of the two strips these frames are of, so a view of the
+ * between-spins strip is not captioned as a win presentation.
  *
  * @param {{signal?: AbortSignal}} [options]
  * @returns {Promise<{active: boolean, run_id: string|null, game: string|null,
- *   cycle: number|null, capturing: boolean, reading: boolean,
+ *   cycle: number|null, strip: string|null, capturing: boolean,
+ *   reading: boolean, recovering: boolean, recovery_pending: number,
  *   queue_depth: number, read_count: number, sample_rate: number,
  *   frame_count: number, frames: Array<object>, errors: string[]}>}
  */
@@ -63,11 +78,28 @@ export function startCyclic() {
 }
 
 /**
+ * How long a Stop may take, overriding the global 15s for this one call.
+ *
+ * A stop is not instant, and 15s was cutting it off: the backend lets the
+ * capture loop finish its frame (up to 10s), lets a clip recovery give way (up
+ * to 30s), and then reads every still the last window left unread before it
+ * seals the record — at ~3.5s a read under load, a between-spins window left
+ * mid-read is minutes of it. The stop completes either way; with the short
+ * timeout the card just said TIMEOUT over a run that had actually stopped. The
+ * same ceiling as `READ_TIMEOUT_MS`, for the same Vite-proxy reason.
+ */
+const STOP_TIMEOUT_MS = 290_000;
+
+/**
  * Stop tracking. The resolved value is the finished record, events and clips
  * included.
  */
 export function stopCyclic() {
-  return apiRequest({ method: "POST", url: `${CYCLIC_URL}/stop` });
+  return apiRequest({
+    method: "POST",
+    url: `${CYCLIC_URL}/stop`,
+    timeout: STOP_TIMEOUT_MS,
+  });
 }
 
 /** Every run on disk, newest first. */
@@ -104,11 +136,18 @@ export function getCyclicRun(runId, { signal } = {}) {
 const READ_TIMEOUT_MS = 290_000;
 
 /**
- * Read the messages out of one win's clip: the backend cuts it into frames,
- * crops the caption out of each and OCRs them.
+ * Read the messages out of one clip: the backend cuts it into frames, crops the
+ * caption bands out of each and OCRs the ones where the caption changed.
  *
- * Slow on purpose — see `READ_TIMEOUT_MS`. That is why it is a button rather
- * than something the run view fetches on mount.
+ * Which bands depends on the clip: a win presentation draws one line and the
+ * between-spins strip two, and the backend keys that off the clip's own `kind`
+ * rather than off a fixed region.
+ *
+ * Still slow — see `READ_TIMEOUT_MS` — which is why it is a button rather than
+ * something the run view fetches on mount. No longer *minutes* slow, though:
+ * reading every decoded frame rather than one per caption is what used to put
+ * a long clip past the timeout, and `frames_read` beside `frames_sampled` on
+ * the reading says what it actually spent.
  *
  * @param {string} runId
  * @param {{cycle?: number, intervalSeconds?: number, signal?: AbortSignal}} [options]

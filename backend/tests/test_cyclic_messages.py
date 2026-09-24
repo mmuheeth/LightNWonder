@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -99,6 +102,23 @@ ATTRACT_MESSAGE = (
 ATTRACT_ENDED = (
     "09/08/26 15:55:33.051 00 FortuneOx:12980 DBG: [MessageQueue.Publish] "
     "msg[GDK.Common.ServerAPI.AttractSequenceEndCompleted]"
+)
+# --- the between-spins strip, verbatim -------------------------------------
+# The window a spin *ends* into, whichever way it ended -- a loss within a few
+# hundred milliseconds of its result, a win only once it has been taken. It is
+# bracketed on the state machine rather than on either result line for exactly
+# that reason, so these two lines are what open and close it.
+IDLE_STRIP_STARTED = (
+    "09/08/26 16:36:35.256 01 FortuneOx:12980 INF: "
+    "StateMachine[IdleStateMachine] transitioned from "
+    "[stateEvaluateGameFlowState] to [stateIdleWithCredits] on event "
+    "[GDK.Common.ServerAPI.GameOverMsg]"
+)
+IDLE_STRIP_ENDED = (
+    "09/08/26 16:36:44.019 01 FortuneOx:12980 INF: "
+    "StateMachine[IdleStateMachine] transitioned from "
+    "[stateIdleWithCredits] to [stateStartGameFlow] on event "
+    "[GDK.Client.ClientMessaging.PlayButtonPressedMsg]"
 )
 NOISE = "09/08/26 16:36:37.093 00 FortuneOx:12980 DBG: coin value: 200"
 
@@ -180,12 +200,30 @@ class FakeRecorder:
         self.root = root
         self.started: list[str] = []
         self.files: list[Path] = []
+        self.active = False
+        # How many status polls a start takes to come up. Real OBS answers
+        # StartRecord at once and brings the output up once the encoder has
+        # initialised, measured at 13s under load; 0 is the instant case.
+        self.start_polls = 0
+        self._pending_polls = 0
 
     async def start(self, output_dir: str | None = None) -> ObsRecordStatus:
         self.started.append(output_dir or "")
-        return ObsRecordStatus(active=True, paused=False)
+        self._pending_polls = self.start_polls
+        self.active = self._pending_polls == 0
+        return ObsRecordStatus(active=self.active, paused=False)
+
+    async def status(self) -> ObsRecordStatus:
+        if not self.active and self.started and self._pending_polls > 0:
+            self._pending_polls -= 1
+            self.active = self._pending_polls == 0
+        return ObsRecordStatus(active=self.active, paused=False)
 
     async def stop(self) -> ObsRecordStatus:
+        if not self.active:
+            # What OBS answers a stop that arrives before the output is up.
+            raise ObsRequestError("OBS rejected StopRecord (code 501)")
+        self.active = False
         directory = self.root / (self.started[-1] if self.started else "")
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"2026-09-08 16-36-{len(self.files) + 20}.mp4"
@@ -206,6 +244,7 @@ def recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeRecorder:
     fake = FakeRecorder(root)
     monkeypatch.setattr(obs_service, "start_recording", fake.start)
     monkeypatch.setattr(obs_service, "stop_recording", fake.stop)
+    monkeypatch.setattr(obs_service, "record_status", fake.status)
     return fake
 
 
@@ -242,9 +281,21 @@ def fake_obs(
 
 @pytest.fixture
 def quick_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Sample fast enough for a test. See the module docstring."""
+    """Sample fast enough for a test, both windows. See the module docstring.
+
+    Both, because the two are sampled at their own intervals and against their
+    own deadlines -- a test that patched only the win pass's would wait out the
+    between-spins window's shipped 90s deadline.
+    """
     monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_INTERVAL_SECONDS", 0.05)
     monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_MAX_SECONDS", 5.0)
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_IDLE_MAX_SECONDS", 5.0)
+    # Nothing here can decode the fake one-line mp4 the recorder writes, and a
+    # test asserting about *capture* should not be waiting on an OCR engine to
+    # decide whether it ran. The queue itself is asserted directly instead --
+    # see `test_a_taken_win_queues_its_clip_instead_of_reading_it_back`.
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_RECOVER_FROM_CLIP", False)
 
 
 @pytest.fixture
@@ -304,6 +355,17 @@ async def wait_until(
 
 def events_named(detail: Any, name: str) -> list[Any]:
     return [event for event in detail.events if event.event == name]
+
+
+def live_frames_named(name: str) -> list[Any]:
+    """Frames of the window the live view is showing, by event name.
+
+    Off ``live()`` rather than ``status()`` because that is the payload scoped
+    to one window: the sampled counts on ``status()`` are the run's, so a
+    window still to take its first frame is indistinguishable there from one
+    whose predecessor is still going.
+    """
+    return [frame for frame in cyclic_service.live().frames if frame.event == name]
 
 
 # --- the rules ------------------------------------------------------------
@@ -590,6 +652,142 @@ async def test_the_clip_is_filed_beside_the_screenshots_and_served_back(
     assert response.content.startswith(b"\x00\x00\x00 ftyp")
 
 
+# --- filing a clip OBS has not let go of ---------------------------------
+# OBS answers StopRecord before its muxer closes the file, and an encoder that
+# fell behind goes on writing for as long as it was behind -- 66s on a real big
+# win. These pin what filing does in that window, against a real open handle
+# where the platform locks one (Windows, which is where this runs).
+
+_holds_a_lock = pytest.mark.skipif(
+    sys.platform != "win32", reason="only Windows refuses to rename an open file"
+)
+
+
+def _filing(tmp_path: Path) -> tuple[Any, Any]:
+    run = SimpleNamespace(directory=tmp_path / "run")
+    run.directory.mkdir()
+    clip = cyclic_service._Clip(cycle=2, started_at=datetime(2026, 9, 24, 11, 25, 7))
+    return run, clip
+
+
+async def test_a_clip_obs_still_holds_is_filed_under_its_own_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Already beside the screenshots, so it is filed as it is rather than
+    reported as a failure -- and rather than waited on, which would hold up the
+    window after it."""
+    monkeypatch.setattr(cyclic_service, "_MOVE_RETRY_SECONDS", 0.0)
+    run, clip = _filing(tmp_path)
+    origin = run.directory / "2026-09-24 11-25-07.mp4"
+    origin.write_bytes(b"\x00\x00\x00 ftypisom")
+
+    def locked(_origin: Path, _target: Path) -> None:
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(cyclic_service, "_move", locked)
+    name, error = await cyclic_service._file_clip(run, clip, str(origin))
+
+    assert (name, error) == (origin.name, None)
+    assert [path.name for path in run.directory.iterdir()] == [origin.name]
+
+
+@_holds_a_lock
+async def test_a_clip_obs_still_holds_is_never_copied_in_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug this replaced: ``shutil.move`` fell back to copying the file
+    OBS was still writing, then failed to delete the original, leaving a
+    truncated video under the clip's name beside the whole one."""
+    monkeypatch.setattr(cyclic_service, "_MOVE_RETRY_SECONDS", 0.0)
+    run, clip = _filing(tmp_path)
+    elsewhere = tmp_path / "obs-recordings"
+    elsewhere.mkdir()
+    origin = elsewhere / "2026-09-24 11-25-07.mp4"
+    origin.write_bytes(b"\x00\x00\x00 ftypisom")
+
+    with origin.open("ab"):
+        name, error = await cyclic_service._file_clip(run, clip, str(origin))
+
+    assert name is None
+    assert error is not None and "could not be moved" in error
+    assert list(run.directory.iterdir()) == [], "no partial copy left behind"
+    assert origin.read_bytes() == b"\x00\x00\x00 ftypisom"
+
+
+@_holds_a_lock
+def test_a_file_is_released_only_once_its_writer_closes_it(tmp_path: Path) -> None:
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"x")
+    with clip.open("ab"):
+        assert cyclic_service._released(clip) is False
+    assert cyclic_service._released(clip) is True
+
+
+@_holds_a_lock
+def test_recovery_waits_for_obs_to_finish_writing_the_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read early, a clip decodes only as far as the muxer has got and its
+    last messages go missing without anything saying so."""
+    run, _clip = _filing(tmp_path)
+    clip = run.directory / "2026-09-24 11-25-07.mp4"
+    clip.write_bytes(b"x")
+    item = SimpleNamespace(video=SimpleNamespace(file_name=clip.name), queued_at=0.0)
+    monkeypatch.setattr(cyclic_service.time, "monotonic", lambda: 1.0)
+
+    with clip.open("ab"):
+        assert cyclic_service._still_writing(run, item) is True
+        # A handle that never closes is read anyway, past the cap.
+        monkeypatch.setattr(
+            cyclic_service.time,
+            "monotonic",
+            lambda: cyclic_service._RELEASE_WAIT_SECONDS + 1.0,
+        )
+        assert cyclic_service._still_writing(run, item) is False
+    assert cyclic_service._still_writing(run, item) is False
+
+
+def test_a_recovered_frame_carries_its_readings(tmp_path: Path) -> None:
+    """A frame read back off a clip becomes readings, not an exception.
+
+    `cyclic_text` is imported per function in this module, and the one that
+    turns a recovered frame's lines into readings had no import: every
+    recovered frame raised NameError *after* its picture was written, and the
+    per-frame guard in `_recover` logged it and moved on. The pictures reached
+    the run directory; the events never reached the record.
+    """
+    from PIL import Image
+
+    from app.services import cyclic_text
+
+    class Reader:
+        def read_image(self, _image: Any, names: Any, **_kwargs: Any) -> list[Any]:
+            return [
+                cyclic_text.LiveRead(
+                    region=names[0],
+                    text="Game Over",
+                    repaired="Game Over",
+                    confidence=99.0,
+                    reliable=True,
+                    crop_name=None,
+                    read_ms=1,
+                )
+            ]
+
+    frame = cyclic_text.ClipFrame(
+        index=0, at_seconds=0.0, image=Image.new("RGB", (8, 8))
+    )
+    target = tmp_path / "014_cyclic-message-recovered_12-51-55.jpeg"
+
+    (reading,) = cyclic_service._recover_frame(
+        Reader(), frame, ("cyclic_message_2",), target
+    )
+
+    assert target.is_file()
+    assert reading.repaired == "Game Over"
+    assert reading.key == cyclic_text.caption_key("Game Over")
+
+
 async def test_the_next_spin_cutting_the_pass_short_closes_the_clip(
     game_log_file: Path, quick_sampling: None, running: None
 ) -> None:
@@ -773,6 +971,59 @@ async def test_a_recording_obs_reports_no_path_for_says_so(
     (video,) = detail.videos
     assert video.file_name is None
     assert video.error == "OBS did not report where it wrote the recording"
+
+
+async def test_a_clip_shorter_than_obs_start_up_is_still_stopped(
+    game_log_file: Path,
+    recorder: FakeRecorder,
+    running: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The window closes before OBS has brought the recording up.
+
+    A stop sent then is refused as "not recording" and OBS starts anyway, with
+    nothing left to stop it -- measured, a 4.5-minute recording into a finished
+    run that failed every clip after it. So the stop waits for the start.
+    """
+    monkeypatch.setattr(cyclic_service, "_START_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_LINE_PAYS", False)
+    recorder.start_polls = 5
+
+    append(game_log_file, GAME_PAYS, LINE_CYCLE_DONE)
+    await wait_until(
+        lambda: cyclic_service.status().video_count == 1, what="the clip to be filed"
+    )
+    detail = await cyclic_service.stop()
+
+    (video,) = detail.videos
+    assert video.error is None
+    assert video.file_name is not None
+    assert recorder.active is False, "OBS was left recording"
+
+
+async def test_a_window_opening_while_obs_still_records_says_so(
+    game_log_file: Path,
+    recorder: FakeRecorder,
+    running: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OBS still writing out a clip -- or recording something else -- cannot
+    start another, and says so only as "SetRecordDirectory (code 500)". The
+    window gets an error that names the cause, and no StartRecord at all."""
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_LINE_PAYS", False)
+    recorder.active = True
+
+    append(game_log_file, GAME_PAYS)
+    await wait_until(
+        lambda: cyclic_service.status().video_count == 1,
+        what="the clip's failure to be recorded",
+    )
+    detail = await cyclic_service.stop()
+
+    (video,) = detail.videos
+    assert video.file_name is None
+    assert video.error is not None and "OBS was still recording" in video.error
+    assert recorder.started == []
 
 
 # --- sequences and ordering -----------------------------------------------
@@ -986,3 +1237,451 @@ async def test_abort_seals_the_record_as_interrupted(
 
     assert cyclic_service.status().active is False
     assert cyclic_service.get_run(run_id).status is CyclicRunState.INTERRUPTED
+
+
+# --- the between-spins strip, and the window after a taken win -------------
+# Both of these are about the *second* set of messages a spin produces: the
+# strip that runs once it is over, which is "GAME OVER", "GAME PAYS n" and
+# "PLAY 880 CREDITS" whether the spin lost or its win has been collected. The
+# game logs not one of those three, so the window is sampled exactly as a win
+# presentation is -- and the bug both tests exist against is the window being
+# *opened late*, which leaves the strip recorded as two boundaries with
+# nothing between them and looks identical to a strip that showed nothing.
+
+
+async def test_a_losing_spin_gets_the_between_spins_window_sampled(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """A loss pays nothing, so it has no win presentation at all -- but the
+    strip it leaves up is a cyclic message strip like any other and is the only
+    thing this feature can capture about that spin."""
+    append(game_log_file, LOSING_SPIN, IDLE_STRIP_STARTED)
+    await wait_until(
+        lambda: cyclic_service.status().sampled_count >= 3,
+        what="the between-spins strip to be sampled",
+    )
+    append(game_log_file, IDLE_STRIP_ENDED)
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    frames = events_named(detail, "cyclic-idle-message-shown")
+    assert len(frames) >= 3
+    # Forced on rather than inherited from the opening line, which takes no
+    # picture: inheriting it made every frame of this strip a marker with no
+    # screenshot, so a losing spin recorded a dozen events and no images.
+    assert all(frame.screenshot is not None for frame in frames)
+    assert all(frame.source is CyclicEventSource.SAMPLED for frame in frames)
+
+
+async def test_the_between_spins_strip_is_sampled_at_its_own_interval(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """Its own setting, and the live view reports *that* one rather than the
+    win pass's -- reading the wrong one told a window it was behind when the
+    interval it asked for was exactly what it got, and raised a coverage
+    warning about it."""
+    append(game_log_file, LOSING_SPIN, IDLE_STRIP_STARTED)
+    await wait_until(
+        lambda: cyclic_service.status().sampled_count >= 2,
+        what="the between-spins strip to be sampled",
+    )
+
+    view = cyclic_service.live()
+    assert view.sample_interval_seconds == pytest.approx(
+        settings.CYCLIC_MESSAGES_IDLE_INTERVAL_SECONDS
+    )
+
+
+async def test_taking_a_win_early_carries_the_window_on_without_a_break(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """Take the win before its line messages have been round once.
+
+    On screen nothing stops: the strip runs straight on from "LINE 1 PAYS 250"
+    into "GAME OVER / GAME PAYS n / PLAY 880 CREDITS", and the only thing
+    marking the boundary is a log line. So the window runs straight on with it
+    -- one sequence, one unbroken run of frames, one clip.
+
+    What this replaced closed the win window here and opened a fresh one. That
+    cost the end of the line messages, which on a win taken this early is
+    exactly where the messages it has not shown yet are; and it moved the live
+    view onto the new sequence, which emptied the card of the win a tester was
+    watching at the very moment they pressed the button.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    before = cyclic_service.live()
+    assert before.strip == cyclic_service.WIN_VIDEO
+    win_cycle = before.cycle
+
+    # Take win: the game goes idle while the line messages are still running.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    # Waited on the *strip's own* frames rather than on the sampled count,
+    # which the win pass is still climbing: the claim is that this strip gets
+    # frames of its own, and promptly.
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to start being sampled",
+    )
+
+    # Never stopped, and never on a second sequence. Both halves are the same
+    # window, which is what "no break in the frames" means concretely.
+    carried = cyclic_service.live()
+    assert carried.capturing is True
+    assert carried.cycle == win_cycle
+    assert carried.strip == cyclic_service.WIN_THEN_IDLE
+
+    # And the line messages captured before the button was pressed are still
+    # on the card, with the strip's own frames appended after them.
+    assert len(live_frames_named("cyclic-line-pays-shown")) >= 2
+
+    # The line the game writes *after* going idle. It names the win window, so
+    # read as "close the current window" it tore down the strip a second after
+    # it started -- here it is a moment on the timeline and nothing more.
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-cycle-finished")) == 1,
+        what="the line-message cycle's own finishing line to be recorded",
+    )
+    assert cyclic_service.live().capturing is True
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:34.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    # Both sets of messages, and both under the one sequence: the spin is one
+    # thing that happened, however the log brackets its halves.
+    line_pays = events_named(detail, "cyclic-line-pays-shown")
+    idle = events_named(detail, "cyclic-idle-message-shown")
+    assert line_pays, "the win presentation captured no line messages"
+    assert idle, "the strip after the win was taken captured nothing"
+    assert {event.cycle for event in line_pays} == {event.cycle for event in idle}
+    assert all(frame.screenshot is not None for frame in idle)
+
+
+class _AlwaysLapped:
+    """A loop watch that says the strip has come round on every frame -- band 2
+    of a real carried window does, within about five seconds."""
+
+    seen = ("Game Over", "Game Pays 600", "Play 880 Credits")
+
+    def saw(self, _path: Path) -> bool:
+        return True
+
+
+async def test_a_carried_window_waits_for_the_line_messages_before_its_lap(
+    game_log_file: Path,
+    quick_sampling: None,
+    recorder: FakeRecorder,
+    running: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Band 2 comes round long before band 1 has walked the win's lines.
+
+    Measured on a real forty-line win taken early: the lap closed the window
+    on "Line 9 Pays 15", and lines 10 to 40 played to nothing -- no stills and
+    no clip. So the lap is not watched until the log says the line messages
+    have finished, and is watched from then on.
+    """
+    monkeypatch.setattr(cyclic_service, "_loop_watch", lambda _run: _AlwaysLapped())
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 3,
+        what="the carried window to go on capturing",
+    )
+    # Every one of those frames "lapped", and the window is still open.
+    assert cyclic_service.live().capturing is True
+    assert cyclic_service.status().recording is True
+
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the lap to close the window once the lines have finished",
+    )
+    await wait_until(
+        lambda: not cyclic_service.status().recording, what="the clip to be filed"
+    )
+    detail = await cyclic_service.stop()
+
+    (video,) = [video for video in detail.videos if video.file_name]
+    assert video.kind == cyclic_service.WIN_THEN_IDLE
+    assert video.closed_by == "strip-looped"
+    assert events_named(detail, "cyclic-line-pays-cycle-finished")
+
+
+async def test_a_carried_window_reads_the_second_line_from_the_moment_it_appears(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """The second band is the point of carrying on, not a side effect.
+
+    A win presentation draws one line and the between-spins strip draws two,
+    and which bands a frame is read for is stamped on it when it is captured
+    (see ``_Pending.regions``) -- so carrying the window on has to widen them
+    at the boundary or every frame after the button press is read for the one
+    band the strip has stopped using.
+
+    Asserted on the pending reads rather than on captions, which need an OCR
+    engine the suite has no business requiring.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    run = cyclic_service._run
+    assert run is not None
+
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to start being sampled",
+    )
+
+    # Asserted as a *shape* rather than against a frame count taken before the
+    # boundary, deliberately: the capture loop is still running while the
+    # watcher reads the line, so where exactly the window widened is a race and
+    # is not the claim. The claim is that it widened once and stayed widened --
+    # one band for as long as only the win presentation was on screen, both
+    # from the boundary on, and never back again.
+    one = settings.cyclic_messages_text_regions
+    both = settings.cyclic_messages_idle_regions
+    bands = [pending.regions for pending in run.pending_reads]
+    assert set(bands) == {one, both}
+    widened = bands.index(both)
+    assert bands[:widened] == [one] * widened
+    assert bands[widened:] == [both] * (len(bands) - widened)
+
+    await cyclic_service.stop()
+
+
+async def test_a_win_taken_early_records_one_clip_of_both_strips(
+    game_log_file: Path,
+    quick_sampling: None,
+    recorder: FakeRecorder,
+    running: None,
+) -> None:
+    """One continuous stretch of strip is one recording.
+
+    The ordinary case still gets a clip each -- a win presentation and the
+    strip after it are two different things to watch. But a win taken early
+    never lets the first one end: stopping and restarting OBS at the boundary
+    is a hole in the recording at the one moment the recording is for, so the
+    clip carries on and becomes a clip of both. Its kind says so, which is
+    what makes ``cyclic_text.clip_regions`` crop both bands out of it.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:26.000"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to start being sampled",
+    )
+    # Still the same recording: nothing was stopped at the boundary.
+    assert recorder.files == []
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:34.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    filed = [video for video in detail.videos if video.file_name]
+    assert len(filed) == 1
+    assert filed[0].kind == cyclic_service.WIN_THEN_IDLE
+    assert cyclic_service.WIN_THEN_IDLE in filed[0].file_name
+
+
+async def test_a_win_taken_after_its_messages_finish_keeps_them_on_the_card(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """The other way round, and the one that is *two* windows.
+
+    Let the line messages finish and the win window closes on its own line, as
+    it should. Taking the win then opens the between-spins strip as a window
+    of its own -- a second sequence, on the record as a second sequence,
+    because that is what it is. But it is the same spin, so the live view
+    keeps the win's frames and files the strip's in after them: the card a
+    tester is watching grows rather than emptying.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the line messages to finish",
+    )
+    finished = cyclic_service.live()
+    win_cycle = finished.cycle
+    won = len(live_frames_named("cyclic-line-pays-shown"))
+    assert won >= 2
+
+    # Take win, a beat later.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:35.500"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to be sampled",
+    )
+
+    live = cyclic_service.live()
+    # Named for the win it began with, and still carrying every frame of it.
+    assert live.cycle == win_cycle
+    assert live.strip == cyclic_service.WIN_THEN_IDLE
+    assert len(live_frames_named("cyclic-line-pays-shown")) == won
+    # In order, and the strip's frames after the win's rather than instead.
+    assert [frame.sequence for frame in live.frames] == sorted(
+        frame.sequence for frame in live.frames
+    )
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:44.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close the window",
+    )
+    detail = await cyclic_service.stop()
+
+    # Two sequences on the record, unlike the win taken early: here the strip
+    # really did stop and start again, and the manifest should say so.
+    line_pays = events_named(detail, "cyclic-line-pays-shown")
+    idle = events_named(detail, "cyclic-idle-message-shown")
+    assert {event.cycle for event in line_pays} != {event.cycle for event in idle}
+
+
+async def test_a_losing_spin_starts_the_live_view_again(
+    game_log_file: Path, quick_sampling: None, running: None
+) -> None:
+    """The view grows across one spin, never across two.
+
+    A spin's two halves belong together; the spin after it does not. Without
+    this the card would accumulate every window of a session and show a tester
+    the spin before last beside the one in front of them.
+    """
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-line-pays-shown")) >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:35.500"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the strip after the win to be sampled",
+    )
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:44.000"))
+    await wait_until(
+        lambda: not cyclic_service.status().sampling,
+        what="the next spin to close that window",
+    )
+
+    spin = cyclic_service.live().cycle
+
+    # The next spin loses, so its strip is nobody's second half.
+    append(game_log_file, at(LOSING_SPIN, "16:36:50.000"))
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:50.400"))
+    # Waited on the view *moving*, not on frames named for the strip: the
+    # previous spin's own between-spins frames carry that name too and are
+    # still on the card, so a count of them is satisfied before this spin has
+    # taken a single one.
+    await wait_until(
+        lambda: cyclic_service.live().cycle != spin,
+        what="the losing spin to start the live view again",
+    )
+
+    live = cyclic_service.live()
+    assert live.strip == cyclic_service.IDLE_VIDEO
+    assert live_frames_named("cyclic-line-pays-shown") == []
+
+    await cyclic_service.stop()
+
+
+async def test_a_taken_win_queues_its_clip_instead_of_reading_it_back(
+    game_log_file: Path,
+    quick_sampling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    recorder: FakeRecorder,
+    running: None,
+) -> None:
+    """A clip is queued the moment it is filed, never read back inline.
+
+    The handler that closes a window is very often about to open the next one
+    -- let a win finish and take it, and the between-spins strip is on screen
+    within a beat of the win's clip being filed. A decode costs seconds to
+    tens of seconds, so recovering there cost that strip its first fifteen and
+    the run recorded a window opening and closing with not one frame in
+    between. The queue is what fixed it, and this asserts the queue rather
+    than the symptom.
+    """
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_RECOVER_FROM_CLIP", True)
+    # Nothing in the suite can decode the recorder's one-line mp4, so the real
+    # drain would fail per clip and tell us nothing. Stood in for by one that
+    # merely takes its time, which is the property under test: a recovery is
+    # slow, and the window after a taken win must not wait for it.
+    drained: list[float] = []
+
+    async def slow_drain(_run: Any) -> None:
+        drained.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(0.5)
+
+    monkeypatch.setattr(cyclic_service, "_drain_recovery", slow_drain)
+
+    append(game_log_file, PAYTABLE, GAME_PAYS, WIN_BANG_DONE)
+    await wait_until(
+        lambda: cyclic_service.status().sampled_count >= 2,
+        what="the win presentation to be sampled",
+    )
+    append(game_log_file, at(LINE_CYCLE_DONE, "16:36:30.000"))
+    await wait_until(
+        lambda: cyclic_service.status().recovery_pending >= 1,
+        what="the win's clip to be queued for recovery",
+    )
+
+    # Queued, and the window that follows it opens anyway -- which is the
+    # whole point. Recovering here, inline, is what left that strip with its
+    # window opened and closed and not one frame in between.
+    append(game_log_file, at(IDLE_STRIP_STARTED, "16:36:35.500"))
+    await wait_until(
+        lambda: len(live_frames_named("cyclic-idle-message-shown")) >= 2,
+        what="the between-spins strip to be sampled while a clip waits",
+    )
+    assert cyclic_service.live().capturing is True
+
+    append(game_log_file, at(IDLE_STRIP_ENDED, "16:36:44.000"))
+    await wait_until(
+        lambda: cyclic_service.status().recovery_pending >= 2,
+        what="the between-spins clip to be queued too",
+    )
+    detail = await cyclic_service.stop()
+
+    # And the drain did get asked, rather than the queue simply never being
+    # worked: queued is not the same fact as dropped.
+    assert drained
+
+    # Both windows recorded a clip, and both are on the queue: the win
+    # presentation and the strip that followed it.
+    kinds = [video.kind for video in detail.videos if video.file_name]
+    assert cyclic_service.WIN_VIDEO in kinds
+    assert cyclic_service.IDLE_VIDEO in kinds
+    # A sealed run says so rather than leaving it to be noticed, because
+    # "Read the messages" on each clip is still the complete list.
+    assert any("not read back before the run stopped" in note for note in detail.errors)

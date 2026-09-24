@@ -1,4 +1,4 @@
-import { Camera, Circle, ImageOff, ScanText, TriangleAlert } from "lucide-react";
+import { Camera, Circle, Film, ImageOff, ScanText, TriangleAlert } from "lucide-react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,26 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cyclicFileUrl } from "@/features/cyclic-messages/api";
 import { useCyclicLive } from "@/features/cyclic-messages/use-cyclic-messages";
 
+/**
+ * Which strip the frames below are of, in words.
+ *
+ * A run shows three and they are different things to read — a win paying out,
+ * what the game says between spins, and both of those in one view — so the
+ * card names the one it is showing rather than leaving it to be inferred from
+ * the event badges.
+ *
+ * The third is one spin's whole presentation. Take the win and the strip runs
+ * on from the line messages into “GAME OVER / GAME PAYS n / PLAY 880 CREDITS”;
+ * the frames of both are on the card together, whether the backend captured
+ * them as one window (the win taken early, so the strip never stopped) or as
+ * two (the win taken after its line messages had finished).
+ */
+const STRIP = {
+  "win-video": "win presentation",
+  "idle-video": "between-spins strip",
+  "win-then-idle": "win presentation, then between-spins",
+};
+
 /** Times are what a tester correlates against; the date is in the run id. */
 function formatTime(value) {
   if (!value) return "—";
@@ -20,15 +40,6 @@ function formatTime(value) {
   return Number.isNaN(at.getTime()) ? value : at.toLocaleTimeString();
 }
 
-/**
- * The caption the reader made of one frame, in the three states it has.
- *
- * The three are kept apart on purpose and this is the whole reason the card
- * exists. *Queued* is a frame the worker has not reached — its picture is
- * already here and its text is coming. *Read* is text. *Failed* is a frame the
- * worker reached and could not read, which is a different fact from a strip
- * that said nothing and the only one of the three worth investigating.
- */
 /**
  * Every line of the strip on one frame, top line first.
  *
@@ -46,18 +57,31 @@ function Strip({ runId, readings, capturing }) {
   // of an empty band, was a row of nothing to report. Dropping the band here
   // rather than inside `Caption` is what keeps its crop meaningful: every
   // picture shown is the pixels behind a caption that was actually read.
-  const said = (readings ?? []).filter(
-    (reading) => reading.error || reading.repaired,
-  );
+  const said = (readings ?? []).filter((reading) => reading.error || reading.repaired);
   if (said.length === 0) {
-    // Two different waits, and saying which matters: while the strip is still
-    // playing nothing has even been handed to the recogniser yet, by design,
-    // and a row that says "reading…" for a minute looks stuck rather than
-    // deliberate.
+    // Three states, not two, and conflating the last two is what left frames
+    // sitting on "reading…" after their pass had been fully read. An *empty*
+    // `readings` is a frame the worker has not reached -- the backend fills one
+    // entry per region the moment it does, blank region included -- so anything
+    // non-empty here was read and the strip simply had nothing believable on it
+    // at that moment, which is a fact about the pass and not a pending state.
+    // Sampling runs faster than the strip changes, so a frame landing in the
+    // gap between two messages is normal and permanent: nothing will ever come
+    // back to fill it in, because the clip recovery appends its own frames
+    // rather than re-reading these.
+    const pending = (readings ?? []).length === 0;
     return (
       <p className="text-muted-foreground flex items-center gap-1.5 text-xs italic">
-        <ScanText className="size-3 animate-pulse" />
-        {capturing ? "read when the strip stops" : "reading…"}
+        <ScanText className={pending ? "size-3 animate-pulse" : "size-3"} />
+        {/* And while it is pending, which of the two waits: nothing is handed
+            to the recogniser until the pass closes, by design, so a row that
+            says "reading…" through a 150s pass looks stuck rather than
+            deliberate. */}
+        {pending
+          ? capturing
+            ? "read when the strip stops"
+            : "reading…"
+          : "no message on the strip"}
       </p>
     );
   }
@@ -70,6 +94,15 @@ function Strip({ runId, readings, capturing }) {
   );
 }
 
+/**
+ * One line of the strip, in the two states that are worth a row of their own.
+ *
+ * *Read* is text. *Failed* is a line the worker reached and could not read,
+ * which is a different fact from a strip that said nothing and the only one of
+ * the four states worth investigating. The other two never get here: `Strip`
+ * has already taken *queued* (no readings at all) and *said nothing* (read,
+ * nothing believable on the band) and rendered them as one line between them.
+ */
 function Caption({ runId, reading }) {
   if (reading.error) {
     return (
@@ -189,6 +222,28 @@ function byCaption(frames) {
 }
 
 /**
+ * Whether this frame was read and the strip had nothing on it.
+ *
+ * Not the same as "no caption yet": the backend fills one reading per region
+ * the moment it reaches a frame, blank regions included, so readings present
+ * with nothing believable in any of them is a *finished* answer -- the
+ * screenshot caught the gap the strip leaves between two messages.
+ *
+ * Sampling runs faster than the strip changes on purpose, so these are normal
+ * and there are several per pass. They are worth nothing to a reader, which is
+ * why `LiveCaptureCard` drops them: a card showing a screenshot of an empty
+ * band under the words "no message on the strip" is a tile of nothing to
+ * report, and on a between-spins pass half the grid was them.
+ */
+function readAsNothing(frame) {
+  const readings = frame.readings ?? [];
+  return (
+    readings.length > 0 &&
+    !readings.some((reading) => reading.error || reading.repaired)
+  );
+}
+
+/**
  * How well a frame read, as one number: the worst of the lines that said
  * something.
  *
@@ -293,10 +348,15 @@ function LiveFrame({ runId, group, capturing }) {
  * out around that. The picture appears the moment the capture loop takes it —
  * capturing every 2s is this feature's only priority, so nothing reads a
  * caption while a pass is still going. Every frame sits on “reading…”
- * (`frame.reading` is null) until the pass closes, at which point the backend
+ * (`frame.readings` is empty) until the pass closes, at which point the backend
  * reads them all in order and this card's own poll picks each one up as it
  * lands — so a card fills in from the top down once the strip stops, rather
  * than progressively while it plays.
+ *
+ * Emptiness is the whole signal there, and it is a list rather than the single
+ * `reading` this card was first written against: once a frame has been read it
+ * carries one entry per region — blank regions included — so a frame that read
+ * as nothing is non-empty and only `Strip` knows to say so.
  *
  * Newest first, unlike the run view. A pass runs to 150s and a tester watching
  * one wants the frame that just landed, not to scroll for it.
@@ -328,11 +388,24 @@ export function LiveCaptureCard({ isActive }) {
   // Not newest-first: once the repeats are counted the list is one entry per
   // caption rather than one per frame, so it no longer grows without bound and
   // there is nothing to scroll past.
-  const groups = byCaption(data.frames);
+  const grouped = byCaption(data.frames);
   // Groups that actually read as something: a frame still waiting to be read,
   // and one that read as nothing, are each their own group but neither is a
   // message the strip showed.
-  const read = groups.filter((group) => group.key).length;
+  const read = grouped.filter((group) => group.key).length;
+  // Frames that were read and caught the strip mid-change are dropped from the
+  // grid -- see `readAsNothing`. Filtered *here* rather than in `byCaption`,
+  // which still has to see them: a blank breaks a run of one caption, so
+  // grouping through them is what keeps two showings of one message either
+  // side of a gap counted as two rather than bridged into one.
+  //
+  // A frame still waiting for its caption is kept, which is what keeps the
+  // pictures arriving one per frame while a pass is playing; only once the
+  // captions land does the blank half of the grid go away.
+  const groups = grouped.filter(
+    (group) => !group.frames.every((frame) => readAsNothing(frame)),
+  );
+  const blanks = grouped.length - groups.length;
   const capped = data.frame_count > data.frames.length;
 
   return (
@@ -354,8 +427,22 @@ export function LiveCaptureCard({ isActive }) {
               <ScanText className="size-3 animate-pulse" />
               reading captions
             </Badge>
+          ) : data.recovering ? (
+            // The third thing, and the one that fills in what the stills
+            // missed: the window's own clip being read back frame by frame.
+            // Shown because it is where the rest of a window's messages come
+            // from, and they arrive seconds after the window closed.
+            <Badge variant="secondary">
+              <Film className="size-3 animate-pulse" />
+              recovering from the clip
+            </Badge>
           ) : data.cycle != null ? (
             <Badge variant="outline">pass finished</Badge>
+          ) : null}
+          {data.strip ? (
+            <Badge variant="outline" className="font-normal">
+              {STRIP[data.strip] ?? data.strip}
+            </Badge>
           ) : null}
         </CardTitle>
         <CardDescription>
@@ -385,10 +472,10 @@ export function LiveCaptureCard({ isActive }) {
                 <span className="text-foreground font-medium">
                   {data.spins_without_pay}
                 </span>{" "}
-                {data.spins_without_pay === 1 ? "spin has" : "spins have"} paid
-                nothing since tracking started. Those are captured too — once a spin is
-                over the strip cycles “GAME OVER”, “GAME PAYS 0” and “PLAY 880 CREDITS”
-                until the next spin clears it.
+                {data.spins_without_pay === 1 ? "spin has" : "spins have"} paid nothing
+                since tracking started. Those are captured too — once a spin is over the
+                strip cycles “GAME OVER”, “GAME PAYS 0” and “PLAY 880 CREDITS” until the
+                next spin clears it.
               </p>
             ) : null}
           </div>
@@ -433,6 +520,22 @@ export function LiveCaptureCard({ isActive }) {
                 <dt>Read</dt>
                 <dd className="text-foreground font-mono">{data.read_count}</dd>
               </div>
+              {/* Counted, not shown. The frames themselves are dropped from
+                  the grid below -- a screenshot of an empty band says nothing
+                  -- but silently rendering four tiles under "Frames 7" makes
+                  the difference look like frames that went missing, which is
+                  the one thing this card exists to make visible. */}
+              {blanks > 0 ? (
+                <div className="flex gap-1">
+                  <dt>Mid-change</dt>
+                  <dd
+                    className="text-foreground font-mono"
+                    title="Frames that caught the gap the strip leaves between two messages, so they carry no caption"
+                  >
+                    {blanks}
+                  </dd>
+                </div>
+              ) : null}
               {/* Only while there is one: 0 for the whole pass, jumps to
                   `frame_count` the moment it closes, then counts down as the
                   post-pass read works through them. */}
@@ -442,26 +545,31 @@ export function LiveCaptureCard({ isActive }) {
                   <dd className="text-foreground font-mono">{data.queue_depth}</dd>
                 </div>
               ) : null}
+              {/* Clips filed and not yet read back. Non-zero while a window is
+                  open is normal — recovery gives way to capture — and it is
+                  what says the list below is still filling in. */}
+              {data.recovery_pending > 0 ? (
+                <div className="flex gap-1">
+                  <dt>Clips to recover</dt>
+                  <dd className="text-foreground font-mono">{data.recovery_pending}</dd>
+                </div>
+              ) : null}
             </dl>
 
             {/* Shown beside a finished pass too, not only on the empty view:
-                the frames below are the last win, and without this a run that
-                has been losing for ten minutes looks like one frozen on it. */}
-            {!data.capturing && data.spins_without_pay > 0 ? (
+                without it a run that has been losing for ten minutes looks
+                like one frozen on its last win. Only over a *win* window,
+                though — "the most recent win" over the between-spins strip's
+                own frames was describing the wrong thing, and that strip is
+                what a losing spin produces, so the two were being shown
+                together at exactly the wrong moment. */}
+            {!data.capturing &&
+            data.spins_without_pay > 0 &&
+            (data.strip === "win-video" || data.strip === "win-then-idle") ? (
               <p className="text-muted-foreground text-xs">
                 {data.spins_without_pay}{" "}
-                {data.spins_without_pay === 1 ? "spin has" : "spins have"} paid
-                nothing since this one. The frames below are the most recent win.
-              </p>
-            ) : null}
-
-            {/* The one failure the frames themselves cannot show: a message
-                sampled either side of leaves nothing behind, so a list that is
-                missing one looks exactly like a complete list. */}
-            {data.coverage_warning ? (
-              <p className="text-destructive flex items-start gap-2 text-xs">
-                <TriangleAlert className="mt-0.5 size-3 shrink-0" />
-                <span>{data.coverage_warning}</span>
+                {data.spins_without_pay === 1 ? "spin has" : "spins have"} paid nothing
+                since this one. The frames below are the most recent win.
               </p>
             ) : null}
 
@@ -474,7 +582,10 @@ export function LiveCaptureCard({ isActive }) {
 
             {groups.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                The presentation has opened; the first frame is being taken.
+                {blanks > 0
+                  ? "Every frame of this pass caught the strip between two messages. " +
+                    "Read the messages off the clip below."
+                  : "The presentation has opened; the first frame is being taken."}
               </p>
             ) : (
               <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
