@@ -434,6 +434,92 @@ async def test_extract_ignores_the_letterbox_when_trimming_is_off(
     assert data["box"] == [100, 100, 200, 200]
 
 
+async def test_a_game_can_turn_trimming_off_for_itself(
+    client: AsyncClient,
+    active_game: Path,
+    screenshots: Path,
+) -> None:
+    """The per-game escape hatch, for a game whose own edges move.
+
+    A game that paints art out to the window edge in some frames and not others
+    hands detection a different box each time, so its regions have to be
+    measured against the canvas instead. Declaring that in the game's own config
+    leaves the games that really are letterboxed trimming as before -- which is
+    what the test below pins.
+    """
+    write_game_config(
+        active_game,
+        {
+            "name": "FortuneOx",
+            "process": "FortuneOx.exe",
+            "letterbox": {"trim": False},
+            "roi": {"quarter": QUARTER},
+        },
+    )
+    write_frame(
+        screenshots / "shot.png",
+        size=(400, 200),
+        region=QUARTER,
+        content=(100, 0, 300, 200),
+    )
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    assert data["content_box"] == [0, 0, 400, 200]
+    assert data["letterboxed"] is False
+    assert data["box"] == [100, 100, 200, 200]
+
+
+async def test_a_game_declaring_no_letterbox_block_still_trims(
+    client: AsyncClient, active_game: Path, screenshots: Path
+) -> None:
+    """The block's absence changes nothing -- the shipped configs have none."""
+    write_frame(
+        screenshots / "shot.png",
+        size=(400, 200),
+        region=QUARTER,
+        content=(100, 0, 300, 200),
+    )
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    assert data["content_box"] == [100, 0, 300, 200]
+    assert data["letterboxed"] is True
+
+
+async def test_a_game_can_raise_the_threshold_for_itself(
+    client: AsyncClient,
+    active_game: Path,
+    screenshots: Path,
+) -> None:
+    """``threshold`` is per-game for the same reason ``trim`` is: what counts as
+    a bar is a fact about what this game draws at its edges."""
+    write_game_config(
+        active_game,
+        {
+            "name": "FortuneOx",
+            "process": "FortuneOx.exe",
+            "letterbox": {"threshold": 40},
+            "roi": {"quarter": QUARTER},
+        },
+    )
+    # Bars that are not quite black -- dimmer than 40 but brighter than the
+    # shipped 8, so the default threshold would read them as game and hand back
+    # the whole frame.
+    path = screenshots / "shot.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", (400, 200), (20, 20, 20))
+    image.paste(Image.new("RGB", (200, 200), REGION_FILL), (100, 0))
+    image.save(path)
+
+    response = await client.post(f"{API}/extract", json={"region": "quarter"})
+
+    data = assert_success(response.json())
+    assert data["content_box"] == [100, 0, 300, 200]
+
+
 async def test_extract_uses_the_whole_frame_of_a_black_shot(
     client: AsyncClient, active_game: Path, screenshots: Path
 ) -> None:

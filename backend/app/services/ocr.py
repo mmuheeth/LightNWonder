@@ -605,7 +605,7 @@ async def read(request: OcrReadRequest) -> OcrReadResult:
 
     # Once for the frame, not once per region -- every region is measured
     # against the same content box.
-    content = await asyncio.to_thread(roi_service.content_box, frame)
+    content = await asyncio.to_thread(roi_service.content_box, frame, config=config)
     readings = [
         await asyncio.to_thread(
             _read_region,

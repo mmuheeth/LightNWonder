@@ -657,10 +657,29 @@ FRAME_LETTERBOX_THRESHOLD=8     luminance a pixel must exceed to count as game
 FRAME_LETTERBOX_MIN_FRACTION=0.25   smallest box that will be believed, per axis
 ```
 
+A game overrides any of the three for itself, in its own config, keyed exactly
+as the settings are:
+
+```json
+"letterbox": { "trim": false }
+```
+
+Per-game because detection is only as good as the game's own edges. A game that
+paints out to the window edge in some frames and not others hands the trim a
+different box each time, and every region measured against one box misses
+against the next — HuffNPuffHighRise drifts clouds across both side edges, and
+twelve consecutive captures of an idle screen gave a content box starting at
+x=136 eleven times and x=0 once. That game's regions are fractions of the whole
+window, declared here rather than by turning trimming off for everyone: the
+games that really are letterboxed still need it. Absent keys keep the
+environment's value, and an absent block changes nothing.
+
 `app/services/roi.py` owns the question for every feature that resolves a
 region: `content_box(frame)` finds it, `resolve_box(roi, frame)` is the
-single-region shorthand, and OCR finds it once per frame rather than once per
-region. Every response reports it beside the region's own pixel box —
+single-region shorthand, `letterbox_options()` is where the environment and the
+game's block are combined, and OCR finds it once per frame rather than once per
+region. Both take an optional `config=`, so a caller that has already loaded the
+active game does not load it twice; omitting it loads the active game. Every response reports it beside the region's own pixel box —
 `content_box` and `letterboxed` on an ROI extraction, a grid split and an OCR
 read alike — because a crop of the wrong thing is either a badly measured region
 or a misdetected box, and only the pair tells them apart.

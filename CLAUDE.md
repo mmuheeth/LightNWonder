@@ -232,7 +232,15 @@ thing for a screenshot to catch), the box is found once per frame rather than
 once per region, and every response reports it beside the region's own box —
 a crop of the wrong thing is either a badly measured region or a misdetected box,
 and only the pair says which. `FRAME_LETTERBOX_TRIM=false` reverts to canvas
-fractions. **Region values in a game config are therefore fractions of the game,
+fractions, and a game overrides that (and the threshold, and the minimum
+fraction) for itself with a `letterbox` block keyed the same way — per-game
+because detection is only as good as the game's own edges: HuffNPuffHighRise
+drifts clouds across both sides of its window, so twelve idle captures gave a
+content box starting at x=136 eleven times and x=0 once, and its regions are
+fractions of the whole window instead (`"letterbox": {"trim": false}`).
+`services/roi.letterbox_options()` is where the two are combined, and
+`content_box`/`resolve_box`/`is_blank` take an optional `config=` so a caller
+holding the active game does not reload it. **Region values in a game config are therefore fractions of the game,
 not of the canvas** — measuring one off a letterboxed screenshot means
 subtracting the bars first.
 

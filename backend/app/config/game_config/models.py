@@ -108,6 +108,20 @@ class GameConfig:
     """Named in-game click targets, as fractions of the window client area --
     the same space :attr:`roi` is measured in."""
 
+    letterbox: Mapping[str, Any]
+    """Optional per-game letterbox overrides, keyed exactly as the three
+    ``FRAME_LETTERBOX_*`` settings they replace: ``trim`` (bool),
+    ``threshold`` (0-255) and ``min_fraction`` (0-1). Absent keys keep the
+    environment's value, and an absent block changes nothing.
+
+    Per-game because whether trimming finds the same box twice is a property of
+    what the game *draws*, not of the capture: a game whose art reaches the
+    window edge only sometimes -- a drifting cloud, a fading border -- moves its
+    own content box between frames, and regions measured against one box are
+    aimed at the wrong thing against the next. Turning trimming off for that
+    game leaves the games that really are letterboxed alone. Resolved against
+    the environment by :func:`app.services.roi.letterbox_options`."""
+
     meter: Mapping[str, Any]
     """Optional cash-meter overrides: ``band`` is ``[top, bottom]`` fraction of
     strip height, ``windows`` maps a field to its ``[low, high]`` width span.

@@ -79,6 +79,58 @@ def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
     return parsed
 
 
+_LETTERBOX_KEYS = ("trim", "threshold", "min_fraction")
+
+
+def _letterbox(raw: Any, *, path: Path) -> dict[str, Any]:
+    """Read the optional ``letterbox`` block: this game's answers to the three
+    ``FRAME_LETTERBOX_*`` settings. Only the keys present are overridden, so the
+    block is a patch on the environment rather than a replacement for it."""
+    block = _object(raw, where=f"'letterbox' in {path}")
+    parsed: dict[str, Any] = {}
+
+    if "trim" in block:
+        trim = block["trim"]
+        if not isinstance(trim, bool):
+            raise GameConfigError(f"'letterbox.trim' in {path} must be true or false")
+        parsed["trim"] = trim
+
+    if "threshold" in block:
+        threshold = block["threshold"]
+        # `bool` is an `int`, and `true` as a luminance is a mistake, not a 1.
+        if isinstance(threshold, bool) or not isinstance(threshold, int):
+            raise GameConfigError(
+                f"'letterbox.threshold' in {path} must be a whole number"
+            )
+        if not 0 <= threshold <= 255:
+            raise GameConfigError(
+                f"'letterbox.threshold' in {path} must be between 0 and 255, "
+                f"got {threshold!r}"
+            )
+        parsed["threshold"] = threshold
+
+    if "min_fraction" in block:
+        fraction = block["min_fraction"]
+        if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
+            raise GameConfigError(
+                f"'letterbox.min_fraction' in {path} must be a number"
+            )
+        if not 0.0 < float(fraction) <= 1.0:
+            raise GameConfigError(
+                f"'letterbox.min_fraction' in {path} must be above 0 and at "
+                f"most 1, got {fraction!r}"
+            )
+        parsed["min_fraction"] = float(fraction)
+
+    unknown = set(block) - set(_LETTERBOX_KEYS)
+    if unknown:
+        raise GameConfigError(
+            f"'letterbox' in {path} has no {', '.join(sorted(unknown))} setting "
+            f"(settings are: {', '.join(_LETTERBOX_KEYS)})"
+        )
+    return parsed
+
+
 def _path(raw: Any, *, where: str) -> Path | None:
     """Read an optional absolute path to something the game installed."""
     if raw is None:
@@ -239,6 +291,7 @@ def load_game_config(path: Path) -> GameConfig:
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")
         ),
+        letterbox=freeze_mapping(_letterbox(document.get("letterbox"), path=path)),
         meter=freeze_mapping(_meter(document.get("meter"), path=path)),
         event_rules=event_rules,
         disabled_events=disabled_events,

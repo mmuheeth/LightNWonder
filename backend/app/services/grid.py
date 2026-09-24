@@ -339,7 +339,7 @@ def place_on(image: Image.Image) -> FramePlacement:
     region = _reels_region(config)
     grid = _grid(config)
     try:
-        box, content = roi_service.resolve_box(region, image)
+        box, content = roi_service.resolve_box(region, image, config=config)
     except image_roi.RoiError as exc:
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
 
@@ -405,7 +405,7 @@ def _split(request: GridSplitRequest) -> GridSplitResult:
     path = roi_service.resolve_frame(request.file_name)
     frame = roi_service.open_frame(path)
     try:
-        box, content = roi_service.resolve_box(region, frame)
+        box, content = roi_service.resolve_box(region, frame, config=config)
     except image_roi.RoiError as exc:
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
     crop = frame.crop(box)

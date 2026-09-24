@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -129,36 +130,69 @@ def open_frame(path: Path) -> Image.Image:
         ) from exc
 
 
-def is_blank(path: Path) -> bool:
+@dataclass(frozen=True)
+class LetterboxOptions:
+    """The three letterbox knobs, after the active game has had its say."""
+
+    trim: bool
+    threshold: int
+    min_fraction: float
+
+
+def letterbox_options(config: GameConfig | None = None) -> LetterboxOptions:
+    """Resolve the ``FRAME_LETTERBOX_*`` settings against one game's ``letterbox``
+    block, which patches only the keys it names.
+
+    Per-game because trimming is only as good as the game's own edges: a game
+    that draws art out to the window edge in some frames and not others moves
+    its content box between captures, and every region measured against one box
+    misses against the next. ``config`` is optional so a caller that has not
+    already loaded the active game does not have to; pass it when you have it.
+    """
+    block = (config if config is not None else _active_config()[1]).letterbox
+    return LetterboxOptions(
+        trim=bool(block.get("trim", settings.FRAME_LETTERBOX_TRIM)),
+        threshold=int(block.get("threshold", settings.FRAME_LETTERBOX_THRESHOLD)),
+        min_fraction=float(
+            block.get("min_fraction", settings.FRAME_LETTERBOX_MIN_FRACTION)
+        ),
+    )
+
+
+def is_blank(path: Path, *, config: GameConfig | None = None) -> bool:
     """Whether the frame at ``path`` has nothing in it."""
     try:
         with Image.open(path) as image:
             image.load()
             return letterbox.is_blank(
-                image, threshold=settings.FRAME_LETTERBOX_THRESHOLD
+                image, threshold=letterbox_options(config).threshold
             )
     except OSError:
         return False
 
 
-def content_box(image: Image.Image) -> letterbox.ContentBox:
+def content_box(
+    image: Image.Image, *, config: GameConfig | None = None
+) -> letterbox.ContentBox:
     """The part of one frame the game fills, which is what regions are aimed at.
-    ``FRAME_LETTERBOX_TRIM=false`` disables detection, reverting to canvas fractions."""
-    if not settings.FRAME_LETTERBOX_TRIM:
+    ``FRAME_LETTERBOX_TRIM=false``, or ``"letterbox": {"trim": false}`` in the
+    game's own config, disables detection and reverts to canvas fractions."""
+    options = letterbox_options(config)
+    if not options.trim:
         return letterbox.ContentBox.whole(image.width, image.height)
     return letterbox.content_box(
         image,
-        threshold=settings.FRAME_LETTERBOX_THRESHOLD,
-        min_fraction=settings.FRAME_LETTERBOX_MIN_FRACTION,
+        threshold=options.threshold,
+        min_fraction=options.min_fraction,
     )
 
 
 def resolve_box(
-    roi: image_roi.Roi, image: Image.Image
+    roi: image_roi.Roi, image: Image.Image, *, config: GameConfig | None = None
 ) -> tuple[tuple[int, int, int, int], letterbox.ContentBox]:
     """Where one region lands on one frame, in the frame's own pixels, with the content
     box beside it -- only the pair says which of the two was wrong."""
-    content = content_box(image)
+    content = content_box(image, config=config)
     return roi.to_box_within(content.box), content
 
 
@@ -268,7 +302,7 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
     frame = open_frame(path)
     try:
         roi = image_roi.named_roi(config.roi, request.region)
-        box, content = resolve_box(roi, frame)
+        box, content = resolve_box(roi, frame, config=config)
         crop = frame.crop(box)
     except image_roi.RoiError as exc:
         raise GameConfigInvalidError(f"{config.path}: {exc}") from exc
