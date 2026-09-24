@@ -248,6 +248,40 @@ def test_a_single_digit_is_not_a_prize(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.text == "7"
 
 
+def test_a_currency_marked_single_digit_is_a_prize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``min_digits`` rejects a bare digit because that is what a reader answers
+    with for an orb carrying nothing -- but the filigree draws no currency sign,
+    so ``$5`` is a $5 prize and not a scrap."""
+    install(monkeypatch, FakePaddle(page(("$5", 0.999))))
+    value, result = paddle_ocr.read_number(orb())
+    assert value == Decimal("5")
+    assert result.text == "$5"
+
+
+def test_a_currency_marked_word_is_still_a_figure_not_a_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The currency mark promotes the figure, not the string: a one-digit ``$5``
+    must not fall through to the tier-name branch."""
+    install(monkeypatch, FakePaddle(page(("$5", 0.999))))
+    value, label, _ = paddle_ocr.read_prize(orb())
+    assert value == Decimal("5")
+    assert label is None
+
+
+def test_a_decimal_point_does_not_promote_a_single_digit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a currency mark counts as evidence of an amount. A figure drawn with
+    a decimal point already clears ``min_digits`` on its own digits, so admitting
+    ``.`` would only promote a digit beside a speck of filigree."""
+    install(monkeypatch, FakePaddle(page(("7.", 0.99))))
+    value, _ = paddle_ocr.read_number(orb())
+    assert value is None
+
+
 def test_a_low_confidence_reading_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

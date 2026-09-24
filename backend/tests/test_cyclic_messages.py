@@ -35,6 +35,7 @@ from app.config.runtime import settings
 from app.exceptions.base import ObsRequestError
 from app.schemas.cyclic_messages import CyclicEventSource, CyclicRunState
 from app.schemas.obs import ObsRecordStatus, ScreenshotRequest, ScreenshotResult
+from app.services import analyze_spin as analyze_spin_service
 from app.services import cyclic_messages as cyclic_service
 from app.services import obs as obs_service
 from app.utils import game_log
@@ -206,6 +207,10 @@ class FakeRecorder:
         # initialised, measured at 13s under load; 0 is the instant case.
         self.start_polls = 0
         self._pending_polls = 0
+        # What OBS says it has been recording for. The refusal to open a clip
+        # over a live recording reports it, because it is what tells a clip
+        # still draining from somebody else's recording left running.
+        self.duration_ms = 0
 
     async def start(self, output_dir: str | None = None) -> ObsRecordStatus:
         self.started.append(output_dir or "")
@@ -217,7 +222,9 @@ class FakeRecorder:
         if not self.active and self.started and self._pending_polls > 0:
             self._pending_polls -= 1
             self.active = self._pending_polls == 0
-        return ObsRecordStatus(active=self.active, paused=False)
+        return ObsRecordStatus(
+            active=self.active, paused=False, duration_ms=self.duration_ms
+        )
 
     async def stop(self) -> ObsRecordStatus:
         if not self.active:
@@ -1001,17 +1008,13 @@ async def test_a_clip_shorter_than_obs_start_up_is_still_stopped(
     assert recorder.active is False, "OBS was left recording"
 
 
-async def test_a_window_opening_while_obs_still_records_says_so(
-    game_log_file: Path,
-    recorder: FakeRecorder,
-    running: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """OBS still writing out a clip -- or recording something else -- cannot
-    start another, and says so only as "SetRecordDirectory (code 500)". The
-    window gets an error that names the cause, and no StartRecord at all."""
-    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_LINE_PAYS", False)
+async def _refused_clip(
+    game_log_file: Path, recorder: FakeRecorder, *, duration_ms: int
+) -> str:
+    """Open a window over an OBS that is already recording, and return what the
+    clip's failure says."""
     recorder.active = True
+    recorder.duration_ms = duration_ms
 
     append(game_log_file, GAME_PAYS)
     await wait_until(
@@ -1022,8 +1025,106 @@ async def test_a_window_opening_while_obs_still_records_says_so(
 
     (video,) = detail.videos
     assert video.file_name is None
-    assert video.error is not None and "OBS was still recording" in video.error
-    assert recorder.started == []
+    assert recorder.started == [], "StartRecord was sent over a live recording"
+    assert video.error is not None
+    return video.error
+
+
+async def test_a_window_opening_while_obs_still_records_says_so(
+    game_log_file: Path,
+    recorder: FakeRecorder,
+    running: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OBS still writing out a clip -- or recording something else -- cannot
+    start another, and says so only as "SetRecordDirectory (code 500)". The
+    window gets an error that names the cause, and no StartRecord at all."""
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_LINE_PAYS", False)
+
+    error = await _refused_clip(game_log_file, recorder, duration_ms=2_000)
+
+    assert "already recording" in error
+    assert "2s in" in error, error
+
+
+async def test_the_refusal_says_how_long_obs_has_been_recording(
+    game_log_file: Path,
+    recorder: FakeRecorder,
+    running: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drain lasts seconds. A recording somebody started from the dashboard's
+    OBS card and left running lasts as long as it has been up and blocks every
+    clip of every run until it is stopped -- and the reader cannot tell the two
+    apart from the error alone, which is why the elapsed time is on it. Without
+    this a half-hour recording read as an encoder falling behind."""
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_LINE_PAYS", False)
+
+    error = await _refused_clip(game_log_file, recorder, duration_ms=26 * 60_000)
+
+    assert "26m in" in error, error
+
+
+async def test_a_run_stops_a_recording_left_over_from_a_killed_backend(
+    game_log_file: Path,
+    active_game: Path,
+    capture_root: Path,
+    fake_obs: list[ScreenshotRequest],
+    recorder: FakeRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend terminated mid-run never reaches the lifespan's abort, so OBS
+    is left recording into the next session and refuses every clip of every
+    later run -- three runs in a row lost theirs before this. Starting a run is
+    the one moment it can be cleared without costing a window its first frames,
+    so it is cleared there, said out loud on the run, and the run records
+    normally afterwards."""
+    monkeypatch.setattr(settings, "CYCLIC_MESSAGES_SAMPLE_LINE_PAYS", False)
+    recorder.active = True
+    recorder.duration_ms = 13 * 60_000
+
+    await cyclic_service.start()
+    try:
+        assert recorder.active is False, "the stray recording was left running"
+        (error,) = cyclic_service.status().errors
+        assert "13m in" in error, error
+        assert "stopped" in error, error
+
+        # And the run is not poisoned by it: its own clip starts.
+        append(game_log_file, GAME_PAYS)
+        await wait_until(
+            lambda: cyclic_service.status().recording,
+            what="the run to record its own clip",
+        )
+    finally:
+        detail = await cyclic_service.stop()
+
+    (video,) = detail.videos
+    assert video.file_name is not None, video.error
+
+
+async def test_a_recording_a_spin_analysis_owns_is_left_alone(
+    active_game: Path,
+    capture_root: Path,
+    fake_obs: list[ScreenshotRequest],
+    recorder: FakeRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one recording that still has an owner. A spin analysis records for
+    its own run, so clearing it would break the feature this is trying to keep
+    working -- the answer is to say so and let the clips fail, which is what
+    they would do anyway."""
+    monkeypatch.setattr(analyze_spin_service, "owns_recording", lambda: True)
+    recorder.active = True
+    recorder.duration_ms = 30_000
+
+    await cyclic_service.start()
+    try:
+        assert recorder.active is True, "a spin analysis's recording was stopped"
+        (error,) = cyclic_service.status().errors
+        assert "spin analysis" in error, error
+    finally:
+        await cyclic_service.stop()
 
 
 # --- sequences and ordering -----------------------------------------------

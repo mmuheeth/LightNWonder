@@ -1283,6 +1283,18 @@ def _reading(result: ClassifyResult) -> SpinReelReading:
     )
 
 
+def reading(result: ClassifyResult) -> SpinReelReading:
+    """The classifier's answer as a reading, for a caller outside this module.
+
+    Public alongside :func:`read_scatters` because **what landed is not a fact
+    about a spin**: it is a fact about a grid of tiles, and Evaluate Screen asks
+    the same question of a screen nobody spun. Sharing these two is what keeps
+    that feature from growing its own copy of the reading types and drifting from
+    this one.
+    """
+    return _reading(result)
+
+
 def _scatter_codes(config: GameConfig) -> tuple[str, ...]:
     """The codes this game pays by counting across the grid, as the config declares
     them. Empty for a game that declares none, which is not a failure -- it means
@@ -1481,6 +1493,16 @@ async def _read_scatters(
         summary,
     )
     return scatters, summary
+
+
+async def read_scatters(
+    config: GameConfig, split_dir: Path, reading: SpinReelReading
+) -> tuple[list[SpinScatterReading], str]:
+    """Every scatter on a named grid, with the figure printed on it -- see
+    :func:`_read_scatters`. Public for the same reason as :func:`reading`: an orb
+    carries what it carries whether or not a spin put it there, and Evaluate
+    Screen reads it off a screen nobody spun."""
+    return await _read_scatters(config, split_dir, reading)
 
 
 async def _read_reels(run: _ActiveRun) -> None:
@@ -2181,6 +2203,18 @@ def clip_path(run_id: str, file_name: str) -> Path:
 def state(*, images: bool = False) -> SpinAnalysisState:
     """The run in progress, or the last one that finished. Never fails."""
     return _snapshot(_run, images=images)
+
+
+def owns_recording() -> bool:
+    """Whether the OBS recording output, if it is running, belongs to a spin.
+
+    OBS records one output at a time, so a feature about to record has to know
+    whether this one is already using it -- and the answer is only ever "yes,
+    leave it alone" or "not mine", never "stop it". A run started with
+    ``record=False`` owns nothing, and neither does a finished one.
+    """
+    run = _run
+    return run is not None and run.record and run.state is SpinRunState.RUNNING
 
 
 async def abort() -> None:

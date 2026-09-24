@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 __all__ = [
+    "BET_CHANGED",
     "CYCLIC_MESSAGE_RULES",
     "DEFAULT_RULES",
     "PAYTABLE_LOADED",
@@ -281,6 +282,18 @@ PAYTABLE_LOADED = re.compile(
     r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
     r" current paytableId\[(?P<paytable>[^\]]+)\]"
     r"(?: current supported denoms\[(?P<supported>[^\]]*)\])?"
+)
+
+
+# The game names the bet it just moved to here -- ``total_bet`` is the credit
+# amount math.xml's own "_88", "_176", ... orb value tables are keyed on, which
+# is what lets :mod:`app.services.paytable` show the orb table for the bet
+# actually in play rather than always the paytable's minimum. Shared with the
+# ``bet-changed`` rule below, the same relationship ``PAYTABLE_LOADED`` has with
+# ``paytable-changed``.
+BET_CHANGED = re.compile(
+    r"BetChangeMsg betData:\s*denom:\s*(?P<denom>[\d.]+)\s+"
+    r"units:\s*(?P<units>\d+).*?totalBetValue:\s*(?P<total_bet>[\d.]+)"
 )
 
 
@@ -566,10 +579,7 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
     # --- what the player set ----------------------------------------------
     EventRule(
         event="bet-changed",
-        pattern=re.compile(
-            r"BetChangeMsg betData:\s*denom:\s*(?P<denom>[\d.]+)\s+"
-            r"units:\s*(?P<units>\d+).*?totalBetValue:\s*(?P<total_bet>[\d.]+)"
-        ),
+        pattern=BET_CHANGED,
         summary="Bet changed to {total_bet} ({units} units at denom {denom})",
     ),
     EventRule(

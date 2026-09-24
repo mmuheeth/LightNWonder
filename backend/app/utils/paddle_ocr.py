@@ -70,7 +70,10 @@ class PaddleOptions:
     min_confidence: float = 0.5
 
     # A reading must be at least this many digits to be a prize. Same reasoning
-    # as `app.services.ocr.TILE_MIN_DIGITS`: a prize is never one digit.
+    # as `app.services.ocr.TILE_MIN_DIGITS`: a bare single digit is what a reader
+    # shown an orb with nothing on it answers with. It is required only of a
+    # reading carrying no currency mark -- see `_AMOUNT_MARKS`, which is what
+    # makes a one-digit `$5` a prize.
     min_digits: int = 2
 
     # Seconds one crop may take. Paddle runs in-process, so this bounds the
@@ -514,6 +517,25 @@ def read_number(
 # the punctuation Paddle picks out of the filigree.
 _STRIPPED = " \t\r\n$€£¥.,:;!|/\\-_'\"()[]{}*"
 
+# Marks that make a *one-digit* reading a figure. `min_digits` exists because a
+# reader shown an orb carrying no number answers with a scrap off the artwork,
+# and every such scrap measured was a bare single digit -- but the filigree does
+# not draw a currency sign, so a reading that has one is evidence of an amount
+# and not of noise. An orb drawn `$5` is a $5 prize, and refusing it for having
+# one digit drops a figure Paddle read at full confidence.
+#
+# Currency marks only, deliberately: a decimal point is *not* on this list. A
+# figure drawn with one already clears `min_digits` on its own digits (`5.00` is
+# three), so admitting `.` would buy nothing and would promote a lone digit
+# beside a speck of filigree to a prize.
+_AMOUNT_MARKS = "$€£¥"
+
+
+def _is_amount(text: str) -> bool:
+    """Whether ``text`` carries a currency mark, i.e. whether a single digit in it
+    is a prize rather than a scrap off the artwork."""
+    return any(mark in text for mark in _AMOUNT_MARKS)
+
 
 def read_prize(
     image: Image.Image, *, options: PaddleOptions = DEFAULT_OPTIONS
@@ -535,10 +557,11 @@ def read_prize(
     "digits are a figure, letters are a label", so an orb saying ``SUPER MEGA``
     reads as ``SUPER MEGA`` without this module being taught about it.
 
-    A digit reading must clear ``min_digits``; both must clear
-    ``min_confidence``. Numbers are looked for across every word before any word
-    is accepted as a label, so ``MINOR 669`` reads as the figure 669 rather than
-    stopping at the tier beside it.
+    A digit reading must clear ``min_digits`` *unless* it carries a currency mark
+    (see :data:`_AMOUNT_MARKS`), which is what lets a one-digit ``$5`` through;
+    both must clear ``min_confidence``. Numbers are looked for across every word
+    before any word is accepted as a label, so ``MINOR 669`` reads as the figure
+    669 rather than stopping at the tier beside it.
     """
     result = read_image(image, options=options)
     believable = [
@@ -548,9 +571,10 @@ def read_prize(
     # A figure first, wherever it sits: an orb printing both a tier and an amount
     # is paying the amount.
     for word in believable:
+        marked = _is_amount(word.text)
         for number in parse_numbers(word.text):
             digits = sum(character.isdigit() for character in str(number))
-            if digits >= options.min_digits:
+            if digits >= options.min_digits or marked:
                 return number, None, result
 
     # No figure, so whatever letters the orb carries are what it says.

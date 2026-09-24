@@ -254,6 +254,7 @@ from app.schemas.cyclic_messages import (
     CyclicStatus,
 )
 from app.schemas.obs import ObsRecordStatus, ScreenshotRequest
+from app.services import analyze_spin as analyze_spin_service
 from app.services import obs as obs_service
 from app.utils import game_log, log_search
 from app.utils.log_tail import LogFollower
@@ -1003,6 +1004,14 @@ async def _refuse_if_recording() -> None:
 
     A status OBS will not give is not evidence of anything, so it lets the
     start go ahead and fail -- or not -- on its own terms.
+
+    How long it has been recording is on the message because it is what tells
+    the two cases apart, and the reader cannot tell them apart without it. A
+    drain runs for seconds; a recording somebody else started and left running
+    -- the dashboard's own OBS card will do it, and nothing stops it -- runs for
+    as long as it has been up, and blocks *every* clip of *every* run until it
+    is stopped. Naming only the drain sent a reader looking at their encoder
+    for a recording that had been going for half an hour.
     """
     try:
         status = await obs_service.record_status()
@@ -1010,11 +1019,98 @@ async def _refuse_if_recording() -> None:
         return
     if status.active:
         raise ObsRequestError(
-            "OBS was still recording -- most likely still writing out the "
-            "previous clip, which it does after it has been told to stop when "
-            "its encoder is behind -- so this window has no clip. Its "
+            f"OBS was already recording, {_recording_for(status)} in, so this "
+            "window has no clip -- OBS records one output at a time. Under a "
+            "few seconds that is the previous clip still being written out, "
+            "which OBS goes on doing after it is told to stop when its encoder "
+            "is behind. Longer than that it is a recording started somewhere "
+            "else (the dashboard's OBS card, or OBS itself) that is still "
+            "running, and no clip will be saved until it is stopped. Its "
             "screenshots are unaffected."
         )
+
+
+def _recording_for(status: ObsRecordStatus) -> str:
+    """How long OBS says it has been recording, in words. Falls back to the raw
+    timecode, and then to nothing at all, rather than reporting a confident 0s
+    for a status that did not carry one."""
+    seconds = status.duration_ms / 1000
+    if seconds <= 0:
+        return status.timecode or "an unreported time"
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    return f"{seconds / 60:.0f}m"
+
+
+async def _clear_stray_recording() -> str | None:
+    """Stop a recording nobody is left to stop, before the run begins. Returns
+    what to say about it on the run, or ``None`` when there was nothing to do.
+
+    :func:`_refuse_if_recording` is where a recording in the way is *noticed*,
+    once per window and far too late to do anything about -- by then a window
+    is on screen and waiting out a drain would cost its first frames. This is
+    the one moment it can be cleared instead: no window is open, so there is
+    nothing to lose, and the run taking this lock is the only cyclic run there
+    is.
+
+    A backend killed mid-run is how one gets left behind. The lifespan's
+    :func:`abort` is what stops an open clip, and a process terminated rather
+    than shut down -- its window closed, say -- never reaches it. OBS then goes
+    on recording into the next session, and refuses *every* clip of *every*
+    later run, growing by the minute, until somebody notices and stops it by
+    hand.
+
+    The one recording that can still have an owner is a spin analysis, which
+    records for its own run. So that is asked, and never interrupted -- the
+    answer there is to say so and let the clips fail, which is what they would
+    do anyway.
+
+    Never raises: this is housekeeping before a run, and a run whose clips fail
+    still screenshots every message.
+    """
+    if not (
+        settings.CYCLIC_MESSAGES_RECORD_VIDEO
+        or settings.CYCLIC_MESSAGES_RECORD_IDLE_VIDEO
+    ):
+        return None
+    try:
+        status = await obs_service.record_status()
+    except AppException:
+        # A status OBS will not give is not evidence of anything -- same
+        # bargain as _refuse_if_recording.
+        return None
+    if not status.active:
+        return None
+
+    running_for = _recording_for(status)
+    if analyze_spin_service.owns_recording():
+        return (
+            f"OBS is recording for a spin analysis, {running_for} in, so this "
+            "run has nowhere to record until that spin finishes -- OBS records "
+            "one output at a time. It has been left alone. Its screenshots are "
+            "unaffected."
+        )
+
+    try:
+        await _stop_recording()
+    except AppException as exc:
+        logger.warning("Could not stop the recording found running: %s", exc.message)
+        return (
+            f"OBS was already recording, {running_for} in, and stopping it "
+            f"failed ({exc.message}), so this run may have no clips -- OBS "
+            "records one output at a time. Its screenshots are unaffected."
+        )
+    logger.warning(
+        "Stopped an OBS recording that was already running (%s in) before "
+        "starting a cyclic message run",
+        running_for,
+    )
+    return (
+        f"OBS was already recording when this run started, {running_for} in, "
+        "and no run of this backend owned it -- a backend killed mid-run "
+        "leaves one behind. It has been stopped so this run can record its own "
+        "clips, and its video is wherever OBS was writing it."
+    )
 
 
 async def _stop_recording() -> ObsRecordStatus:
@@ -2924,6 +3020,10 @@ async def start() -> CyclicStatus:
         with contextlib.suppress(AppException):
             await obs_service.select_current_game_window()
 
+        # Before the run exists, because this is the only moment a recording
+        # in the way can be cleared without costing a window its first frames.
+        stray = await _clear_stray_recording()
+
         started = datetime.now()
         run_id = started.strftime(_RUN_ID_FORMAT)
         output_dir = f"{settings.CYCLIC_MESSAGES_DIR_NAME}/{run_id}"
@@ -2945,6 +3045,11 @@ async def start() -> CyclicStatus:
             # already-running game would report cents until the player did.
             denomination=_read_denomination(log_path),
         )
+
+        # Said on the run rather than only in the log: whoever reads the run
+        # is who needs to know a recording was found running, and why.
+        if stray is not None:
+            _note(run, f"video: {stray}")
 
         # Deliberately not recording yet: a clip is a win presentation, and
         # this run has not seen one. See the module docstring.

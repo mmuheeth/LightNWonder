@@ -557,7 +557,13 @@ while the two groups' confidences **overlap outright** — a stray `1` scores 40
 against a true `150` at 17.8 and a true `100` at 19.1. So any threshold both
 rejects real prizes and admits noise, whereas digit count separates that sample
 perfectly. This was shipped as a confidence floor first and it silently dropped
-the `100` off a three-orb spin; don't reintroduce one. A prize is never one digit.
+the `100` off a three-orb spin; don't reintroduce one. A bare prize is never one
+digit — **the one exception is a currency mark**. The filigree does not draw a
+`$`, so a reading that carries one is evidence of an amount rather than of noise,
+and `utils/paddle_ocr._AMOUNT_MARKS` admits `$5` at a single digit while a bare
+`5` is still refused. Currency marks only: a figure drawn with a decimal point
+already clears the count on its own digits, so admitting `.` would buy nothing
+and would promote a digit sitting beside a speck of filigree.
 
 A rejected reading keeps its raw `text` and `ocr_confidence` on the payload rather
 than vanishing, because a dropped number should be visible as something read and
