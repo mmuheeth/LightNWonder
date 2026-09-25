@@ -96,6 +96,50 @@ def test_a_bar_that_is_not_quite_black_is_still_a_bar() -> None:
     assert content_box(frame).box == NARROW
 
 
+def test_a_stray_spark_in_the_bar_does_not_drag_the_box_out() -> None:
+    """A win-celebration particle effect can drift a few lit pixels well past the
+    real window edge; the box must still land on the window, not on the spark.
+
+    This is the bug a drifting reels ROI was traced to: `getbbox()` alone finds
+    the box of every lit pixel, spark included, so one frame's content box
+    landed 90px wider than the next frame of the identical window because a
+    single particle happened to be further out that time.
+    """
+    frame = canvas(NARROW)
+    for x, y in [(900, 50), (920, 200), (940, 400)]:
+        frame.putpixel((x, y), (200, 180, 40))
+
+    assert content_box(frame).box == NARROW
+
+
+def test_a_column_lit_for_its_whole_height_is_never_filtered() -> None:
+    """The density floor must not eat a real window edge -- only a spark spread
+    over almost none of its own column's height is meant to be rejected."""
+    frame = canvas(NARROW)
+    # One column of the real window, confirmed lit its entire height: at 100%
+    # density it must clear any reasonable min_density floor, including one
+    # far stricter than the default.
+    found = content_box(frame, min_density=0.9)
+
+    assert found.box == NARROW
+
+
+def test_a_drifting_decoration_far_taller_than_a_spark_still_does_not_count() -> None:
+    """The bug this was measured against: not a one-pixel spark but a coin or
+    cloud sprite tens of pixels tall, animating well outside the real window,
+    lighting a real chunk of its column and still nowhere near a window edge's
+    own density. A frame with sparks scattered across a wide vertical range (so
+    the naive `raw` box is nearly the whole frame, diluting a plain full-frame
+    density check) must still land on the window, not the decoration."""
+    frame = canvas(NARROW)
+    decoration = Image.new("RGB", (12, 40), (200, 180, 40))
+    frame.paste(decoration, (950, 300))
+    for x, y in [(1000, 20), (1010, 400), (1020, 700)]:
+        frame.putpixel((x, y), (200, 180, 40))
+
+    assert content_box(frame).box == NARROW
+
+
 # --- Refusing to guess ------------------------------------------------------
 
 

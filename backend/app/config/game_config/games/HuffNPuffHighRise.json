@@ -1,0 +1,50 @@
+{
+  "name": "HuffNPuffHighRise",
+  "process": "HuffNPuffHighRise.exe",
+  "log": "C:\\logs\\Game\\HuffNPuffHighRise\\Logs\\HuffNPuffHighRise_Client.log",
+  "game_config": "C:\\re\\games\\3093998_HuffNPuffHighRise\\games\\HuffNPuffHighRise\\GameConfig",
+  "wild_symbol": "WILD",
+  "wild_card_replacement": ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11"],
+  "roi": {
+    "cash_meter": [
+      0.075212,
+      0.79232,
+      0.779661,
+      0.819362
+    ],
+    "reels": [
+      0.066763,
+      0.601947,
+      0.91582,
+      0.765279
+    ]
+  },
+  "reel_bounds": {
+    "rows": 3,
+    "columns": 5
+  },
+  "meter": {
+    "band": [
+      0.04,
+      0.96
+    ],
+    "windows": {
+      "cash": [
+        0.05,
+        0.3
+      ],
+      "win": [
+        0.3,
+        0.65
+      ],
+      "bet": [
+        0.75,
+        0.9
+      ]
+    }
+  },
+  "button_targets": {
+    "take_win": [0.5602, 0.8627],
+    "gamble": [0.3408, 0.8627]
+  }
+}

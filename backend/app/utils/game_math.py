@@ -663,23 +663,55 @@ def _combo_sets(
     for group in _children(combo_sets, "ScatterComboSet"):
         name = _text(group, "Identifier") or "ScatterComboSet"
         combo_list = _child(group, "ScatterComboList")
-        combos = (
-            _children(combo_list, "CountScatterCombo") if combo_list is not None else []
-        )
-        for combo in combos:
-            scatter.append(
-                ScatterCombo(
-                    combo_set=name,
-                    combo_id=_int(combo, "ComboID"),
-                    group=_int(combo, "Group"),
-                    value=_float(combo, "Value"),
-                    symbols=_combo_symbols(combo, where=name),
-                    min_symbols=_int(combo, "MinNumSymbols"),
-                    max_symbols=_int(combo, "MaxNumSymbols"),
-                    base_multiplier=_text(combo, "BaseMultiplier"),
-                    bonus_code=_int(combo, "BonusCode"),
+        # FortuneOx-specific: every one of its <ScatterComboSet> blocks holds
+        # <CountScatterCombo> only -- a count-anywhere pay or bonus trigger, never
+        # a per-reel run. A 243-ways game's <ScatterComboSet> instead holds
+        # <AnywaysCombo>, structurally a PaylineCombo (a symbol run padded with
+        # ANY) that a vendor schema quirk nests under the scatter tag rather than
+        # a <PaylineComboSet>. Kept, not removed, since a game with no
+        # AnywaysCombo still needs its CountScatterCombo read this way.
+        # combos = (
+        #     _children(combo_list, "CountScatterCombo") if combo_list is not None else []
+        # )
+        # for combo in combos:
+        #     scatter.append(
+        #         ScatterCombo(
+        #             combo_set=name,
+        #             combo_id=_int(combo, "ComboID"),
+        #             group=_int(combo, "Group"),
+        #             value=_float(combo, "Value"),
+        #             symbols=_combo_symbols(combo, where=name),
+        #             min_symbols=_int(combo, "MinNumSymbols"),
+        #             max_symbols=_int(combo, "MaxNumSymbols"),
+        #             base_multiplier=_text(combo, "BaseMultiplier"),
+        #             bonus_code=_int(combo, "BonusCode"),
+        #         )
+        #     )
+        if combo_list is not None:
+            for combo in _children(combo_list, "CountScatterCombo"):
+                scatter.append(
+                    ScatterCombo(
+                        combo_set=name,
+                        combo_id=_int(combo, "ComboID"),
+                        group=_int(combo, "Group"),
+                        value=_float(combo, "Value"),
+                        symbols=_combo_symbols(combo, where=name),
+                        min_symbols=_int(combo, "MinNumSymbols"),
+                        max_symbols=_int(combo, "MaxNumSymbols"),
+                        base_multiplier=_text(combo, "BaseMultiplier"),
+                        bonus_code=_int(combo, "BonusCode"),
+                    )
                 )
-            )
+            for combo in _children(combo_list, "AnywaysCombo"):
+                payline.append(
+                    PaylineCombo(
+                        combo_set=name,
+                        combo_id=_int(combo, "ComboID"),
+                        group=_int(combo, "Group"),
+                        value=_float(combo, "Value"),
+                        symbols=_combo_symbols(combo, where=name),
+                    )
+                )
 
     return tuple(payline), tuple(scatter)
 

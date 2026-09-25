@@ -355,7 +355,13 @@ def _by_symbol(symbols: Mapping[str, str | None]) -> _ComparerFor:
 
 def _wilds(config: GameConfig) -> payline_config.WildRule:
     """The active game's substitution rule."""
-    return payline_config.WildRule.of(config.wild_card_replacement)
+    # FortuneOx-specific: its wild is always coded "WC", so this call never
+    # needed to say so. Kept, not removed, since that default is still what an
+    # older config with no `wild_symbol` block relies on.
+    # return payline_config.WildRule.of(config.wild_card_replacement)
+    return payline_config.WildRule.of(
+        config.wild_card_replacement, code=config.wild_symbol
+    )
 
 
 # --- drawing and writing --------------------------------------------------
@@ -732,6 +738,98 @@ async def check_symbols(
         split=split,
         comparer_for=_by_symbol(symbols),
         images=images or ImageOptions(),
+    )
+
+
+# --- ways-pays --------------------------------------------------------------
+#
+# A 243-ways game (Huff N Puff's own math.xml: PaylineSetID 243, every real win
+# defined by a per-symbol AnywaysCombo, no declared line anywhere) has nothing
+# for `check_symbols` to read a position from -- there is no line. This reads
+# the same tile codes a different way: every payable symbol against the whole
+# grid, a reel paying if any of its rows carries it. See `utils.paylines.read_ways`
+# for the run itself; this is only the plumbing from a split's tiles to it.
+
+
+@dataclasses.dataclass(frozen=True)
+class WaysAward:
+    """One payable symbol's leading run across the grid, unpriced -- pricing needs
+    the paytable, which this module does not have."""
+
+    symbol: str
+    """The code this run was read for."""
+
+    pays: int
+    """Reels from the left that carried it. 0 or 1 never pays; the caller's
+    paytable says the real floor, same as a line's."""
+
+    paying: bool
+    """Whether the run reached the shortest length anything can pay at (two
+    reels) -- evidence, not an award. Mirrors ``PaylineLine.paying``."""
+
+    leading_wilds: int
+    """How many of the run's leading reels paid only by the wild."""
+
+    reel_symbols: tuple[tuple[str | None, ...], ...]
+    """Every reel's codes as read, unmodified, for a caller that wants to show
+    which tile(s) actually carried the win."""
+
+
+@dataclasses.dataclass(frozen=True)
+class WaysCheckResult:
+    """Every payable symbol found on one grid, ways-read rather than by line."""
+
+    wild_symbol: str | None
+    wild_replaces: tuple[str, ...]
+    awards: tuple[WaysAward, ...]
+    """One entry per code in ``payable``, in the order given -- not only the
+    ones that paid, so a caller can tell "checked and found nothing" from
+    "never checked"."""
+
+
+def _reel_columns(
+    symbols: Mapping[str, str | None], *, rows: int, columns: int
+) -> list[list[str | None]]:
+    """The codes read off each reel, column by column -- what `read_ways` walks."""
+    return [
+        [symbols.get(reel_grid.position_name(row, column)) for row in range(1, rows + 1)]
+        for column in range(1, columns + 1)
+    ]
+
+
+def check_ways(
+    symbols: Mapping[str, str | None],
+    payable: Sequence[str],
+    *,
+    rows: int,
+    columns: int,
+    wild_symbol: str | None,
+    wild_replaces: Sequence[str],
+) -> WaysCheckResult:
+    """Read every ``payable`` code's leading run across the grid, any row of a
+    reel counting. Synchronous and pure -- there is no split to read or picture
+    to draw, only the tile codes the caller already has."""
+    wilds = (
+        payline_config.WildRule.of(wild_replaces, code=wild_symbol)
+        if wild_symbol
+        else payline_config.NO_WILDS
+    )
+    reels = _reel_columns(symbols, rows=rows, columns=columns)
+    awards = tuple(
+        WaysAward(
+            symbol=run.symbol,
+            pays=run.covered,
+            paying=run.covered >= _MIN_PAYING,
+            leading_wilds=run.leading_wilds,
+            reel_symbols=run.reel_symbols,
+        )
+        for code in payable
+        for run in (payline_config.read_ways(code, reels, wilds),)
+    )
+    return WaysCheckResult(
+        wild_symbol=wilds.code if wilds.active else None,
+        wild_replaces=tuple(sorted(wilds.replaces)),
+        awards=awards,
     )
 
 

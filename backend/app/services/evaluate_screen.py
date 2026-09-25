@@ -91,23 +91,43 @@ async def _capture() -> tuple[Path, bool]:
     disagrees with is only arguable if the picture behind it still exists.
     """
     await obs_service.connect()
-    result = await obs_service.take_screenshot(
-        ScreenshotRequest(
-            image_format="png",
-            width=settings.ANALYZE_SPIN_SCREENSHOT_WIDTH,
-            file_name=f"{_FRAME_PREFIX}-{int(time.time() * 1000)}",
-            output_dir=settings.OBS_SCREENSHOT_SUBDIR,
+    # Worth trying, not worth failing for -- the scene may already be right.
+    # Mirrors Analyze Spin's own `_prepare`: re-pointing a window capture makes
+    # OBS render nothing for a moment, so a screenshot taken right after comes
+    # back black without this feature ever calling it wrong.
+    try:
+        await obs_service.select_current_game_window()
+        await asyncio.sleep(settings.ANALYZE_SPIN_SOURCE_SETTLE_SECONDS)
+    except AppException:
+        pass
+
+    attempts = 0
+    blank = True
+    path: Path | None = None
+    while True:
+        attempts += 1
+        result = await obs_service.take_screenshot(
+            ScreenshotRequest(
+                image_format="png",
+                width=settings.ANALYZE_SPIN_SCREENSHOT_WIDTH,
+                file_name=f"{_FRAME_PREFIX}-{int(time.time() * 1000)}",
+                output_dir=settings.OBS_SCREENSHOT_SUBDIR,
+            )
         )
-    )
-    if result.file_path is None:
-        raise ScreenEvaluationFailedError(
-            "OBS returned the screenshot but wrote no file, so there is nothing to read"
-        )
-    path = Path(result.file_path)
-    # Read back rather than trusted, for the reason Analyze Spin does the same:
-    # OBS reports a successful write of a frame it rendered nothing into, so the
-    # only way to know the capture happened is to look at it.
-    blank = await asyncio.to_thread(roi_service.is_blank, path)
+        if result.file_path is None:
+            raise ScreenEvaluationFailedError(
+                "OBS returned the screenshot but wrote no file, so there is nothing to read"
+            )
+        path = Path(result.file_path)
+        # Read back rather than trusted, for the reason Analyze Spin does the
+        # same: OBS reports a successful write of a frame it rendered nothing
+        # into, so the only way to know the capture happened is to look at it.
+        blank = await asyncio.to_thread(roi_service.is_blank, path)
+        if not blank or attempts > settings.ANALYZE_SPIN_BLANK_RETRIES:
+            break
+        logger.warning("Evaluate Screen captured an empty frame; retrying")
+        await asyncio.sleep(settings.ANALYZE_SPIN_BLANK_RETRY_SECONDS)
+
     return path, blank
 
 

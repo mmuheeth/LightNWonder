@@ -120,14 +120,31 @@ def _symbol_codes(raw: Any, *, where: str) -> tuple[str, ...]:
     return tuple(codes)
 
 
-def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
+def _wild_symbol(raw: Any, *, path: Path) -> str:
+    """Read the optional ``wild_symbol`` block: the wild's own code, defaulting to
+    :data:`app.utils.paylines.WILD_SYMBOL` for a config written before this
+    existed."""
+    if raw is None:
+        return payline_config.WILD_SYMBOL
+    if not isinstance(raw, str) or not raw.strip():
+        raise GameConfigError(f"'wild_symbol' in {path} must be a non-empty string")
+    return raw.strip().upper()
+
+
+def _wild_card_replacement(
+    raw: Any, *, path: Path, wild_symbol: str
+) -> tuple[str, ...]:
     """Read the optional ``wild_card_replacement`` block: the symbol codes the wild
     stands in for."""
     where = f"'wild_card_replacement' in {path}"
     codes = _symbol_codes(raw, where=where)
-    if payline_config.WILD_SYMBOL in codes:
+    # FortuneOx-specific: its wild is always "WC", so checking against that
+    # constant was correct for every config until a second wild code existed.
+    # Kept, not removed, since it is what `wild_symbol` defaults to.
+    # if payline_config.WILD_SYMBOL in codes:
+    if wild_symbol in codes:
         raise GameConfigError(
-            f"{where} lists {payline_config.WILD_SYMBOL!r}, which is the wild "
+            f"{where} lists {wild_symbol!r}, which is the wild "
             "itself -- the block is what the wild stands in for, not what stands "
             "in for it"
         )
@@ -198,8 +215,9 @@ def load_game_config(path: Path) -> GameConfig:
     if obs_window_source is not None and not isinstance(obs_window_source, str):
         raise GameConfigError(f"'obs.window_source' in {path} must be a string")
 
+    wild_symbol = _wild_symbol(document.get("wild_symbol"), path=path)
     wild_card_replacement = _wild_card_replacement(
-        document.get("wild_card_replacement"), path=path
+        document.get("wild_card_replacement"), path=path, wild_symbol=wild_symbol
     )
     scatter_symbols = _scatter_symbols(document.get("scatter_symbols"), path=path)
     # The two blocks are complements: a scatter is exactly what the wild must not
@@ -226,6 +244,7 @@ def load_game_config(path: Path) -> GameConfig:
             document.get("win_geometry"), where=f"'win_geometry' in {path}"
         ),
         symbols=freeze_mapping(_symbols(document.get("symbols"), path=path)),
+        wild_symbol=wild_symbol,
         wild_card_replacement=wild_card_replacement,
         scatter_symbols=scatter_symbols,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),

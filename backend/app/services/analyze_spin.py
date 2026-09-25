@@ -1750,6 +1750,96 @@ def _award(
     return awards
 
 
+def _award_ways(
+    view: PaytableView,
+    check: paylines_service.WaysCheckResult,
+    bet_per_unit: int | None,
+) -> list[SpinLineAward]:
+    """Price every payable symbol's ways run -- the 243-ways equivalent of
+    :func:`_award`. No declared line exists to report `positions`/`elements`
+    against, so both are empty; `line` carries the symbol code itself rather
+    than a line number, since that is what a ways game's "line" actually is.
+    """
+    labels = {symbol.code: symbol.name for symbol in view.math.symbols}
+    wild = check.wild_symbol
+
+    def named(code: str) -> str:
+        return labels.get(code) or code
+
+    awards: list[SpinLineAward] = []
+    for run in check.awards:
+        symbol = run.symbol
+        note: str | None = None
+        combo: PaylineComboInfo | None = None
+        combo_value: float | None = None
+        shortest: int | None = None
+        combo_pays: int | None = None
+
+        if run.pays >= _MIN_RUN:
+            shortest = _min_pay_length(view, symbol)
+            combo, combo_value = _priced(view, symbol, run.pays)
+            combo_pays = run.pays if combo_value is not None else None
+
+            # The same two-combo choice a wild-led line makes: leading wilds
+            # price as their own run too, and the game pays whichever is more.
+            if wild is not None and symbol != wild and run.leading_wilds >= _MIN_RUN:
+                other, value = _priced(view, wild, run.leading_wilds)
+                if value is not None and (combo_value is None or value > combo_value):
+                    note = (
+                        f"{run.leading_wilds} x {named(wild)} pays {value:g} a "
+                        f"bet unit, more than {run.pays} x {named(symbol)}"
+                        + ("" if combo_value is None else f" at {combo_value:g}")
+                    )
+                    symbol, combo, combo_value = wild, other, value
+                    combo_pays = run.leading_wilds
+                    shortest = _min_pay_length(view, wild)
+
+            if combo_value is None:
+                name = named(symbol)
+                note = (
+                    f"{name} pays from {shortest} on, so this run of {run.pays} "
+                    "awards nothing"
+                    if shortest is not None
+                    else f"{name} has no line pay at any length, so this run "
+                    "awards nothing"
+                )
+
+        awarded = combo_value is not None
+        credits = (
+            None
+            if combo_value is None or bet_per_unit is None
+            else combo_value * bet_per_unit
+        )
+
+        awards.append(
+            SpinLineAward(
+                line=run.symbol,
+                label=named(run.symbol),
+                positions=[],
+                elements=[],
+                pays=run.pays,
+                paying=run.paying,
+                awarded=awarded,
+                steps=[],
+                color="",
+                break_position=None,
+                symbols=[],
+                symbol=symbol if run.pays >= _MIN_RUN else None,
+                symbol_name=labels.get(symbol) if run.pays >= _MIN_RUN else None,
+                leading_wilds=run.leading_wilds,
+                combo_id=combo.combo_id if combo is not None else None,
+                combo_symbols=list(combo.symbols) if combo is not None else [],
+                combo_pays=combo_pays,
+                combo_value=combo_value,
+                credits=credits,
+                min_pay_length=shortest,
+                note=note,
+                image_data=None,
+            )
+        )
+    return awards
+
+
 def _summarise_awards(awards: list[SpinLineAward]) -> str:
     """What the spin is owed, in one sentence."""
     paid = [award for award in awards if award.awarded]
@@ -1890,6 +1980,57 @@ def _expected(
     )
 
 
+async def _check_ways(
+    run: _ActiveRun,
+    view: PaytableView,
+    frame: SpinFrame,
+    reels: SpinReelReading,
+) -> SpinPaylineValidation:
+    """A 243-ways game's equivalent of :func:`_check_paylines`'s line check: every
+    payable symbol read against the whole grid rather than a declared line.
+    `line_count`/`elements`/`positions`/pictures stay empty throughout -- there
+    is no line to report any of them for.
+    """
+    geometry = view.win_geometry
+    _, config = _active_config()
+    payable = sorted(
+        {code for combo in view.math.payline_combos for code in combo.symbols}
+        - {ANY_SYMBOL}
+    )
+    check = paylines_service.check_ways(
+        run.symbols,
+        payable,
+        rows=reels.rows,
+        columns=reels.columns,
+        wild_symbol=config.wild_symbol,
+        wild_replaces=config.wild_card_replacement,
+    )
+    awards = _award_ways(view, check, run.bet_per_unit)
+
+    return SpinPaylineValidation(
+        frame=frame.file_name,
+        split=reels.split,
+        paytable_id=view.paytable_id,
+        paytable_origin=view.source.origin,
+        payline_set_id=geometry.payline_set_id,
+        resolved_from=geometry.resolved_from,
+        line_count=None,
+        min_confidence=reels.min_confidence,
+        wild_symbol=check.wild_symbol,
+        pay_lengths=list(view.math.pay_lengths),
+        summary=_summarise_awards(awards),
+        runs_found=sum(1 for award in awards if award.paying),
+        awarded_lines=sum(1 for award in awards if award.awarded),
+        unnamed_positions=[tile.name for tile in reels.tiles if not tile.known],
+        lines=awards,
+        stats=None,
+        expected=_expected(run, view, awards),
+        output_dir=None,
+        output_file=None,
+        overlay_image=None,
+    )
+
+
 async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValidation:
     """Check the *running* game's own lines against the symbols that were read."""
     view = run.paytable
@@ -1930,6 +2071,18 @@ async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValid
             run.reels_error
             or "The reels were never read, so there are no symbols to line up"
         )
+    # A resolved id that matches none of the file's own sets is not a broken
+    # winGeometry.xml -- the file parsed fine and lists real sets, just not
+    # this one. That is the signature of a 243-ways game: the id is the ways
+    # count (see DefaultConfiguration's own PaylineSetID), not a line-set key,
+    # so it was never going to resolve. A game with real per-symbol pay data
+    # (an AnywaysCombo, parsed as a PaylineCombo padded with ANY -- see
+    # utils/game_math.py) but no matching set is read as ways rather than
+    # reported broken; a genuine parse failure (`sets` empty) still falls
+    # through to the line-shaped errors below unchanged.
+    ways_shaped = geometry.sets and not any(s.is_applicable for s in geometry.sets)
+    if ways_shaped and any(ANY_SYMBOL in c.symbols for c in view.math.payline_combos):
+        return await _check_ways(run, view, frame, reels)
     if geometry.error is not None:
         return unchecked(geometry.error)
     if not geometry.paylines:

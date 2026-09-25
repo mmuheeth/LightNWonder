@@ -20,9 +20,11 @@ __all__ = [
     "PaylineSet",
     "Position",
     "SymbolRun",
+    "WaysRun",
     "WildRule",
     "read_run",
     "read_set",
+    "read_ways",
     "set_names",
 ]
 
@@ -162,6 +164,70 @@ def read_run(codes: Sequence[str | None], wilds: WildRule = NO_WILDS) -> SymbolR
         symbol=paying_as(),
         leading_wilds=wild_run,
         line_symbols=tuple(line_symbols),
+    )
+
+
+@dataclass(frozen=True)
+class WaysRun:
+    """One symbol's leading run across reels, read left to right against every
+    row of each reel rather than one fixed position -- a 243-ways game's
+    ``AnywaysCombo`` pays this way, not by a declared line."""
+
+    symbol: str
+    """The code this run is for. Unlike :class:`SymbolRun`, this is asked for
+    rather than discovered: a ways game prices every payable symbol against the
+    same grid, so the caller names which one before reading it."""
+
+    covered: int
+    """Reels from the left that carried ``symbol`` (directly or by a wild
+    standing in for it) in at least one row. 0 when the first reel had none."""
+
+    leading_wilds: int
+    """How many of the run's leading reels paid only because every row of that
+    reel was the wild -- see :attr:`SymbolRun.leading_wilds` for why this is
+    reported apart rather than folded into ``covered``."""
+
+    reel_symbols: tuple[tuple[str | None, ...], ...]
+    """Every reel's codes as given, unmodified -- what the run was read from,
+    kept so a caller can show which row(s) of a reel actually carried it."""
+
+
+def read_ways(
+    symbol: str,
+    reels: Sequence[Sequence[str | None]],
+    wilds: WildRule = NO_WILDS,
+) -> WaysRun:
+    """How many leading reels pay ``symbol``, matching any row of each reel.
+
+    The ways equivalent of :func:`read_run`: where a line reads one code per
+    reel because a declared position already picked the row, a reel here is a
+    *column* of codes -- every row the grid split named -- and the run
+    continues past a reel that carries ``symbol`` (or the wild) in any of them.
+    A reel with no matching row breaks the run immediately, the same as a
+    non-matching single tile does on a line.
+    """
+    symbol = symbol.strip().upper()
+    reel_symbols = tuple(tuple(reel) for reel in reels)
+    if not reel_symbols:
+        return WaysRun(symbol=symbol, covered=0, leading_wilds=0, reel_symbols=())
+
+    covered = 0
+    wild_run = 0
+    for reel in reel_symbols:
+        if any(code == symbol for code in reel):
+            covered += 1
+            continue
+        if wilds.stands_in_for(symbol) and any(wilds.is_wild(code) for code in reel):
+            covered += 1
+            wild_run += 1
+            continue
+        break
+
+    return WaysRun(
+        symbol=symbol,
+        covered=covered,
+        leading_wilds=wild_run,
+        reel_symbols=reel_symbols,
     )
 
 

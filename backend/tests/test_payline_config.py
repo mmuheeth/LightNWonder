@@ -310,3 +310,124 @@ def test_the_wild_does_not_stand_in_for_itself() -> None:
     """`WC WC` is a pair of wilds by equality, never by substitution."""
     assert WILDS.stands_in_for("WC") is False
     assert WILDS.stands_in_for(None) is False
+
+
+# --- ways-pays (`read_ways`) ------------------------------------------------
+#
+# A 243-ways game has no declared line: every payable symbol is checked against
+# the whole grid, and a reel pays if *any* of its rows carries the symbol -- not
+# just the one row a fixed position would have picked. Huff N Puff's own wild
+# stands in for its eleven pay symbols (S01-S11) the same way FortuneOx's does
+# for its nine, just under a different code.
+
+WAYS_WILDS = paylines.WildRule.of(
+    ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10", "S11"],
+    code="WILD",
+)
+
+
+def ways(symbol: str, *reels: tuple, wilds: paylines.WildRule = WAYS_WILDS) -> paylines.WaysRun:
+    """One symbol, read across reels given row-major as ``(r1, r2, r3)`` tuples."""
+    return paylines.read_ways(symbol, list(reels), wilds)
+
+
+def test_a_symbol_in_any_row_of_a_reel_counts() -> None:
+    """The point of a ways read: the middle row on reel 1 and the bottom row on
+    reel 2 still join, because a fixed line would have missed one of them."""
+    read = ways(
+        "S01",
+        ("S02", "S01", "S03"),
+        ("S04", "S05", "S01"),
+        ("S01", "S01", "S01"),
+    )
+
+    assert read.covered == 3
+
+
+def test_a_reel_with_no_matching_row_breaks_the_run() -> None:
+    read = ways(
+        "S01",
+        ("S01", "S01", "S01"),
+        ("S02", "S03", "S04"),
+        ("S01", "S01", "S01"),
+    )
+
+    assert read.covered == 1
+
+
+def test_the_first_reel_with_no_match_covers_nothing() -> None:
+    read = ways("S01", ("S02", "S03", "S04"), ("S01", "S01", "S01"))
+
+    assert read.covered == 0
+    assert read.leading_wilds == 0
+
+
+def test_a_wild_in_any_row_extends_the_run() -> None:
+    """The wild stands in for the symbol being asked about, the same substitution
+    a line reads by -- just checked against a whole reel rather than one tile."""
+    read = ways(
+        "S01",
+        ("S01", "S01", "S01"),
+        ("WILD", "S09", "S02"),
+        ("S01", "S01", "S01"),
+    )
+
+    assert read.covered == 3
+    assert read.leading_wilds == 1
+
+
+def test_a_wild_does_not_stand_in_for_a_symbol_it_is_not_declared_for() -> None:
+    """Mirrors the line rule: a closed substitution list means a wild beside a
+    scatter is not a scatter, and beside an undeclared symbol is not that either."""
+    no_wilds_for_scat = paylines.WildRule.of(["S01"], code="WILD")
+    read = paylines.read_ways(
+        "SCAT_D",
+        [("SCAT_D", "SCAT_D", "SCAT_D"), ("WILD", "WILD", "WILD")],
+        no_wilds_for_scat,
+    )
+
+    assert read.covered == 1
+    assert read.leading_wilds == 0
+
+
+def test_an_all_wild_reel_column_still_only_extends_by_one_reel() -> None:
+    """Every row of the second reel is the wild, which is one reel covered, not
+    three -- a reel pays once regardless of how many of its rows agree."""
+    read = ways(
+        "S01",
+        ("S01", "S01", "S01"),
+        ("WILD", "WILD", "WILD"),
+        ("S02", "S02", "S02"),
+    )
+
+    assert read.covered == 2
+    assert read.leading_wilds == 1
+
+
+def test_a_game_declaring_no_substitution_reads_ways_by_equality() -> None:
+    read = paylines.read_ways(
+        "S01", [("S01", "S01", "S01"), ("S01", "S02", "S03")], paylines.NO_WILDS
+    )
+
+    assert read.covered == 2
+
+
+def test_no_reels_covers_nothing() -> None:
+    read = paylines.read_ways("S01", [], WAYS_WILDS)
+
+    assert read.covered == 0
+    assert read.reel_symbols == ()
+
+
+def test_the_symbol_asked_for_is_upper_cased_and_stripped() -> None:
+    read = ways(" s01 ", ("S01", "S02", "S03"))
+
+    assert read.symbol == "S01"
+    assert read.covered == 1
+
+
+def test_reel_symbols_are_reported_back_unmodified() -> None:
+    read = ways("S01", ("S01", None, "S03"), ("S02", "S02", "S02"))
+
+    assert read.reel_symbols == (("S01", None, "S03"), ("S02", "S02", "S02"))
+    assert read.covered == 1

@@ -272,6 +272,7 @@ Thumbs.db
 # required: git cannot re-include a file whose parent directory is excluded.
 backend/obs-captured-files/*
 backend/dataset/*
+backend/HF Dataset/
 !backend/obs-captured-files/.gitkeep
 
 # Local-only image data: the game's extracted symbol artwork, the hand-sorted

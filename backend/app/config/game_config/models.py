@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any
 
 from app.utils.game_log import EventRule
+from app.utils.paylines import WILD_SYMBOL
 
 __all__ = ["GameConfig", "GameConfigError", "freeze_mapping"]
 
@@ -57,9 +58,15 @@ class GameConfig:
     declared. A code with no entry keeps whatever the maths implies about it
     (``Wild``/``Scatter``) or stays a bare code."""
 
+    wild_symbol: str
+    """The wild's own symbol code, defaulting to :data:`app.utils.paylines.WILD_SYMBOL`
+    (``"WC"``). Declared per game because the classifier naming a game's tiles is
+    free to call its wild whatever the artwork's class folder is named -- Fortune
+    Ox's is ``WC``, but nothing requires a second game's to match."""
+
     wild_card_replacement: Sequence[str]
-    """Symbol codes the wild (:data:`app.utils.paylines.WILD_SYMBOL`) stands in
-    for when a payline is read, upper-cased and in the order declared.
+    """Symbol codes :attr:`wild_symbol` stands in for when a payline is read,
+    upper-cased and in the order declared.
 
     A closed list, not "anything": the codes left out of it are exactly the ones
     a wild must *not* be read as -- the scatters and feature symbols this family
