@@ -7,6 +7,7 @@ from app.api.endpoints import (
     analyze_spin,
     evaluate_screen,
     event_capture,
+    gaf,
     game_input,
     games,
     grid,
@@ -28,6 +29,7 @@ api_router.include_router(ideck.router, prefix="/ideck", tags=["ideck"])
 api_router.include_router(
     event_capture.router, prefix="/event-capture", tags=["event-capture"]
 )
+api_router.include_router(gaf.router, prefix="/gaf", tags=["gaf"])
 api_router.include_router(game_input.router, prefix="/game-input", tags=["game-input"])
 api_router.include_router(ocr.router, prefix="/ocr", tags=["ocr"])
 api_router.include_router(roi.router, prefix="/roi", tags=["roi"])

@@ -25,12 +25,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
 
 from app.config.runtime import settings
 from app.schemas.analyze_spin import (
+    SpinControl,
     SpinMeterReading,
     SpinMeterValidation,
     SpinOutcome,
@@ -739,6 +741,9 @@ def run_for(
         log_path=Path("C:/game/game.log"),
         rules=(),
         started_at=started,
+        # Pricing is downstream of both presses, so which channel drove them
+        # cannot reach it. The i-deck is simply the default.
+        control=SpinControl.IDECK,
         architecture="resnet34",
         bet_per_unit=bet_per_unit,
         record=False,
@@ -1244,3 +1249,216 @@ async def test_an_unknown_network_is_refused_before_the_spin(
 
 
 # --- what a bet unit cost -------------------------------------------------
+
+
+# --- which channel drove the spin -----------------------------------------
+#
+# The EGM variant of this page is the same thirteen steps with two of them
+# driven differently: the game is spun and the win collected by calling the
+# game's own methods over GAF, rather than by a panel key and a posted click.
+# So what these cover is exactly the seam -- that the channel is settled on the
+# request, that it reaches the two presses, and that it reaches nothing else.
+
+
+def driven_by(control: SpinControl) -> spin_service._ActiveRun:
+    """A run carrying nothing but the channel, which is all a press reads."""
+    return spin_service._ActiveRun(
+        run_id="2026-09-24_09-00-00",
+        game="FortuneOx",
+        label="Fortune Ox",
+        directory=Path("C:/captures/analyze-spin/2026-09-24_09-00-00"),
+        recording_dir="analyze-spin/2026-09-24_09-00-00",
+        log_path=Path("C:/game/game.log"),
+        rules=(),
+        started_at=datetime(2026, 9, 24, 9, 0, 0),
+        control=control,
+        architecture="resnet34",
+        record=False,
+        steps={},
+    )
+
+
+def test_a_request_naming_no_channel_gets_the_configured_one() -> None:
+    """The i-deck by default, so the page that existed before this setting did
+    behaves as it always has."""
+    assert settings.ANALYZE_SPIN_CONTROL == "ideck"
+    assert spin_service.resolve_control(None) is SpinControl.IDECK
+
+
+def test_the_control_setting_only_supplies_a_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same relationship `record` and the classifier have to their settings: the
+    request decides, and the setting answers only when it does not."""
+    monkeypatch.setattr(settings, "ANALYZE_SPIN_CONTROL", "gaf")
+
+    assert spin_service.resolve_control(None) is SpinControl.GAF
+    assert spin_service.resolve_control("ideck") is SpinControl.IDECK
+
+
+def test_either_channel_can_be_asked_for_by_name() -> None:
+    """Both drive the same cabinet, and running one spin through each is the
+    reason this is a per-run choice rather than a setting."""
+    assert spin_service.resolve_control(" GAF ") is SpinControl.GAF
+    assert spin_service.resolve_control("ideck") is SpinControl.IDECK
+
+
+async def test_an_unknown_channel_is_refused_before_the_spin(
+    client: AsyncClient,
+) -> None:
+    """A 400 on the request, for the reason an unknown network is one: a typo
+    should not be found out by driving a real spin and then failing to press."""
+    response = await client.post(f"{API}/start", params={"control": "keyboard"})
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert_failure(payload, code="BAD_REQUEST")
+    # The message names both channels, so the typo is fixable from the error.
+    assert "ideck" in payload["message"]
+    assert "gaf" in payload["message"]
+    state = assert_success((await client.get(f"{API}/status")).json())
+    assert state["active"] is False
+
+
+async def test_a_gaf_run_spins_by_calling_the_game(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The press is a call to the game, and the panel is not touched at all."""
+    calls: dict[str, object] = {}
+
+    async def spin(**kwargs: object) -> object:
+        calls["gaf"] = kwargs
+        return SimpleNamespace(elapsed_ms=214)
+
+    async def press(button: str) -> object:  # pragma: no cover - must not run
+        calls["ideck"] = button
+        return SimpleNamespace(elapsed_ms=1)
+
+    monkeypatch.setattr(spin_service.gaf_service, "spin", spin)
+    monkeypatch.setattr(spin_service.ideck_service, "press", press)
+
+    pressed, cost = await spin_service._press_spin(driven_by(SpinControl.GAF))
+
+    assert "ideck" not in calls
+    assert "GAF" in pressed
+    assert "214ms" in cost
+
+
+async def test_a_gaf_spin_does_not_wait_for_its_own_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``settle=False``, and that is not an optimisation.
+
+    GAF's own settle would hold this coroutine inside one XML-RPC call for the
+    length of the spin, where every other wait here is sliced so a cancel lands
+    within 100ms -- and the game's log, not GAF, is what the next three steps
+    read the spin's progress from either way. ``force`` stays off for the
+    opposite reason: pressing into a spin that has not finished produces a
+    result belonging to the previous spin.
+    """
+    seen: dict[str, object] = {}
+
+    async def spin(**kwargs: object) -> object:
+        seen.update(kwargs)
+        return SimpleNamespace(elapsed_ms=200)
+
+    monkeypatch.setattr(spin_service.gaf_service, "spin", spin)
+
+    await spin_service._press_spin(driven_by(SpinControl.GAF))
+
+    assert seen["settle"] is False
+    assert seen.get("force", False) is False
+
+
+async def test_an_ideck_run_still_presses_the_panel_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The channel that was here first, unchanged: the configured key, and no
+    call into GAF."""
+    calls: dict[str, object] = {}
+
+    async def press(button: str) -> object:
+        calls["ideck"] = button
+        return SimpleNamespace(elapsed_ms=37)
+
+    async def spin(**kwargs: object) -> object:  # pragma: no cover - must not run
+        calls["gaf"] = kwargs
+        return SimpleNamespace(elapsed_ms=1)
+
+    monkeypatch.setattr(spin_service.ideck_service, "press", press)
+    monkeypatch.setattr(spin_service.gaf_service, "spin", spin)
+
+    pressed, cost = await spin_service._press_spin(driven_by(SpinControl.IDECK))
+
+    assert "gaf" not in calls
+    assert calls["ideck"] == settings.ANALYZE_SPIN_SPIN_BUTTON
+    assert pressed == settings.ANALYZE_SPIN_SPIN_BUTTON
+    assert "37ms" in cost
+
+
+async def test_a_gaf_collect_waits_for_the_game_to_come_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``settle=True`` here where the spin used ``settle=False``: collecting is
+    the short wait a spin is not, and what it waits for -- the game back at idle
+    -- is what the screenshot after it is of."""
+    seen: dict[str, object] = {}
+
+    async def take_win(**kwargs: object) -> object:
+        seen.update(kwargs)
+        return SimpleNamespace(
+            pressed=True, button="TakeWin", detail="Pressed TakeWin and it went idle."
+        )
+
+    monkeypatch.setattr(spin_service.gaf_service, "take_win", take_win)
+    run = driven_by(SpinControl.GAF)
+    step = spin_service._StepRecord(
+        key=spin_service.STEP_TAKE_WIN, label="Take the win"
+    )
+
+    await spin_service._collect_by_gaf(run, step)
+
+    assert seen["settle"] is True
+    assert step.error is None
+    assert step.detail == "Pressed TakeWin and it went idle."
+    assert run.errors == []
+
+
+async def test_a_win_gaf_will_not_collect_is_recorded_rather_than_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing to collect is a *result* to GAF, and a contradiction here: this
+    step only runs because the game logged its win meter counting up.
+
+    So it is recorded through ``_step``'s error-without-raising convention --
+    the reels are still on screen and still worth reading, and a run that
+    reaches its collected screenshot is what shows the win was never taken.
+    """
+
+    async def take_win(**kwargs: object) -> object:
+        return SimpleNamespace(
+            pressed=False,
+            button="TakeWin",
+            detail="TakeWin is not interactable, so there is nothing to collect.",
+        )
+
+    monkeypatch.setattr(spin_service.gaf_service, "take_win", take_win)
+    run = driven_by(SpinControl.GAF)
+    step = spin_service._StepRecord(
+        key=spin_service.STEP_TAKE_WIN, label="Take the win"
+    )
+
+    await spin_service._collect_by_gaf(run, step)
+
+    assert step.error is not None
+    assert "not collected" in step.error
+    # And on the run's own list, so a reader does not have to scan the steps.
+    assert any("Take the win" in message for message in run.errors)
+
+
+def test_a_run_says_which_channel_drove_it() -> None:
+    """One service holds every run and only one cabinet exists, so the page
+    showing the last run may be showing one the other page started."""
+    for control in (SpinControl.IDECK, SpinControl.GAF):
+        detail = spin_service._detail(driven_by(control), images=False)
+        assert detail.control is control

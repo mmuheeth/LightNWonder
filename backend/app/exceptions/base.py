@@ -439,3 +439,41 @@ class ClassifierPredictFailedError(AppException):
     status_code = HTTPStatus.BAD_GATEWAY
     error_code = "CLASSIFIER_PREDICT_FAILED"
     message = "The tiles could not be classified"
+
+
+# --- GAF automation -------------------------------------------------------
+# Two processes this repo neither starts nor supervises, and a dictionary of
+# object names in a Perforce workspace outside it. So the split is by whose
+# fault it is: 409 the machine or the config (a Retry button would be a lie --
+# something has to be launched, synced or edited first), 502 the session and
+# the keywords (the parts that were reachable and still did not work).
+
+
+class GafNotConfiguredError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "GAF_NOT_CONFIGURED"
+    message = "The active game declares no GAF automation config"
+
+
+class GafUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "GAF_UNAVAILABLE"
+    message = "The GAF automation server is not reachable"
+
+
+class GafSessionError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "GAF_SESSION_FAILED"
+    message = "A GAF automation session could not be established"
+
+
+class GafKeywordError(AppException):
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "GAF_KEYWORD_FAILED"
+    message = "The game rejected an automation keyword"
+
+
+class GafNotIdleError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "GAF_NOT_IDLE"
+    message = "The game is still playing, so it cannot be spun"

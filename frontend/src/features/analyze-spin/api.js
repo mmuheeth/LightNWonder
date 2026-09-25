@@ -57,17 +57,22 @@ export function getSpinStatus({ includeImages = false, signal } = {}) {
 
 /**
  * Spin once and validate it.
- * @param {{record?: boolean, architecture?: string}} [options] `record` also makes a
- *   video of the spin with OBS; off by default. `architecture` picks which trained
- *   network names the tiles of the reels — omit it to let the backend use its own
- *   default.
+ * @param {{record?: boolean, architecture?: string, control?: "ideck"|"gaf"}} [options]
+ *   `record` also makes a video of the spin with OBS; off by default. `architecture`
+ *   picks which trained network names the tiles of the reels. `control` picks what
+ *   drives the two presses — the i-deck key and a click into the game's window, or the
+ *   game's own methods over GAF. Omit either to let the backend use its own default.
  * @returns {Promise<{active: boolean, run: object|null}>}
  */
-export function startSpin({ record = false, architecture } = {}) {
+export function startSpin({ record = false, architecture, control } = {}) {
   return apiRequest({
     method: "POST",
     url: `${ANALYZE_SPIN_URL}/start`,
-    params: architecture ? { record, architecture } : { record },
+    params: {
+      record,
+      ...(architecture ? { architecture } : {}),
+      ...(control ? { control } : {}),
+    },
   });
 }
 

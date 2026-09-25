@@ -10,6 +10,10 @@ export const queryKeys = Object.freeze({
     status: () => [...queryKeys.ideck.all, "status"],
     buttons: () => [...queryKeys.ideck.all, "buttons"],
   }),
+  gaf: Object.freeze({
+    all: ["gaf"],
+    status: () => [...queryKeys.gaf.all, "status"],
+  }),
   games: Object.freeze({
     all: ["games"],
     catalog: () => [...queryKeys.games.all, "catalog"],

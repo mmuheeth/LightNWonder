@@ -57,6 +57,24 @@ class SpinStepState(StrEnum):
     FAILED = "failed"
 
 
+class SpinControl(StrEnum):
+    """Which channel drove the spin and collected the win.
+
+    The rest of the sequence is identical either way -- the same screenshots,
+    the same log-following, the same three readings at the end. Only the two
+    presses differ, so this is one field on the run rather than a second
+    orchestration.
+    """
+
+    IDECK = "ideck"
+    """The i-deck key for the spin, and a posted click into the game's own
+    window for the win. Take-win is not one of the panel's fourteen keys."""
+
+    GAF = "gaf"
+    """The game's own methods, over GAF. No coordinates and no key layout
+    take part: both presses are calls the game makes to itself."""
+
+
 class SpinRunState(StrEnum):
     """How the run as a whole ended, or that it has not."""
 
@@ -890,6 +908,14 @@ class SpinRun(BaseModel):
     run_id: str = Field(description="Timestamp id, which is also its directory name.")
     game: str = Field(description="Filename stem of the game config that was used.")
     label: str = Field(description="Display name that config declares.")
+    control: SpinControl = Field(
+        default=SpinControl.IDECK,
+        description=(
+            "Which channel drove this spin and collected its win. Reported "
+            "because one service holds both -- a page showing the last run may "
+            "be showing one another page started."
+        ),
+    )
     state: SpinRunState = Field(
         description="Whether the run is going, and how it went."
     )

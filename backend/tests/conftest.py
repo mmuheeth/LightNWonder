@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from app.main import create_app
 from app.services import analyze_spin as analyze_spin_service
 from app.services import event_capture as event_capture_service
+from app.services import gaf as gaf_service
 from app.services import game_input as game_input_service
 from app.services import ideck as ideck_service
 from app.services import image_classifier as image_classifier_service
@@ -55,6 +56,15 @@ def _clean_game_input_state() -> Iterator[None]:
     game_input_service.reset()
     yield
     game_input_service.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_gaf_state() -> Iterator[None]:
+    """Drop the cached automation target and session handle. Offline by
+    design: `reset` never touches the network, so no test can reach a game."""
+    gaf_service.reset()
+    yield
+    gaf_service.reset()
 
 
 @pytest.fixture(autouse=True)

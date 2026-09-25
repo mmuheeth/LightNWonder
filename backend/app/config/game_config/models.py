@@ -108,6 +108,23 @@ class GameConfig:
     """Named in-game click targets, as fractions of the window client area --
     the same space :attr:`roi` is measured in."""
 
+    gaf: Mapping[str, Any]
+    """Optional GAF automation block: where this game hosts its automation
+    service and which object-query dictionary names its controls.
+
+    Per-game because every value in it is a property of the game, not of this
+    machine -- ``host``/``port`` (the Thrift endpoint the game itself listens
+    on), ``game_type`` and ``gdk_version`` (which client wrapper drives its
+    theme), and ``object_query_root`` plus the two query-file lists (the
+    dictionary that turns a control name into a Unity GameObject). Empty when
+    the game declares none, which means it cannot be driven this way.
+
+    Like :attr:`game_config_dir`, ``object_query_root`` points *out* of this
+    repo -- into an AGTF Perforce workspace -- and is deliberately not checked
+    at load time. Shape is validated by :func:`app.config.gaf.resolve_target`;
+    existence becomes an error in :mod:`app.services.gaf`, which is what reads
+    the files."""
+
     letterbox: Mapping[str, Any]
     """Optional per-game letterbox overrides, keyed exactly as the three
     ``FRAME_LETTERBOX_*`` settings they replace: ``trim`` (bool),

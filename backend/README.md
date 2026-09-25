@@ -1982,10 +1982,11 @@ There is no API to ask instead, and not for want of looking:
   `GetSelectableObjects`, `GetCurrentState` and `GetMeterInfo`, with wrappers
   literally named `PressTakeWin` and `PressGamble`
   (`<game>/TestCode/GAF.XML`, handlers present in the game's own
-  `Assembly-CSharp.dll`). It is **not started by a normal simulator launch** —
-  nothing listens on the ports its client defaults to. If it is ever switched
-  on, it belongs here as a second way to deliver a click and would make this
-  section obsolete.
+  `Assembly-CSharp.dll`). **On newer builds it is started on every launch**,
+  and `app/services/gaf.py` drives it — see [GAF automation](#gaf-automation).
+  That was not true of the FortuneOx build this section was written against,
+  where nothing listened on its ports, and it is still not true of every game:
+  a game whose simulator does not host it has only the coordinate below.
 
 So the coordinate stays, and two things keep it honest:
 
@@ -2035,6 +2036,165 @@ applies — the game runs elevated on these machines, so the backend must be too
 guess. Elevate the backend by launching it from the VS Code terminal — see
 [`docs/elevation.md`](../docs/elevation.md).
 
+## GAF automation
+
+Drives the game by **calling its own methods** instead of aiming input at it.
+Where the i-deck posts a mouse message at the button panel and game input
+injects a click at a measured point, this asks the simulator's own automation
+service to fire a real touch event on a named Unity GameObject. The game
+cannot tell it from a finger on the glass — its log shows an ordinary
+`HandleBetButtonPressed` — so there are no coordinates to re-measure, no
+cursor to steal, and no integrity-level bargain.
+
+```
+GET  /api/gaf/status             automation state; always 200
+POST /api/gaf/connect            open a session up front
+POST /api/gaf/disconnect         close it; one left open blocks the next client
+POST /api/gaf/spin               press spin and wait for the result
+POST /api/gaf/take-win           collect a win that is waiting
+```
+
+Both actions take no body at all: which game, where its automation service
+listens and what its controls are called all come from the active game's
+config. So the same `POST /api/gaf/spin` drives any game that declares a
+`gaf` block.
+
+### The chain
+
+```
+this backend            stdlib xmlrpc.client -- app/utils/nrobot.py
+     |  HTTP POST (XML-RPC)
+     v
+:8270  NRobot.Server.exe          .NET Robot Framework remote-library host
+     |  Thrift (framed, multiplexed)
+     v
+:9090  <Game>.exe                 the game's own automation service
+     v
+Unity scene                       finds the GameObject, fires a real touch
+```
+
+Nothing here speaks Thrift. `NRobot.Server.exe` does the translating, so
+`app/utils/nrobot.py` needs nothing but the standard library — and going
+direct is not an option anyway: the `.thrift` IDL is generated on the build
+hosts and only compiled output ships.
+
+**Two of these processes are not ours.** `NRobot.Server.exe` is started by
+`NRobotStartUpScript.bat`, and the game's automation service starts with the
+game. Neither is launched or supervised by this repo, so `GET /api/gaf/status`
+says plainly when either is absent — the same bargain `/api/obs/status` and
+`/api/ocr/status` make. Its `state` is one of `not_configured`, `unreachable`,
+`files_missing`, `disconnected` or `ready`.
+
+### Per-game configuration
+
+```json
+"gaf": {
+  "host": "127.0.0.1",
+  "port": 9090,
+  "game_type": "BallyStyle",
+  "gdk_version": "12",
+  "object_query_root": "C:\Users\you\Perforce\<AGTF workspace>",
+  "take_win_button": "TakeWinButton"
+}
+```
+
+Only `object_query_root` has no default — it names a Perforce workspace and
+there is no sensible guess. Everything else falls back to the `GAF_*`
+settings, and every key is per-game because none of them is a property of
+this machine: two games on one host listen on two ports.
+
+`game_type` is `BallyStyle` or `ShuffleStyle` and nothing else; a typo is
+refused by name rather than selecting a different wrapper and failing several
+calls later. `gdk_version` matters for the same reason — the AGTF common
+default is `10`, and HuffNPuffHighRise needs `12`.
+
+### The object-query files are a hard dependency
+
+The game client cannot resolve a single control by name without a dictionary
+mapping friendly names to Unity objects:
+
+```json
+"IDeck_TakeWinButton": {
+  "GameObjectIdentifier": "DoubleUp_BB3Style/DoubleUp_ButtonPanel/TakeWinButton"
+}
+```
+
+Eight files, merged in order, game-specific last — three for
+`InitializeGameClient` and five for `InitializeGenericGameClient`. All eight
+are needed: initialising with only the game-specific pair fails with "the
+given key was not present in the dictionary", which names nothing useful.
+They ship with a UTF-8 BOM, so they are read `utf-8-sig`. The defaults in
+`app/config/gaf.py` are the standard AGTF layout relative to the workspace
+root; a game overrides either list if its workspace differs.
+
+The ~350 other files in that workspace are the Robot Framework test layer and
+are not needed. Calling XML-RPC directly bypasses them, and Robot Framework
+itself does not have to be installed.
+
+### Four things it exists to get right
+
+- **A win holds the game in play.** A losing spin leaves `statePlaying` on its
+  own; a winning one stays there until the win is collected. A settle loop
+  that waits only for idle therefore times out on exactly the spins worth
+  having, and looks like a hang. `/spin` waits for *either*, and answers
+  `outcome: "win_offered"` — a finished spin with money on the table, not a
+  failure.
+
+- **Nothing is spun on top of a spin that has not finished.** The same hold
+  makes the *next* press dangerous: its result belongs to the spin still
+  running. Measured, not theoretical — a free-spin bonus outlasted the
+  120s settle timeout and the spin after it landed mid-bonus. A game in
+  `statePlaying` is refused with 409 `GAF_NOT_IDLE`; `{"force": true}`
+  presses anyway.
+
+- **A spin does not start the instant the button is pressed.** The game is
+  still idle for a beat, so a settle loop that opens with "are we idle?" gets
+  a yes from the state the game was *already* in and reports a spin that never
+  happened. The press is bracketed by a departure wait
+  (`GAF_SPIN_START_SECONDS`) before the settle loop runs.
+
+- **A failed keyword is not an exception on the wire.** It arrives as an
+  ordinary reply whose `status` is `FAIL`, and several keywords answer a plain
+  `"False"` on a `PASS` — the keyword ran fine and the game declined. Both are
+  checked in `app/utils/nrobot.py`; treating either as success is how a press
+  that never happened gets reported as a spin.
+
+### Meters come back as the game's own text
+
+`/spin` and `/take-win` carry a `meters` block — `credit`, `bet`, `win` —
+read straight off the game rather than OCR'd off a screenshot. They are
+**strings**, deliberately: the game answers `"$995.80"` or `"1,250"` depending
+on whether the strip is drawn in cash or credits, and parsing that here would
+throw away the one advantage the reading has. The win meter is read
+mid-rack-up, so only a **post-collect** figure is the real one — the collect
+that released a $115.16 reading reported $327.50.
+
+Set `GAF_READ_METERS=false`, or pass `{"read_meters": false}`, to skip them.
+
+### Sessions
+
+A session is opened lazily on the first action and kept. Before anything is
+pressed it is checked with one cheap state read, which doubles as the
+pre-press state the departure wait needs — so a dead session is found and
+replaced while that is still free. **Past the press nothing is retried**,
+because a retried spin is a second spin.
+
+A session left open on the game's side blocks the next client, so it is closed
+in the lifespan shutdown as well as by `POST /api/gaf/disconnect`. Changing the
+active game marks a held session stale and the next action reopens it against
+the new endpoint. `RUSTClient.exe` holds a session of its own while it is
+running; close it first.
+
+### A control channel, not a second opinion
+
+`CLAUDE.md` argues the spin checker must not read the game's own answer, since
+a checker that did would agree with the game by construction and could never
+catch a reel drawing the wrong symbol. GAF reads the Unity **scene graph** —
+closer to the glass than the log, but still not pixels. Treat it as a control
+channel and a *cross-check* against the image classifier and OCR, not as a
+silent replacement for them. Two independent readings that agree are worth
+more than either alone; a disagreement is a finding.
+
 ## Analyze Spin
 
 Everything above, in order, from one button. Records, screenshots, spins, follows
@@ -2043,7 +2203,7 @@ cash meter and payline validations over the frames it took.
 
 ```
 POST /api/analyze-spin/start          spin once, and validate it
-                                      ?record=, ?architecture=
+                                      ?record=, ?architecture=, ?control=
 GET  /api/analyze-spin/status         the run in progress, or the last one
 POST /api/analyze-spin/cancel         ask the run in progress to stop
 GET  /api/analyze-spin/frames/{file}  one screenshot the run took
@@ -2055,6 +2215,8 @@ WS   /api/analyze-spin/stream         progress, one snapshot per change
 ```bash
 # spin, and return as soon as it is under way
 curl -s -X POST localhost:8001/api/analyze-spin/start
+# the same spin, driven by calling the game's own methods instead
+curl -s -X POST 'localhost:8001/api/analyze-spin/start?control=gaf'
 # where it got to
 curl -s localhost:8001/api/analyze-spin/status
 # the same, plus the meter crops, the annotated reels and the paying lines
@@ -2070,11 +2232,11 @@ they go in:
 | 1   | `prepare`         | OBS connect + window select, and the paytable the game loaded |
 | 2   | `record-start`    | `POST /api/obs/recording/start`, into `analyze-spin/<run>` |
 | 3   | `frame-initial`   | a screenshot, before anything moves                      |
-| 4   | `spin`            | the i-deck key, *and* the game's own `SpinButtonMsg`     |
+| 4   | `spin`            | the press, *and* the game's own `SpinButtonMsg`          |
 | 5   | `reels-stop`      | the log's `stateSpinWithStops` → `stateReelSpinDone`     |
 | 6   | `win-detect`      | the win meter count-up, or its absence                   |
 | 7   | `frame-outcome`   | a screenshot of the result                               |
-| 8   | `take-win`        | a click into the game's window (`take_win`) — win only   |
+| 8   | `take-win`        | the collect (`take_win`) — win only                      |
 | 9   | `frame-collected` | a screenshot once the win is on the balance — win only   |
 | 10  | `record-stop`     | `POST /api/obs/recording/stop`                           |
 | 11  | `meter`           | `roi.cash_meter` on every frame, then the arithmetic between them |
@@ -2084,6 +2246,39 @@ they go in:
 So a losing spin takes two screenshots and a winning one takes three, and
 `take-win`/`frame-collected` come back `skipped` rather than absent — a different
 fact from never having got there.
+
+### Two channels, and only two steps know which
+
+Steps 4 and 8 are the only ones that press anything, and `?control=` is what
+decides how. Everything else in the table — the screenshots, the log-following,
+the three readings at the end — is byte-for-byte the same work either way,
+which is why this is one field on the run rather than a second sequence. The
+run reports it as `control`, because one service holds every run.
+
+| `?control=` | Step 4 `spin`                       | Step 8 `take-win`                     |
+| ----------- | ----------------------------------- | ------------------------------------- |
+| `ideck`     | the i-deck key `ANALYZE_SPIN_SPIN_BUTTON` | a click at `button_targets.take_win` |
+| `gaf`       | `PRESSMECHANICALSPINBUTTON` over GAF | `PRESSNONWAGERBUTTON` over GAF        |
+
+`ideck` is the default (`ANALYZE_SPIN_CONTROL`) and is unchanged. `gaf` needs
+no key layout and no measured coordinates at all — see [GAF](#gaf-automation) —
+but it does need `NRobot.Server.exe` answering, so a `gaf` run opens its
+session in `prepare` and fails there rather than eight steps later. An unknown
+name is a 400 on the request.
+
+Three things the GAF side does deliberately:
+
+- **The press does not wait for its own result** (`settle=False`). GAF's settle
+  would hold the run inside one XML-RPC call for the length of the spin, where
+  every other wait here is sliced so a cancel lands within 100ms — and steps 5
+  and 6 read the spin's progress from the game's log either way.
+- **It is not forced.** A game holding an uncollected win or running a bonus
+  comes back as `GAF_NOT_IDLE` on step 4, rather than as a press whose result
+  belongs to the previous spin.
+- **The collect *does* wait** (`settle=True`), because what it waits for — the
+  game back at idle — is what the screenshot after it is of. A button GAF
+  reports as not interactable is recorded on the step rather than raised: the
+  reels are still on screen and still worth reading.
 
 ### One short video per reel position, on a winning recorded spin
 

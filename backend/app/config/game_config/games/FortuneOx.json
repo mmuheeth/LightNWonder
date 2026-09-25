@@ -128,5 +128,13 @@
         "39": [[3,1],[3,2],[2,3],[3,4],[3,5]],
         "40": [[2,1],[1,2],[2,3],[3,4],[2,5]]
       }
-    }
+    },
+  "gaf": {
+    "host": "127.0.0.1",
+    "port": 9090,
+    "game_type": "BallyStyle",
+    "gdk_version": "10",
+    "object_query_root": "C:\\Users\\mmuheeth\\Perforce\\mmuheeth_L5CG3496V1K-BLR_AGTF_FortuneOx",
+    "take_win_button": "TakeWinButton"
+  }
 }

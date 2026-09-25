@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from app.config.runtime import Settings
+from app.main import create_app
 from app.schemas.health import DependencyCheck
 from app.services import health
 from tests.asserts import assert_failure, assert_success
@@ -108,3 +110,43 @@ async def test_probe_failure_does_not_break_health(
     assert data["status"] == "unhealthy"
     assert data["checks"][0]["healthy"] is False
     assert "RuntimeError: boom" in data["checks"][0]["error"]
+
+
+async def test_app_lifespan_does_not_open_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The app should not attempt to connect to Postgres when the DB is unused."""
+    calls: list[str] = []
+
+    async def fake_db_connect(settings: Settings) -> None:
+        calls.append("db_connect")
+        return None
+
+    async def fake_db_disconnect(pool: object) -> None:
+        calls.append("db_disconnect")
+
+    async def fake_obs_connect() -> None:
+        calls.append("obs_connect")
+
+    async def fake_obs_disconnect() -> None:
+        calls.append("obs_disconnect")
+
+    async def fake_abort() -> None:
+        calls.append("abort")
+
+    async def fake_shutdown() -> None:
+        calls.append("shutdown")
+
+    monkeypatch.setattr("app.services.database.connect", fake_db_connect)
+    monkeypatch.setattr("app.services.database.disconnect", fake_db_disconnect)
+    monkeypatch.setattr("app.services.obs.connect", fake_obs_connect)
+    monkeypatch.setattr("app.services.obs.disconnect", fake_obs_disconnect)
+    monkeypatch.setattr("app.services.event_capture.abort", fake_abort)
+    monkeypatch.setattr("app.services.analyze_spin.abort", fake_abort)
+    monkeypatch.setattr("app.services.image_classifier.abort", fake_abort)
+    monkeypatch.setattr("app.services.gaf.shutdown", fake_shutdown)
+
+    app = create_app(Settings(OBS_AUTO_CONNECT=False))
+
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert calls == ["abort", "abort", "abort", "shutdown", "obs_disconnect"]

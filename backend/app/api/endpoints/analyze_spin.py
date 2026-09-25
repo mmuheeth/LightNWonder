@@ -29,7 +29,9 @@ RUN_CONFLICT: ResponseSpec = {
     }
 }
 BAD_CONFIG: ResponseSpec = {500: {"description": "The game config is unreadable"}}
-BAD_REQUEST: ResponseSpec = {400: {"description": "No such classifier architecture"}}
+BAD_REQUEST: ResponseSpec = {
+    400: {"description": "No such classifier architecture, or no such control channel"}
+}
 
 
 def _frame(state: SpinAnalysisState) -> dict[str, Any]:
@@ -80,6 +82,16 @@ async def start(
             "it on per run rather than leaving it running for every spin."
         ),
     ),
+    control: str | None = Query(
+        default=None,
+        description=(
+            "Which channel drives the two presses: 'ideck' (the panel key, "
+            "then a click into the game's own window) or 'gaf' (the game's "
+            "own methods, so no key layout and no coordinates take part). "
+            "Everything between the two presses is identical either way. Omit "
+            "for ANALYZE_SPIN_CONTROL."
+        ),
+    ),
     architecture: str | None = Query(
         default=None,
         description=(
@@ -94,7 +106,9 @@ async def start(
 ) -> ApiResponse[SpinAnalysisState]:
     """Press spin on the active game, follow it to its result, and run the cash meter
     and payline validations over the screenshots it took."""
-    state = await analyze_spin_service.start(record=record, architecture=architecture)
+    state = await analyze_spin_service.start(
+        record=record, architecture=architecture, control=control
+    )
     run = state.run
     return ApiResponse[SpinAnalysisState].ok(
         data=state,

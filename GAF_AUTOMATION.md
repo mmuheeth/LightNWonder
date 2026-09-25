@@ -25,11 +25,12 @@ p.run_keyword("PRESSMECHANICALSPINBUTTON", [])
 That single call spins the machine. No cursor movement, no coordinates, no
 elevation, no OCR.
 
-**This contradicts the repo docs.** `CLAUDE.md:911-917` and
-`backend/README.md:1961-1969` both say GAF "is **not started by a normal
-simulator launch**". That was true of the older FortuneOx build; it is **false**
-for `HuffNPuffHighRise`, whose client log records `Starting the Thrift Server ....`
-on every launch. Those two passages need revising when this work lands.
+**This contradicted the repo docs.** `CLAUDE.md` and `backend/README.md` both
+said GAF "is **not started by a normal simulator launch**". That was true of
+the older FortuneOx build; it is **false** for `HuffNPuffHighRise`, whose
+client log records `Starting the Thrift Server ....` on every launch. Both
+passages have been corrected, and the integration described in §9 is built —
+`POST /api/gaf/spin`.
 
 ---
 
@@ -72,7 +73,7 @@ ships), so you would be reconstructing structs and field ids by reflection.
 | Thing | Where | Notes |
 |---|---|---|
 | The game, running | `C:\re\games\3093998_HuffNPuffHighRise\games\HuffNPuffHighRise` | Thrift server starts automatically |
-| `NRobot.Server.exe`, running | `C:\ProgramData\chocolatey\lib\AGF-LnW\content\` | Started by `NRobotStartUpScript.bat`. **Not** started or supervised by this repo |
+| `NRobot.Server.exe`, running | `C:\ProgramData\chocolatey\lib\AGF-LnW\content\` | Started by `NRobotStartUpScript.bat`. **Not** started or supervised by this repo — a logon task does it on this machine, see below |
 | The 8 object-query JSON files | the AGTF Perforce workspace — see §4 | **Hard dependency** |
 | Python | any 3.11+ | stdlib only |
 
@@ -85,6 +86,63 @@ Diagnostics:
 
 `NRobot.Server.exe` uses `HttpListener`, so port 8270's owning PID shows as
 `4`/System in `Get-NetTCPConnection`. That is normal, not a permissions problem.
+
+### It does not survive a reboot, and nothing in the repo restarts it
+
+**Verified 2026-09-24:** the log stopped at 16:26:57 and the machine booted at
+16:28:09 — no crash, no error, just gone. Every GAF action then fails with
+`unreachable` until someone starts it again. This machine now carries a
+per-user scheduled task, `NRobot Server (AGF)`, which is **machine setup and
+not part of this repo** — the repo still neither starts nor supervises it:
+
+```powershell
+Get-ScheduledTask -TaskName 'NRobot Server (AGF)'      # registered, AtLogOn
+Start-ScheduledTask -TaskName 'NRobot Server (AGF)'    # start it now
+```
+
+It runs the exe with `WorkingDirectory` set rather than invoking the .bat,
+because that directory is the only thing the .bat's `cd %~dp0` exists to
+establish, and a task holding the process open lets Task Scheduler restart it
+if it dies. Starting it by hand does the same job:
+
+```powershell
+Start-Process 'C:\ProgramData\chocolatey\lib\AGF-LnW\content\NRobot.Server.exe' -WorkingDirectory 'C:\ProgramData\chocolatey\lib\AGF-LnW\content'
+```
+
+**Elevation is irrelevant here, unlike the i-deck.** Verified by accident: a
+Medium-integrity NRobot answered the elevated backend fine. UIPI gates
+synthetic *input*, and this is HTTP on loopback — so the `access_denied` rule
+from `GET /api/ideck/status` does not transfer to GAF.
+
+### Two different faults both read as `unreachable`
+
+The working directory matters because the 18 `RFTestCode.*` assemblies resolve
+relative to it. A server started elsewhere **binds 8270 and answers**, with no
+keywords — so "nothing is listening" and "the wrong thing is listening" look
+identical from outside. `RemoteLibrary.probe()` hands the reason back instead
+of a bool for exactly this, and `GafStatus.detail` carries it. The second case
+is **verified** to read:
+
+```
+RFTestCode.ConnectGame.ConnectGameLibrary.get_keyword_names faulted:
+<Fault 1: 'Type RFTestCode.ConnectGame.ConnectGameLibrary is not loaded'>
+```
+
+An XML-RPC **fault**, note — not the HTTP 404 you would expect from a missing
+endpoint.
+
+### Do not force-kill it while a session is open
+
+**Verified 2026-09-24.** `Stop-Process -Force` on NRobot mid-session leaves the
+socket to the game half-closed (`FinWait2`, owner PID already gone), and the
+game keeps its end. The next `connect` then fails after a **20s** timeout with
+`Game Client is unable to connect to Thrift server` *while a raw TCP connect to
+9090 still succeeds in 43ms* — so the port answering proves nothing here. A
+retry a minute later succeeded, and the game passed briefly through
+`stateRecoveryStarted` before settling back to `stateIdleWithCredits` on its
+own. Prefer `POST /api/gaf/disconnect` first; note the same failure text takes
+**2s** when the game simply is not there, so the duration is what separates the
+two.
 
 ---
 
@@ -363,54 +421,76 @@ credits first.
 
 ---
 
-## 9. Integrating into this repo
+## 9. How it is integrated — **built**
 
-`CLAUDE.md:916` already states the intent: an enabled GAF "**belongs behind that
-module's public API**" — i.e. inside `app/services/game_input.py`, keeping the
-`ClickResult` schema and `/api/game-input/click` contract intact.
+Landed as its own integration rather than behind `game_input.click()`, which
+is where §9 of the first draft expected it. The reason is scope: GAF does not
+just deliver a click, it *drives* the game — spin, collect, read state, read
+meters — and squeezing that through a schema whose vocabulary is
+`ClickTarget`/`ClickConfirmation` would have made both harder to read.
+`game_input.py` is untouched, and stays the answer for a game whose simulator
+does not host the service.
 
-**The seam.** `game_input.click()` resolves a target name, then calls
-`_inject_click()` (cursor move + `SendInput`) and confirms via `_watch_log()`.
-A GAF backend replaces both halves and leaves callers untouched. The entire
-coupling surface is four call sites in `analyze_spin.py`:
-
-| Line | Call |
+| Piece | What it is |
 |---|---|
-| `579` | `ideck_service.status()` |
-| `580` | `game_input_service.status()` |
-| `724` | `ideck_service.press(button)` |
-| `809` | `game_input_service.click(target)` |
+| `app/utils/nrobot.py` | the Robot Framework remote protocol over XML-RPC. Knows nothing about slot games |
+| `app/utils/gaf_objects.py` | reads and merges the eight object-query files. Knows nothing about NRobot |
+| `app/config/gaf.py` | `GafSettings` + `resolve_target()`: the environment's defaults and a game's `gaf` block |
+| `app/services/gaf.py` | the session and the order. `status`/`connect`/`disconnect`/`spin`/`take_win` |
+| `app/schemas/gaf.py`, `app/api/endpoints/gaf.py` | `/api/gaf/*`, in the usual envelope |
+| `frontend/src/features/gaf/` | the dashboard card |
 
-**Two schema changes it forces:**
+The per-game block, in `app/config/game_config/games/<Game>.json`:
 
-- `ClickConfirmation` (`app/schemas/game_input.py`) needs a third member. Today
-  confirmation is `target-event` or `touch`, both derived from log tailing; GAF
-  returns its own acknowledgement, which is a different kind of evidence and
-  should not be squeezed into `touch`.
-- `ClickTarget.from_value` (`app/utils/click_target.py`) needs a third form
-  alongside `[x, y]` and `{"point": …, "confirm": …}` — a named GameObject
-  instead of a coordinate. The loader passes `button_targets` through
-  unvalidated, so no loader change is needed.
+```json
+"gaf": {
+  "host": "127.0.0.1", "port": 9090,
+  "game_type": "BallyStyle", "gdk_version": "12",
+  "object_query_root": "C:\Users\...\<AGTF workspace>",
+  "take_win_button": "TakeWinButton"
+}
+```
 
-**What it buys.** No coordinates to re-measure, no cursor theft, no UIPI/High
-integrity requirement for clicks, and exact meter strings instead of OCR.
+Only `object_query_root` has no default. `object_query_root` joins
+`game_config` and `win_geometry` as a key pointing *out* of the repo, and is
+deliberately unchecked at load time for the same reason.
 
-**One caution worth preserving.** `CLAUDE.md` argues the spin checker must not
-read the game's own answer, since "a checker that read the answer there would
-agree with the game by construction and could never catch a reel drawing the
-wrong symbol". GAF reads the Unity **scene graph** — closer to the glass than the
-log, but still not pixels. Treat it as a control channel and a **cross-check**
-against the image classifier and OCR, not as a silent replacement for them. Two
-independent readings that agree are worth more than either alone; a disagreement
-is a finding.
+### What measuring it against the live game changed
 
-**Operational reality.** `NRobot.Server.exe` is a second process this repo
-neither starts nor supervises, and the 8 object-query JSON files live outside the
-repo in a Perforce workspace that can change under you. Any integration needs a
-status endpoint that says plainly when either is missing — the same bargain
-`GET /api/obs/status` and `GET /api/ocr/status` already make.
+Everything in §7 held. Three things it did not cover:
 
----
+- **A spin does not start the instant the button is pressed.** The game stays
+  in its pre-press state for a beat, so the §7 settle loop's first question —
+  "are we idle?" — is answered *yes* by the state the game was already in, and
+  a spin still turning reads as finished. There is now a departure wait before
+  the settle loop.
+- **A bonus outlasts the settle timeout.** One spin in twelve triggered free
+  games, held `statePlaying` past 120s and came back `timeout` — correctly.
+  What was not correct is what happened next: the following spin pressed
+  straight into the running bonus, so its "result" belonged to the previous
+  spin. `spin()` now refuses a game in `statePlaying` (409 `GAF_NOT_IDLE`)
+  unless forced.
+- **The mid-rack-up warning is bigger than it looks.** The same spin read
+  `$115.16` on its way to a collect that reported **`$327.50`**. Only the
+  post-collect figure is the win.
+
+Measured on this machine: ~4.4–12.8s for a base spin to settle (not the ~13s
+of §7), ~0.9–2.4s for a collect, ~110ms for a state or meter read, 106 named
+objects in the merged dictionary.
+
+### Still open
+
+- **Reels cannot be read** (§8), so the image classifier remains the only
+  thing that names a symbol. That is no loss: `CLAUDE.md` argues the spin
+  checker must not read the game's own answer, and a GAF reel read would be
+  exactly that. Treat GAF as a control channel and a cross-check.
+- **`analyze_spin` still uses the i-deck and posted clicks.** Swapping its
+  press and take-win steps for `gaf_service` is the obvious next move and
+  would remove that pipeline's elevation requirement, but it changes what a
+  step's `error` means and is worth doing deliberately.
+- **Nothing here starts `NRobot.Server.exe`**, and the object-query files can
+  change under us in Perforce. `GET /api/gaf/status` reports `unreachable` and
+  `files_missing` for exactly those two.
 
 ## 10. Quick reference
 
@@ -432,6 +512,8 @@ Libraries loaded by the server (from `NRobot.Server.exe.config`): `ConnectGame`,
 `FullGafferLibrary.ENTERFULLGAFFERSTOP` forces reel outcomes — useful for
 deterministic tests once the reel-reading gap is closed.
 
-Working reference scripts produced alongside this document: `gaf_probe.py`
-(six-phase connect/read/press probe) and `spin_and_take_win.py` (spin until a
-win, then collect it).
+The working code this document produced is now in the repo:
+`backend/app/utils/nrobot.py` (the protocol),
+`backend/app/utils/gaf_objects.py` (the dictionary) and
+`backend/app/services/gaf.py` (the session and the order), behind
+`/api/gaf/*`. See §9.

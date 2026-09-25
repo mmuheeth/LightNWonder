@@ -18,6 +18,7 @@ from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import (
     AppException,
+    BadRequestError,
     GameConfigInvalidError,
     SpinAnalysisAlreadyRunningError,
     SpinAnalysisNotRunningError,
@@ -26,6 +27,7 @@ from app.exceptions.base import (
 )
 from app.schemas.analyze_spin import (
     SpinAnalysisState,
+    SpinControl,
     SpinExpectedAward,
     SpinFrame,
     SpinLineAward,
@@ -55,6 +57,7 @@ from app.schemas.paylines import PaylineCheckResult
 from app.schemas.paytable import DenominationInfo, PaylineComboInfo, PaytableView
 from app.schemas.roi import RoiExtractRequest
 from app.schemas.tile_clips import TileClipSet
+from app.services import gaf as gaf_service
 from app.services import game_input as game_input_service
 from app.services import grid as grid_service
 from app.services import ideck as ideck_service
@@ -189,6 +192,12 @@ class _ActiveRun:
     log_path: Path
     rules: tuple[game_log.EventRule, ...]
     started_at: datetime
+    control: SpinControl
+    """Which channel presses spin and collects the win. Everything between the
+    two presses is the same either way, so this is read in exactly two places
+    -- and recorded here because one service holds every run, so the record has
+    to say which channel drove this one."""
+
     architecture: str
     """Which trained network names this run's tiles. Resolved when the run is
     asked for rather than when the classify step runs, so an unknown name is a
@@ -362,6 +371,7 @@ def _detail(run: _ActiveRun, *, images: bool) -> SpinRun:
         run_id=run.run_id,
         game=run.game,
         label=run.label,
+        control=run.control,
         state=run.state,
         outcome=run.outcome,
         message=run.message,
@@ -576,8 +586,7 @@ async def _prepare(run: _ActiveRun) -> None:
         except AppException:
             retargeted = False
 
-        panel = await ideck_service.status()
-        window = await game_input_service.status()
+        channel = await _prepare_control(run)
 
         try:
             run.paytable = await paytable_service.view()
@@ -591,16 +600,33 @@ async def _prepare(run: _ActiveRun) -> None:
             if run.paytable is not None
             else "no paytable"
         )
-        step.detail = (
-            f"OBS connected, i-deck {panel.state.value}, "
-            f"game window {window.state.value}, {loaded}"
-        )
+        step.detail = f"OBS connected, {channel}, {loaded}"
 
         # Re-pointing a window capture makes OBS render nothing for a moment,
         # and a screenshot taken inside it comes back black -- an empty frame
         # that is an error nowhere and quietly invalidates both validations.
         if retargeted:
             await _sleep(run, settings.ANALYZE_SPIN_SOURCE_SETTLE_SECONDS)
+
+
+async def _prepare_control(run: _ActiveRun) -> str:
+    """Get whichever channel drives this run ready, and say what it found.
+
+    The two are not equally forgiving, and deliberately. An i-deck run only
+    *reports* its two devices, because a panel at `access_denied` still leaves
+    a run worth having -- the screenshots and the readings are the same. A GAF
+    run opens its session here instead, because there is nothing to fall back
+    on: without it the press eight steps later cannot happen at all, and the
+    ~2.4s cold start would otherwise be charged to the spin.
+    """
+    if run.control is SpinControl.GAF:
+        state = await gaf_service.connect()
+        named = "" if state.object_count is None else f", {state.object_count} controls"
+        return f"GAF {state.state.value}{named}"
+
+    panel = await ideck_service.status()
+    window = await game_input_service.status()
+    return f"i-deck {panel.state.value}, game window {window.state.value}"
 
 
 async def _start_recording(run: _ActiveRun) -> None:
@@ -714,29 +740,64 @@ async def _capture(run: _ActiveRun, key: str, step_key: str) -> None:
             _note_error(run, f"{step.label}: {step.error}")
 
 
+async def _press_spin(run: _ActiveRun) -> tuple[str, str]:
+    """Make the spin happen, however this run drives the game.
+
+    Answers the two things the step's own line is written from: what was
+    pressed, and what it cost. Nothing here waits for the *result* -- the log
+    is what says the game spun, stopped and paid, and it says it the same way
+    for both channels. That is the whole reason a GAF run reaches for
+    ``settle=False``: letting GAF wait for the spin to finish would hold this
+    coroutine inside one XML-RPC call for the length of the spin, where every
+    other wait in this module is sliced so a cancel lands within 100ms.
+    """
+    if run.control is SpinControl.GAF:
+        # Not forced: GAF refuses to press into a spin that has not finished,
+        # which is exactly the guard a run driving a cabinet wants. A game
+        # holding an uncollected win or a bonus comes back as GAF_NOT_IDLE on
+        # this step rather than as a result belonging to the previous spin.
+        result = await gaf_service.spin(settle=False, read_meters=False)
+        return "GAF spin", f"pressed in {result.elapsed_ms}ms"
+
+    button = settings.ANALYZE_SPIN_SPIN_BUTTON
+    press = await ideck_service.press(button)
+    return button, f"pressed in {press.elapsed_ms}ms"
+
+
+def _no_spin_published(run: _ActiveRun, pressed: str, timeout: float) -> str:
+    """Why a press the channel accepted produced no spin. The two channels fail
+    this way for different reasons, so they are told apart rather than blurred:
+    a key is a guess about the cabinet's layout, a GAF call is not."""
+    if run.control is SpinControl.GAF:
+        return (
+            f"GAF accepted the spin press but {run.label} published no spin "
+            f"within {timeout}s. The game answered the call, so check that the "
+            "automation service is driving the game this log belongs to -- and "
+            "the run's events list for what it did instead."
+        )
+    return (
+        f"The panel registered {pressed!r} but {run.label} published no spin "
+        f"within {timeout}s. That key may not be the one this game spins on -- "
+        "check ANALYZE_SPIN_SPIN_BUTTON against GET /api/ideck/buttons and the "
+        "game's own log."
+    )
+
+
 async def _spin(run: _ActiveRun) -> _LogReader:
-    """Press the spin key, and wait for the game to agree that it spun."""
+    """Press spin, and wait for the game to agree that it spun."""
     reader = _LogReader(
         run.log_path, run.rules, poll_seconds=settings.ANALYZE_SPIN_POLL_SECONDS
     )
-    button = settings.ANALYZE_SPIN_SPIN_BUTTON
     async with _step(run, STEP_SPIN) as step:
-        press = await ideck_service.press(button)
+        pressed, cost = await _press_spin(run)
         timeout = settings.ANALYZE_SPIN_SPIN_TIMEOUT_SECONDS
         detected = await _wait_for(run, reader, _SPIN_STARTED, timeout=timeout)
         if detected is None:
-            # The panel confirmed the key; the game did nothing with it. The
-            # deck's layout belongs to the cabinet, so this is a real and
-            # common state rather than a fault.
+            # The channel confirmed the press; the game did nothing with it.
             raise SpinAnalysisUnavailableError(
-                f"The panel registered {button!r} but {run.label} published no "
-                f"spin within {timeout}s. That key may not be the one this game "
-                "spins on -- check ANALYZE_SPIN_SPIN_BUTTON against "
-                "GET /api/ideck/buttons and the game's own log."
+                _no_spin_published(run, pressed, timeout)
             )
-        step.detail = (
-            f"{button} pressed in {press.elapsed_ms}ms, and the game published the spin"
-        )
+        step.detail = f"{pressed} {cost}, and the game published the spin"
     return reader
 
 
@@ -801,18 +862,50 @@ async def _record_tile_clips(run: _ActiveRun) -> None:
     _check_cancelled(run)
 
 
-async def _take_win(run: _ActiveRun) -> None:
+async def _collect_by_gaf(run: _ActiveRun, step: _StepRecord) -> None:
+    """Collect the win by calling the game's own take-win button.
+
+    ``settle=True`` here where the spin press used ``settle=False``: collecting
+    is the short wait the spin is not, and what it waits for -- the game back
+    at idle -- is the thing the next screenshot is of. A button the game says
+    is not interactable is *recorded* rather than raised, per ``_step``'s
+    error-without-raising convention: the reels are still on screen and worth
+    reading, and the run reaching the collected screenshot is what shows that
+    the win was never taken.
+    """
+    result = await gaf_service.take_win(settle=True, read_meters=False)
+    step.detail = result.detail
+    if not result.pressed:
+        # Something is wrong rather than merely unlucky: this step only runs
+        # because the game logged its win meter counting up.
+        step.error = (
+            f"The win counted up, but GAF reported {result.button!r} as not "
+            "interactable and pressed nothing, so the win was not collected."
+        )
+        _note_error(run, f"{step.label}: {step.error}")
+
+
+async def _collect_by_click(step: _StepRecord) -> None:
     """Collect the win by clicking the game's own glass -- take-win is not one
     of the deck's fourteen keys."""
     target = settings.ANALYZE_SPIN_TAKE_WIN_TARGET
+    result = await game_input_service.click(target)
+    proof = result.confirmed_by.value if result.confirmed_by else "unverified"
+    step.detail = (
+        f"Clicked {target} at ({result.client_x}, {result.client_y}); "
+        f"confirmed by {proof}"
+    )
+
+
+async def _take_win(run: _ActiveRun) -> None:
+    """Collect the win, however this run drives the game."""
     async with _step(run, STEP_TAKE_WIN) as step:
-        result = await game_input_service.click(target)
-        proof = result.confirmed_by.value if result.confirmed_by else "unverified"
-        step.detail = (
-            f"Clicked {target} at ({result.client_x}, {result.client_y}); "
-            f"confirmed by {proof}"
-        )
-        # The click is proven by the log; the balance moving is an animation.
+        if run.control is SpinControl.GAF:
+            await _collect_by_gaf(run, step)
+        else:
+            await _collect_by_click(step)
+        # The press is proven either way; the balance moving is an animation,
+        # and the screenshot after this is of the balance.
         await _sleep(run, settings.ANALYZE_SPIN_COLLECT_SETTLE_SECONDS)
 
 
@@ -2125,12 +2218,34 @@ def _summary(run: _ActiveRun) -> str:
 # --- public API -----------------------------------------------------------
 
 
+def resolve_control(requested: str | None) -> SpinControl:
+    """Which channel a request meant, defaulting to the configured one.
+
+    Public and called from :func:`start` before anything else, for the reason
+    :func:`app.services.image_classifier.resolve_architecture` is: a typo
+    should be a refused request, not a run driven as far as its press and then
+    failed on a name.
+    """
+    name = (requested or settings.ANALYZE_SPIN_CONTROL).strip().lower()
+    try:
+        return SpinControl(name)
+    except ValueError:
+        known = ", ".join(one.value for one in SpinControl)
+        raise BadRequestError(
+            f"Unknown spin control {name!r}; expected one of {known}"
+        ) from None
+
+
 async def start(
-    *, record: bool | None = None, architecture: str | None = None
+    *,
+    record: bool | None = None,
+    architecture: str | None = None,
+    control: str | None = None,
 ) -> SpinAnalysisState:
     """Drive one spin, and validate it."""
     global _run
     record_enabled = settings.ANALYZE_SPIN_RECORD if record is None else record
+    channel = resolve_control(control)
     chosen = classifier_service.resolve_architecture(
         architecture or settings.analyze_spin_classifier_architecture
     )
@@ -2163,6 +2278,7 @@ async def start(
                 extra=config.event_rules, disabled=config.disabled_events
             ),
             started_at=started,
+            control=channel,
             architecture=chosen,
             record=record_enabled,
             steps={
@@ -2175,9 +2291,10 @@ async def start(
         run.task = asyncio.create_task(_execute(run), name=f"analyze-spin-{run_id}")
 
     logger.info(
-        "Spin %s started for %s, reading its reels with %s",
+        "Spin %s started for %s over %s, reading its reels with %s",
         run.run_id,
         run.game,
+        run.control.value,
         run.architecture,
     )
     return _snapshot(run, images=False)

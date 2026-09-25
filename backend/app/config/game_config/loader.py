@@ -291,6 +291,7 @@ def load_game_config(path: Path) -> GameConfig:
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")
         ),
+        gaf=freeze_mapping(_object(document.get("gaf"), where=f"'gaf' in {path}")),
         letterbox=freeze_mapping(_letterbox(document.get("letterbox"), path=path)),
         meter=freeze_mapping(_meter(document.get("meter"), path=path)),
         event_rules=event_rules,
