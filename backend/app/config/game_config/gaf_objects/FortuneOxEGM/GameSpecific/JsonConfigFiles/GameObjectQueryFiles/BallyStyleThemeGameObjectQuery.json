@@ -1,0 +1,17 @@
+{
+    "IDeckWagerButtonQuery": {
+        "MechanicalSpinBtnID": 12
+    },
+    "NonWagerIDeckButtonQuery": {
+        "TakeWinButton": {
+            "GameObjectIdentifier": "TakeWinButton",
+            "TypeFilter": null,
+            "SceneToSearch": null
+        },
+        "GambleButton": {
+            "GameObjectIdentifier": "GambleButton",
+            "TypeFilter": null,
+            "SceneToSearch": null
+        }
+    }
+}

@@ -136,13 +136,13 @@ class AnalyzeSpinSettings(BaseSettings):
     ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE: str = ""
 
     # The confidence floor a tile has to clear to be named while grading a spin.
-    # 0.85 rather than the classifier page's own 0.90: that floor sits far above
+    # 0.80 rather than the classifier page's own 0.90: that floor sits far above
     # where the classes separate, which is safe on a page that shows the ranked
     # candidates beside every tile but costly here -- a payline through an unnamed
     # tile stops there, so the spin looks like it paid less than it did. Blank opts
     # back into CLASSIFIER_MIN_CONFIDENCE.
     ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE: float | None = Field(
-        default=0.85, ge=0.0, le=1.0
+        default=0.80, ge=0.0, le=1.0
     )
 
     @field_validator("ANALYZE_SPIN_SCREENSHOT_WIDTH", mode="before")

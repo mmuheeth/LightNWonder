@@ -147,6 +147,12 @@ def _declared_windows(
     return dict(windows) if windows else None
 
 
+def _ordinal(profile: Mapping[str, Any]) -> bool:
+    """Whether this game files cash/win/bet by left-to-right position rather than
+    by window -- see :func:`app.utils.meter.assign_fields`."""
+    return bool(profile.get("ordinal", False))
+
+
 def read(
     strip: Image.Image,
     *,
@@ -158,12 +164,15 @@ def read(
     started = time.perf_counter()
     block: Mapping[str, Any] = profile or {}
     windows = _declared_windows(block)
+    ordinal = _ordinal(block)
     try:
         executable = _executable()
         key = (game, strip.width, strip.height)
         band = _declared_band(block, strip.height) or _bands.get(key)
         if band is None:
-            band, scan = meter.fit_band(strip, executable=executable, windows=windows)
+            band, scan = meter.fit_band(
+                strip, executable=executable, windows=windows, ordinal=ordinal
+            )
             _bands[key] = band
             logger.info(
                 "Fitted meter band %s for %s at %dx%d",
@@ -174,7 +183,11 @@ def read(
             )
         else:
             scan = meter.extract(
-                strip, executable=executable, band=band, windows=windows
+                strip,
+                executable=executable,
+                band=band,
+                windows=windows,
+                ordinal=ordinal,
             )
     except (meter.MeterError, ocr.OcrError) as exc:
         return MeterValues(
@@ -205,6 +218,7 @@ def read_paddle(
     started = time.perf_counter()
     block: Mapping[str, Any] = profile or {}
     windows = _declared_windows(block)
+    ordinal = _ordinal(block)
     try:
         if not paddle_ocr.available():
             raise meter.MeterError(
@@ -215,7 +229,9 @@ def read_paddle(
         key = (game, strip.width, strip.height)
         band = _declared_band(block, strip.height) or _paddle_bands.get(key)
         if band is None:
-            band, scan = meter_paddle.fit_band(strip, options=options, windows=windows)
+            band, scan = meter_paddle.fit_band(
+                strip, options=options, windows=windows, ordinal=ordinal
+            )
             _paddle_bands[key] = band
             logger.info(
                 "Fitted meter band %s for %s at %dx%d with PaddleOCR",
@@ -226,7 +242,7 @@ def read_paddle(
             )
         else:
             scan = meter_paddle.extract(
-                strip, band=band, options=options, windows=windows
+                strip, band=band, options=options, windows=windows, ordinal=ordinal
             )
     except (meter.MeterError, ocr.OcrError) as exc:
         return MeterValues(

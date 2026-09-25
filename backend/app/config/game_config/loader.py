@@ -69,9 +69,14 @@ def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
             str(field): _fractions(span, where=f"'meter.windows.{field}' in {path}")
             for field, span in windows.items()
         }
-    unknown = set(block) - {"band", "windows"}
+    if "ordinal" in block:
+        ordinal = block["ordinal"]
+        if not isinstance(ordinal, bool):
+            raise GameConfigError(f"'meter.ordinal' in {path} must be true or false")
+        parsed["ordinal"] = ordinal
+    unknown = set(block) - {"band", "windows", "ordinal"}
     if unknown:
-        known = "band, windows"
+        known = "band, windows, ordinal"
         raise GameConfigError(
             f"'meter' in {path} has no {', '.join(sorted(unknown))} setting "
             f"(settings are: {known})"

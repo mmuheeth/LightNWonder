@@ -2611,7 +2611,7 @@ real.
 
 ### The confidence floor is now the one tunable, and it costs something
 
-`ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE` defaults to **0.85**, against the Image
+`ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE` defaults to **0.80**, against the Image
 Classifier page's own `CLASSIFIER_MIN_CONFIDENCE` of `0.90`. Both sit above where
 the classes separate, so a correct reading is rejected whenever the model is only
 *fairly* sure. That is safe on a page which shows the ranked candidates beside

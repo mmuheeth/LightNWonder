@@ -1174,7 +1174,7 @@ def test_naming_the_symbols_is_a_step_of_its_own_before_the_paylines() -> None:
 
 
 def test_the_pass_threshold_is_lower_than_the_classifier_pages_own() -> None:
-    """0.85 here against 0.90 there, and the gap is the point.
+    """0.80 here against 0.90 there, and the gap is the point.
 
     That floor sits far above where the classes separate, so a correct reading is
     rejected whenever the model is only fairly sure. Safe on a page that shows
@@ -1182,12 +1182,12 @@ def test_the_pass_threshold_is_lower_than_the_classifier_pages_own() -> None:
     payline through an unnamed tile stops there and the spin looks like it paid
     less than it did.
     """
-    assert settings.ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE == 0.85
+    assert settings.ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE == 0.80
     assert settings.CLASSIFIER_MIN_CONFIDENCE == 0.90
 
 
 def test_a_blank_floor_opts_back_into_the_classifiers_own() -> None:
-    """Blank is not the same as absent: absent means 0.85, blank means "theirs"."""
+    """Blank is not the same as absent: absent means 0.80, blank means "theirs"."""
     from app.config.analyze_spin import AnalyzeSpinSettings
 
     assert (

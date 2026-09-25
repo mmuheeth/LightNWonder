@@ -21,6 +21,7 @@ __all__ = [
     "MeterField",
     "MeterScan",
     "Unmapped",
+    "assign_fields",
     "cell_crop",
     "extract",
     "fit_band",
@@ -405,6 +406,60 @@ def cell_crop(image: Image.Image, box: Band, band: Band) -> Image.Image:
     )
 
 
+def assign_fields(
+    spans: dict[str, tuple[float, float]],
+    readings: list[tuple[float, MeterField]],
+    *,
+    ordinal: bool = False,
+) -> tuple[dict[str, MeterField], set[int]]:
+    """Files each reading under a field name.
+
+    By default, the window its centre falls in -- several groups can share a
+    window (e.g. an inline label bracket), and the best-ranked one wins. With
+    ``ordinal`` set, by left-to-right position instead: the first reading is
+    the first field (CASH, always present), the last is the last field (BET,
+    always present), and whatever sits between them is the field in between
+    (WIN, which may be absent). Ordinal exists for a skin whose windows cannot
+    be trusted -- e.g. one whose BET title is sometimes drawn over by another
+    object, which moves nothing about the *value*'s position but can leave the
+    label-derived window wrong. Order does not depend on a label at all.
+    """
+    names = list(spans)
+    fields: dict[str, MeterField] = {name: MeterField() for name in names}
+    claimed: set[int] = set()
+    if not readings:
+        return fields, claimed
+
+    if ordinal:
+        order = sorted(range(len(readings)), key=lambda i: readings[i][0])
+        if names:
+            fields[names[0]] = readings[order[0]][1]
+            claimed.add(order[0])
+        if len(names) > 1 and len(order) > 1:
+            fields[names[-1]] = readings[order[-1]][1]
+            claimed.add(order[-1])
+        middle_names = names[1:-1]
+        middle_indices = [index for index in order[1:-1] if index not in claimed]
+        if middle_names and middle_indices:
+            best = max(middle_indices, key=lambda index: readings[index][1].rank)
+            fields[middle_names[0]] = readings[best][1]
+            claimed.add(best)
+        return fields, claimed
+
+    for name, (low, high) in spans.items():
+        best_index: int | None = None
+        for index, (centre, reading) in enumerate(readings):
+            if not low <= centre <= high:
+                continue
+            if best_index is None or reading.rank > readings[best_index][1].rank:
+                best_index = index
+        if best_index is None:
+            continue
+        fields[name] = readings[best_index][1]
+        claimed.add(best_index)
+    return fields, claimed
+
+
 def reportable_span(spans: dict[str, tuple[float, float]]) -> tuple[float, float]:
     """The span of the strip a stray value is worth reporting from. Public for the
     same reason as :func:`cell_crop`: it is a property of the declared windows,
@@ -471,9 +526,11 @@ def extract(
     executable: Path,
     band: Band,
     windows: dict[str, tuple[float, float]] | None = None,
+    ordinal: bool = False,
 ) -> MeterScan:
     """Read every number in ``band`` and file each under its field; ``windows`` maps
-    field name to the span of the strip it owns."""
+    field name to the span of the strip it owns. ``ordinal`` files by left-to-right
+    position instead -- see :func:`assign_fields`."""
     spans = DEFAULT_WINDOWS if windows is None else windows
     boxes = ink_groups(image, band)
     # Concurrent: each read is a ~200ms Tesseract subprocess, and `subprocess.run`
@@ -499,22 +556,7 @@ def extract(
             continue
         readings.append(((box[0] + box[1]) / 2 / image.width, reading))
 
-    fields: dict[str, MeterField] = {}
-    claimed: set[int] = set()
-    for name, (low, high) in spans.items():
-        # Several groups can share a window (e.g. an inline label bracket) --
-        # the one the engine was surest of is the value.
-        best_index: int | None = None
-        for index, (centre, reading) in enumerate(readings):
-            if not low <= centre <= high:
-                continue
-            if best_index is None or reading.rank > readings[best_index][1].rank:
-                best_index = index
-        if best_index is None:
-            fields[name] = MeterField()
-            continue
-        fields[name] = readings[best_index][1]
-        claimed.add(best_index)
+    fields, claimed = assign_fields(spans, readings, ordinal=ordinal)
 
     # Only a *scored* stray inside the cells' own reach is worth reporting: this
     # list warns that the windows may not match the skin, and a number out at the
@@ -543,11 +585,18 @@ def fit_band(
     *,
     executable: Path,
     windows: dict[str, tuple[float, float]] | None = None,
+    ordinal: bool = False,
 ) -> tuple[Band, MeterScan]:
     """Choose the row band that reads best, and return it with its scan."""
     best: tuple[Band, MeterScan] | None = None
     for candidate in row_bands(image):
-        scan = extract(image, executable=executable, band=candidate, windows=windows)
+        scan = extract(
+            image,
+            executable=executable,
+            band=candidate,
+            windows=windows,
+            ordinal=ordinal,
+        )
         # Mean confidence first, then read count as the tiebreaker.
         if best is None or (scan.score, scan.read_count) > (
             best[1].score,

@@ -274,6 +274,9 @@ backend/obs-captured-files/*
 backend/dataset/*
 !backend/obs-captured-files/.gitkeep
 
+backend/OBS-capture
+backend/OBS-capture/*
+
 # Local-only image data: the game's extracted symbol artwork, the hand-sorted
 # validation crops, and the classifier's training set. All three are large, none
 # is reproducible from this repo, and none is source.

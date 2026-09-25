@@ -141,7 +141,12 @@ class GameConfig:
 
     meter: Mapping[str, Any]
     """Optional cash-meter overrides: ``band`` is ``[top, bottom]`` fraction of
-    strip height, ``windows`` maps a field to its ``[low, high]`` width span.
+    strip height, ``windows`` maps a field to its ``[low, high]`` width span, and
+    ``ordinal`` (bool) files cash/win/bet by left-to-right position instead of by
+    window -- for a skin whose title text (and therefore its window) cannot be
+    trusted, e.g. one occasionally drawn over by another object. Cash is always
+    first and always has a value, bet is always last and always has a value, win
+    sits between them and may be empty. See :func:`app.utils.meter.assign_fields`.
     Defaults come from :mod:`app.services.meter` / :data:`app.utils.meter.DEFAULT_WINDOWS`."""
 
     event_rules: Sequence[EventRule]

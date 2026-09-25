@@ -791,6 +791,102 @@ def test_the_meter_reads_across_canvas_sizes(
 # --- the declared band ------------------------------------------------------
 
 
+# --- ordinal assignment: by position, not by window -------------------------
+
+# Deliberately outside every DEFAULT_WINDOWS span, to prove ordinal assignment
+# does not consult a window at all.
+ORDINAL_CASH_CELL = (0.05, 0.15)
+ORDINAL_WIN_CELL = (0.40, 0.47)
+ORDINAL_BET_CELL = (0.85, 0.90)
+
+
+def test_ordinal_files_by_position_not_by_window(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """A skin whose windows don't match its layout -- e.g. because the title text
+    that would locate one is sometimes drawn over by another object -- still
+    reads correctly, because order doesn't depend on a label at all."""
+    image = strip(cells=[ORDINAL_CASH_CELL, ORDINAL_WIN_CELL, ORDINAL_BET_CELL])
+    cash_w, win_w, bet_w = (
+        (round((end - start) * image.width) + 2 * meter.CLUSTER_PAD) * 8
+        for start, end in (ORDINAL_CASH_CELL, ORDINAL_WIN_CELL, ORDINAL_BET_CELL)
+    )
+    fake_engine.by_width = {
+        cash_w: tsv(("$12.34", 96.0)),
+        win_w: tsv(("$1.00", 95.0)),
+        bet_w: tsv(("$0.50", 94.0)),
+    }
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16), ordinal=True)
+    assert str(scan.fields["cash"].value) == "12.34"
+    assert str(scan.fields["win"].value) == "1.00"
+    assert str(scan.fields["bet"].value) == "0.50"
+    assert scan.unmapped == ()
+
+
+def test_ordinal_leaves_win_empty_when_only_two_groups_read(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    """Win is the one field allowed to be missing; cash and bet never shift into
+    its place."""
+    image = strip(cells=[ORDINAL_CASH_CELL, ORDINAL_BET_CELL])
+    cash_w = (
+        round((ORDINAL_CASH_CELL[1] - ORDINAL_CASH_CELL[0]) * image.width) + 4
+    ) * 8
+    bet_w = (round((ORDINAL_BET_CELL[1] - ORDINAL_BET_CELL[0]) * image.width) + 4) * 8
+    fake_engine.by_width = {
+        cash_w: tsv(("$50.00", 96.0)),
+        bet_w: tsv(("$2.00", 96.0)),
+    }
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16), ordinal=True)
+    assert str(scan.fields["cash"].value) == "50.00"
+    assert scan.fields["win"].value is None
+    assert str(scan.fields["bet"].value) == "2.00"
+    assert scan.unmapped == ()
+
+
+def test_ordinal_reads_a_lone_group_as_cash_not_bet(
+    fake_engine: FakeEngine, engine_path: Path
+) -> None:
+    image = strip(cells=[ORDINAL_CASH_CELL])
+    fake_engine.default = tsv(("$9.00", 96.0))
+
+    scan = meter.extract(image, executable=engine_path, band=(4, 16), ordinal=True)
+    assert str(scan.fields["cash"].value) == "9.00"
+    assert scan.fields["bet"].value is None
+
+
+def test_ordinal_profile_flag_reaches_the_service(fake_engine: FakeEngine) -> None:
+    """The escape hatch for a skin whose BET title -- and therefore its window --
+    cannot be trusted: order, not position, decides the field."""
+    image = strip(cells=[ORDINAL_CASH_CELL, ORDINAL_BET_CELL])
+    cash_w = (
+        round((ORDINAL_CASH_CELL[1] - ORDINAL_CASH_CELL[0]) * image.width) + 4
+    ) * 8
+    bet_w = (round((ORDINAL_BET_CELL[1] - ORDINAL_BET_CELL[0]) * image.width) + 4) * 8
+    fake_engine.by_width = {
+        cash_w: tsv(("$50.00", 96.0)),
+        bet_w: tsv(("$2.00", 96.0)),
+    }
+
+    # Neither position sits inside a declared window, so without ordinal both
+    # values come back unmapped.
+    astray = meter_service.read(image, game="Fake", profile={"band": (0.2, 0.8)})
+    assert astray.cash is None
+    assert astray.bet is None
+    assert len(astray.unmapped) == 2
+
+    meter_service.reset()
+    ordered = meter_service.read(
+        image, game="Fake", profile={"band": (0.2, 0.8), "ordinal": True}
+    )
+    assert ordered.cash == 50.0
+    assert ordered.win is None
+    assert ordered.bet == 2.0
+    assert ordered.unmapped == []
+
+
 def test_a_declared_band_is_used_instead_of_fitting_one(
     fake_engine: FakeEngine,
 ) -> None:
@@ -853,6 +949,8 @@ def test_the_shipped_games_declare_a_band_and_windows_for_their_skin() -> None:
         {"band": ["a", "b"]},
         {"band": [True, 0.9]},
         {"windows": {"cash": [0.6, 0.3]}},
+        {"ordinal": "yes"},
+        {"ordinal": 1},
         {"nonsense": 1},
     ],
 )
@@ -871,3 +969,17 @@ def test_a_game_with_no_meter_block_is_not_an_error(tmp_path: Path) -> None:
     config = tmp_path / "Plain.json"
     config.write_text(json.dumps({"name": "Plain"}), encoding="utf-8")
     assert load_game_config(config).meter == {}
+
+
+def test_meter_ordinal_flag_is_read(tmp_path: Path) -> None:
+    config = tmp_path / "Ordinal.json"
+    config.write_text(
+        json.dumps({"name": "Ordinal", "meter": {"ordinal": True}}), encoding="utf-8"
+    )
+    assert load_game_config(config).meter == {"ordinal": True}
+
+
+def test_fortune_ox_egm_declares_ordinal_assignment() -> None:
+    """The one game whose BET title is sometimes drawn over by another object."""
+    config = load_game_config(GAME_CONFIGS / "FortuneOxEGM.json")
+    assert config.meter["ordinal"] is True

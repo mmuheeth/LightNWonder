@@ -127,13 +127,15 @@ def extract(
     band: Band,
     options: paddle_ocr.PaddleOptions,
     windows: dict[str, tuple[float, float]] | None = None,
+    ordinal: bool = False,
 ) -> MeterScan:
     """Read every number in ``band`` and file each under the field whose window it
     sits in.
 
-    The filing rule is ``meter``'s, not a second one: a cell is claimed by the
-    window its centre falls in, the best reading wins a window two groups share,
-    and a number belonging to no window is reported as
+    The filing rule is ``meter``'s, not a second one: :func:`~app.utils.meter.
+    assign_fields` claims a cell by the window its centre falls in (the best
+    reading wins a window two groups share) or, with ``ordinal``, by left-to-right
+    position -- and a number belonging to no field either way is reported as
     :class:`~app.utils.meter.Unmapped` rather than filed under the nearest name --
     that list is the warning that a skin's layout does not match the declared
     one.
@@ -157,20 +159,7 @@ def extract(
             continue
         readings.append(((box[0] + box[1]) / 2 / image.width, reading))
 
-    fields: dict[str, MeterField] = {}
-    claimed: set[int] = set()
-    for name, (low, high) in spans.items():
-        best_index: int | None = None
-        for index, (centre, reading) in enumerate(readings):
-            if not low <= centre <= high:
-                continue
-            if best_index is None or reading.rank > readings[best_index][1].rank:
-                best_index = index
-        if best_index is None:
-            fields[name] = MeterField()
-            continue
-        fields[name] = readings[best_index][1]
-        claimed.add(best_index)
+    fields, claimed = meter.assign_fields(spans, readings, ordinal=ordinal)
 
     reach = meter.reportable_span(spans)
     unmapped = tuple(
@@ -193,6 +182,7 @@ def fit_band(
     *,
     options: paddle_ocr.PaddleOptions,
     windows: dict[str, tuple[float, float]] | None = None,
+    ordinal: bool = False,
 ) -> tuple[Band, MeterScan]:
     """Choose the row band that reads best, and return it with its scan.
 
@@ -201,7 +191,9 @@ def fit_band(
     """
     best: tuple[Band, MeterScan] | None = None
     for candidate in meter.row_bands(image):
-        scan = extract(image, band=candidate, options=options, windows=windows)
+        scan = extract(
+            image, band=candidate, options=options, windows=windows, ordinal=ordinal
+        )
         # Mean confidence first, then read count as the tiebreaker -- the same
         # comparison the Tesseract reader makes.
         if best is None or (scan.score, scan.read_count) > (

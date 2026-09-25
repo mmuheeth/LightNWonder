@@ -1,0 +1,61 @@
+{
+    "name": "Fortune Ox EGM",
+    "process": "FortunrOx.exe",
+    "log": "\\\\10.2.168.252\\c$\\wms_games\\Logs\\Game\\FortuneOx\\Logs\\FortuneOx_Client.log",
+    "game_config": "\\\\10.2.168.252\\c$\\games\\FortuneOx\\games\\FortuneOx\\GameConfig",
+    "win_geometry": "\\\\10.2.168.252\\c$\\games\\FortuneOx\\games\\FortuneOx\\GameConfig\\winGeometry.xml",
+    "letterbox": {
+        "trim": false
+    },
+      "symbols": {
+    "WC": "WILD",
+    "AA": "Ox",
+    "BB": "Pisces",
+    "CC": "Wealth Pot",
+    "DD": "Arm Band",
+    "EE": "Ace",
+    "FF": "King",
+    "GG": "Queen",
+    "HH": "Jack",
+    "JJ": "Ten",
+    "MS": "Mystery1",
+    "MO": "Mystery2",
+    "MC": "Mystery (Orb)",
+    "SC": "Orb",
+    "SF": "Orb (Splittable)",
+    "FG": "Free Games",
+    "FO": "FO (feature)",
+    "SO": "SO (feature)"
+  },
+    "scatter_symbols" : ["SC", "FG","SF"],
+    "meter": {
+        "ordinal": true,
+        "band": [0.138889, 0.555556]
+    },
+    "roi": {
+   "cash_meter": [0.241146, 0.866667, 0.757813, 1.000000],
+        "reels": [
+            0.055208,
+            0.094444,
+            0.936979,
+            0.813889
+        ]
+    },
+    "reel_bounds": {
+        "rows": 3,
+        "columns": 5,
+        "inset": [
+            0.055,
+            0.0
+        ]
+    },
+     "wild_card_replacement" : ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "JJ"],
+    "gaf": {
+        "host": "10.2.168.252",
+        "port": 9090,
+        "game_type": "BallyStyle",
+        "gdk_version": "12",
+        "object_query_root": "app/config/game_config/gaf_objects/FortuneOxEGM",
+        "take_win_button": "TakeWinButton"
+    }
+}
