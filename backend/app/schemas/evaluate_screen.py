@@ -16,7 +16,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.schemas.analyze_spin import SpinReelReading
-from app.schemas.meter import MeterEngine, MeterMode, MeterValues
+from app.schemas.meter import MeterMode, MeterValues
 
 __all__ = [
     "EvaluateScreenMeter",
@@ -96,7 +96,7 @@ class EvaluateScreenSource(BaseModel):
 
 
 class EvaluateScreenMeter(BaseModel):
-    """The cash meter strip, as PaddleOCR read it.
+    """The cash meter strip, as Tesseract read it.
 
     Not ``SpinMeterValidation``: there is nothing to validate from a single
     screen. Two readings of a meter are what make an arithmetic check possible,
@@ -104,10 +104,6 @@ class EvaluateScreenMeter(BaseModel):
     there.
     """
 
-    engine: MeterEngine = Field(
-        default=MeterEngine.PADDLE,
-        description="Which engine read the strip.",
-    )
     mode: MeterMode = Field(
         description=(
             "Whether the strip was drawing money or credits. Decided from the "

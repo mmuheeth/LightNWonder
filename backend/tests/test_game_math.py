@@ -13,12 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from app.utils.game_math import (
-    GameMathError,
-    OrbValueWeight,
-    load_game_math,
-    load_paytable_identity,
-)
+from app.utils.game_math import GameMathError, load_game_math, load_paytable_identity
 from app.utils.win_geometry import WinGeometryError, load_win_geometry
 
 MATH = """<?xml version="1.0" encoding="utf-8"?>
@@ -100,53 +95,6 @@ MATH = """<?xml version="1.0" encoding="utf-8"?>
       <ComboSetIDList><ComboSet>PaylineComboSet_Main</ComboSet></ComboSetIDList>
     </Paytable>
   </PaytableList>
-  <!-- FortuneOx nests both lists inside BonusInfo rather than at the top
-       level, unlike every other list this file reads -- the real reason
-       these two need `_find` (searches the whole tree) instead of `_child`
-       (direct children only), which every other reader here can use. -->
-  <BonusInfo>
-    <WeightedTableList>
-      <WeightedTable>
-        <Identifier>BG_SCPearlCredit_88</Identifier>
-        <WeightedElementList>
-          <WeightedElement><Weight>500000</Weight><Value>-5</Value></WeightedElement>
-          <WeightedElement><Weight>4500000</Weight><Value>100</Value></WeightedElement>
-          <WeightedElement><Weight>5000000</Weight><Value>50</Value></WeightedElement>
-        </WeightedElementList>
-      </WeightedTable>
-      <WeightedTable>
-        <Identifier>BG_NonSCPearlCredit_88</Identifier>
-        <WeightedElementList>
-          <WeightedElement><Weight>10000000</Weight><Value>50</Value></WeightedElement>
-        </WeightedElementList>
-      </WeightedTable>
-      <!-- Same WeightedElement shape, unrelated mechanic; claimed by nothing. -->
-      <WeightedTable>
-        <Identifier>BG_SplitPearl_0</Identifier>
-        <WeightedElementList>
-          <WeightedElement><Weight>1</Weight><Value>0</Value></WeightedElement>
-        </WeightedElementList>
-      </WeightedTable>
-    </WeightedTableList>
-    <ValueTableList>
-      <ValueTable>
-        <Identifier>Jackpots_Level</Identifier>
-        <ValueList><Value>-5</Value><Value>-6</Value></ValueList>
-      </ValueTable>
-      <ValueTable>
-        <Identifier>Jackpots_Type</Identifier>
-        <StringValueList><Value>JP5</Value><Value>JP6</Value></StringValueList>
-      </ValueTable>
-      <ValueTable>
-        <Identifier>Jackpots_5</Identifier>
-        <ValueList><Value>2500</Value></ValueList>
-      </ValueTable>
-      <ValueTable>
-        <Identifier>Jackpots_6</Identifier>
-        <ValueList><Value>1000</Value></ValueList>
-      </ValueTable>
-    </ValueTableList>
-  </BonusInfo>
   <MysteryReplacementInfo>
     <ReplacementInstruction><DoReplace originalSymbol="MS" newSymbol="WC" /></ReplacementInstruction>
   </MysteryReplacementInfo>
@@ -307,55 +255,6 @@ def test_line_and_scatter_combos_are_read_apart(math) -> None:
     assert (scatter.min_symbols, scatter.max_symbols) == (3, 5)
     assert scatter.base_multiplier == "TotalBet"
     assert scatter.bonus_code == 1
-
-
-def test_orb_value_tables_are_claimed_by_identifier_not_shape(math) -> None:
-    """``BG_SplitPearl_0`` has the exact same WeightedElement shape as the two
-    PearlCredit tables but names a different mechanic, so it must not appear
-    here even though nothing about its structure would tell the two apart."""
-    identifiers = {table.identifier for table in math.orb_value_tables}
-
-    assert identifiers == {"BG_SCPearlCredit_88", "BG_NonSCPearlCredit_88"}
-
-
-def test_an_orb_value_table_reads_its_context_kind_and_bet_from_its_name(
-    math,
-) -> None:
-    """The only place these three facts are written down is the identifier."""
-    table = math.orb_values("SC", context="BG", bet=88)
-
-    assert table is not None
-    assert table.context == "BG"
-    assert table.symbol_kind == "SC"
-    assert table.bet == 88
-    assert set(table.weights) == {
-        OrbValueWeight(value=-5, weight=500000),
-        OrbValueWeight(value=100, weight=4500000),
-        OrbValueWeight(value=50, weight=5000000),
-    }
-    assert table.total_weight == 10000000
-
-
-def test_a_negative_orb_value_is_a_jackpot_code_not_a_credit_amount(math) -> None:
-    """A negative ``Value`` means "this outcome is a jackpot", so it must not
-    be read as -5 credits."""
-    table = math.orb_values("SC", context="BG", bet=88)
-    jackpot = next(item for item in table.weights if item.value == -5)
-
-    assert jackpot.is_jackpot is True
-    assert next(item for item in table.weights if item.value == 50).is_jackpot is False
-
-
-def test_jackpot_tiers_pair_level_and_type_by_position(math) -> None:
-    """``Jackpots_Level`` and ``Jackpots_Type`` are two parallel lists with no
-    shared key of their own -- position is the only thing that pairs them."""
-    tier = math.jackpot_tier(-5)
-
-    assert tier is not None
-    assert tier.reset_value == 2500
-    assert tier.type_label == "JP5"
-    assert math.jackpot_tier(-6).type_label == "JP6"
-    assert math.jackpot_tier(-6).reset_value == 1000
 
 
 def test_a_symbol_set_can_be_looked_up_or_taken_when_it_is_the_only_one(math) -> None:

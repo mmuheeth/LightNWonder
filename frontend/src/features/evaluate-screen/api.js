@@ -12,9 +12,9 @@ const EVALUATE_SCREEN_URL = `${routes.API}/evaluate-screen`;
 /**
  * Well past the global 15s, because this one request is the whole pipeline: a
  * screenshot out of OBS, the grid split, a forward pass over fifteen tiles, then
- * a PaddleOCR read per scatter orb *and* per meter cell -- all on CPU, and the
- * first call of a process also loads the Paddle detector and recogniser off
- * disk. Measured on a nine-scatter screen: 70s, of which ~37s was the orbs.
+ * an OCR read per scatter orb and a Tesseract read per meter cell -- all on CPU,
+ * and the first call of a process also loads the orb reader's models off disk.
+ * Measured on a nine-scatter screen: 70s, of which ~37s was the orbs.
  *
  * Deliberately a per-request timeout rather than a raise of `apiTimeoutMs`: a
  * three-minute global default would leave every genuinely hung request hanging

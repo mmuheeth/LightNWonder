@@ -215,9 +215,15 @@ no longer what `analyze_spin` reads a spin by),
 with the reel background the cut-outs ship without put back — torch-free on
 purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
 its transforms, the training loop and a checkpoint),
-`tile_video.py` (the only module that imports cv2: buffers tile crops and writes
-one short video per reel position, probing its codec by writing a frame because
-OpenCV reports a writer as open for an encoder that then fails to initialise),
+`tile_video.py` (one of the two modules that import cv2 — the writing one:
+buffers tile crops and writes one short video per reel position, probing its
+codec by writing a frame because OpenCV reports a writer as open for an encoder
+that then fails to initialise),
+`video_frames.py` (the reading one: a recorded clip back as still frames at a
+fixed interval, decoding *forward* with `grab()`/`retrieve()` rather than
+seeking — `CAP_PROP_POS_FRAMES` lands on the preceding keyframe and decodes
+forward anyway, so seeking each sample re-decodes most of the clip once per
+sample and measured 12x slower over a 90s file),
 `symbol_overlay.py` (draws
 rings the cells that were named, over the reels -- no
 text on it, because the codes and confidences are a table beside it and drawing
@@ -577,7 +583,13 @@ while the two groups' confidences **overlap outright** — a stray `1` scores 40
 against a true `150` at 17.8 and a true `100` at 19.1. So any threshold both
 rejects real prizes and admits noise, whereas digit count separates that sample
 perfectly. This was shipped as a confidence floor first and it silently dropped
-the `100` off a three-orb spin; don't reintroduce one. A prize is never one digit.
+the `100` off a three-orb spin; don't reintroduce one. A bare prize is never one
+digit — **the one exception is a currency mark**. The filigree does not draw a
+`$`, so a reading that carries one is evidence of an amount rather than of noise,
+and `utils/paddle_ocr._AMOUNT_MARKS` admits `$5` at a single digit while a bare
+`5` is still refused. Currency marks only: a figure drawn with a decimal point
+already clears the count on its own digits, so admitting `.` would buy nothing
+and would promote a digit sitting beside a speck of filigree.
 
 A rejected reading keeps its raw `text` and `ocr_confidence` on the payload rather
 than vanishing, because a dropped number should be visible as something read and

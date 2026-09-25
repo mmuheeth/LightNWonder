@@ -110,8 +110,8 @@ export function ScreenControlCard({ result, analyze }) {
         </CardTitle>
         <CardDescription>
           Read the screen as it is now — no spin is pressed. The symbols come from the
-          trained classifier, the figures on the scatters and the cash meter from
-          PaddleOCR
+          trained classifier, the figures on the scatters from OCR, and the cash meter
+          from Tesseract
         </CardDescription>
       </CardHeader>
 
@@ -163,9 +163,9 @@ export function ScreenControlCard({ result, analyze }) {
             said "Analyzing…" for a minute otherwise reads as a hang. */}
         {busy ? (
           <p className="text-muted-foreground text-xs">
-            Reading the grid, then each scatter and each meter cell with PaddleOCR. This
-            takes up to a minute or so — longer on the first run of the backend, which
-            also loads the OCR models.
+            Reading the grid, then each scatter with OCR and the meter with Tesseract.
+            This takes up to a minute or so — longer on the first run of the backend,
+            which also loads the OCR models.
           </p>
         ) : null}
 

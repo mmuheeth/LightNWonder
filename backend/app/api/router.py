@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     analyze_spin,
+    cyclic_messages,
     evaluate_screen,
     event_capture,
     gaf,
@@ -30,6 +31,9 @@ api_router.include_router(
     event_capture.router, prefix="/event-capture", tags=["event-capture"]
 )
 api_router.include_router(gaf.router, prefix="/gaf", tags=["gaf"])
+api_router.include_router(
+    cyclic_messages.router, prefix="/cyclic-messages", tags=["cyclic-messages"]
+)
 api_router.include_router(game_input.router, prefix="/game-input", tags=["game-input"])
 api_router.include_router(ocr.router, prefix="/ocr", tags=["ocr"])
 api_router.include_router(roi.router, prefix="/roi", tags=["roi"])

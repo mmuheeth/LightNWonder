@@ -51,7 +51,7 @@ from app.schemas.analyze_spin import (
 )
 from app.schemas.grid import GridSplitRequest
 from app.schemas.image_classifier import ClassifyRequest, ClassifyResult
-from app.schemas.meter import MeterEngine, MeterMode
+from app.schemas.meter import MeterMode
 from app.schemas.obs import ScreenshotRequest
 from app.schemas.paylines import PaylineCheckResult
 from app.schemas.paytable import DenominationInfo, PaylineComboInfo, PaytableView
@@ -69,10 +69,10 @@ from app.services import paylines as paylines_service
 from app.services import paytable as paytable_service
 from app.services import roi as roi_service
 from app.services import tile_clips as tile_clips_service
-from app.utils import game_log, paddle_ocr
+from app.utils import game_log
 from app.utils import ocr as ocr_util
 from app.utils import paylines as payline_config
-from app.utils.game_math import ANY_SYMBOL, GameMath, GameMathError, load_game_math
+from app.utils.game_math import ANY_SYMBOL
 from app.utils.log_tail import LogTail
 from app.utils.paths import UnsafeNameError, resolve_subdirectory, resolve_within
 
@@ -934,11 +934,7 @@ async def _read_meter(frame: SpinFrame) -> SpinMeterReading:
     """Read the meter off one frame. Never raises for a bad *reading* -- ROI carries
     that as ``meter.error`` -- only for a frame or region it cannot reach at all."""
     result = await roi_service.extract(
-        RoiExtractRequest(
-            region=_METER_REGION,
-            file_name=frame.file_name,
-            engine=MeterEngine.PADDLE,
-        )
+        RoiExtractRequest(region=_METER_REGION, file_name=frame.file_name)
     )
     values = result.meter
     return SpinMeterReading(
@@ -1437,7 +1433,9 @@ def _summarise_scatters(scatters: list[SpinScatterReading]) -> str:
 _ScatterValue = tuple[float | None, str | None, str | None, float | None, str | None]
 
 
-def _read_scatter_value(crop: Image.Image, math: GameMath | None) -> _ScatterValue:
+def _read_scatter_value(
+    crop: Image.Image, *, executable: Path, options: ocr_util.OcrOptions
+) -> _ScatterValue:
     """OCR one scatter's crop for the prize printed on it, as
         ``(value, text, confidence, error)``.
 
@@ -1446,19 +1444,14 @@ def _read_scatter_value(crop: Image.Image, math: GameMath | None) -> _ScatterVal
         simply comes back with no digits in it -- which is ``value=None`` and no
         error. Only being unable to read the crop at all is an error.
 
-    :func:`app.services.ocr.read_tile` returns a figure only where PaddleOCR's
-        reading supports one, so a tile carrying no number and a tile whose number
-        could not be made out both arrive as ``value=None`` with no error. The best
-        rejected candidate is still passed through as ``text`` -- a refused reading
-        should be visible as something read and refused, not as silence.
-
-    ``math`` is the loaded game's own maths, passed to :func:`read_tile` so the
-    digit floor a reading must clear is that game's own smallest declared prize
-    rather than a constant that silently rejects a game whose paytable carries
-    single-digit orbs (see ``app.services.ocr.min_digits_for``). ``None`` when
-    no maths could be loaded falls back to that constant."""
+    :func:`app.services.ocr.read_tile` reads the crop several ways and returns a
+        figure only where the readings support one, so a tile carrying no number and a
+        tile whose number could not be made out both arrive as ``value=None`` with no
+        error. The best rejected candidate is still passed through as ``text`` -- a
+        refused reading should be visible as something read and refused, not as
+        silence."""
     try:
-        reading = ocr_service.read_tile(crop, math=math)
+        reading = ocr_service.read_tile(crop, executable=executable, options=options)
     except ocr_util.OcrError as exc:
         failed: _ScatterValue = (None, None, None, None, str(exc))
         return failed
@@ -1492,21 +1485,13 @@ def _read_scatter_value(crop: Image.Image, math: GameMath | None) -> _ScatterVal
 
 
 async def _read_scatters(
-    config: GameConfig,
-    split_dir: Path,
-    reading: SpinReelReading,
-    math: GameMath | None = None,
+    config: GameConfig, split_dir: Path, reading: SpinReelReading
 ) -> tuple[list[SpinScatterReading], str]:
     """Every scatter on the grid, with the number on it where it carries one.
 
     Reads the tiles back off the split the classify step just wrote rather than
     re-cropping the frame, so the pixels OCR sees are exactly the ones the
-    classifier named the code from.
-
-    ``math`` is the loaded game's own maths, passed through to every tile read
-    so the OCR digit floor matches the game actually being read rather than a
-    constant tuned against a different one's paytable -- see
-    :func:`_read_scatter_value`."""
+    classifier named the code from."""
     codes = _scatter_codes(config)
     if not codes:
         return [], ""
@@ -1515,13 +1500,13 @@ async def _read_scatters(
     if not landed:
         return [], _summarise_scatters([])
 
-    # Checked once for the whole grid, not per tile: PaddleOCR being unavailable
-    # is one fact about the run and not five identical ones.
-    if not paddle_ocr.available():
-        message = (
-            "PaddleOCR is not installed, so scatter figures cannot be read. "
-            "Install paddleocr (it needs Python 3.13 or lower)"
-        )
+    # Resolved once for the whole grid, not per tile: a missing Tesseract is one
+    # fact about the run and not five identical ones.
+    try:
+        executable = await ocr_service.engine_for_reading()
+        options = ocr_service.read_tile_options(config)
+    except (AppException, ocr_util.OcrOptionsError) as exc:
+        message = exc.message if isinstance(exc, AppException) else str(exc)
         unread = [
             SpinScatterReading(
                 name=tile.name,
@@ -1546,6 +1531,7 @@ async def _read_scatters(
         crop_error = None
 
     scatters: list[SpinScatterReading] = []
+
     async def read_one(tile: SpinSymbolReading) -> _ScatterValue:
         """One tile's reading, or the reason there isn't one."""
         crop = tiles.get(tile.name)
@@ -1557,8 +1543,13 @@ async def _read_scatters(
                 crop_error or f"the split holds no {tile.name} tile to read",
             )
             return missing
-        return await asyncio.to_thread(_read_scatter_value, crop, math)
+        return await asyncio.to_thread(
+            _read_scatter_value, crop, executable=executable, options=options
+        )
 
+    # Concurrently, not one after another: reading a tile is several Tesseract
+    # subprocesses and the tiles are independent, so a five-scatter grid that
+    # takes ~15s in sequence takes about as long as its slowest tile instead.
     # One tile at a time, deliberately. Reading them concurrently is *slower*:
     # PaddleOCR inference is CPU-bound and serialized on its own engine lock, so
     # the threads queue on that lock while still competing for cores. Measured on
@@ -1583,26 +1574,28 @@ async def _read_scatters(
             )
         )
     summary = _summarise_scatters(scatters)
+    # Which engine read the orbs, said once per spin rather than per tile. Worth
+    # a line because Tesseract is still identified before this loop for the
+    # fallback, so its "OCR engine: tesseract" line otherwise reads as if it were
+    # the one that answered.
     logger.info(
-        "Read %d scatter(s) of %s with PaddleOCR: %s",
+        "Read %d scatter(s) of %s with %s: %s",
         len(scatters),
         config.name,
+        "PaddleOCR" if ocr_service.orb_engine_is_paddle() else "Tesseract",
         summary,
     )
     return scatters, summary
 
 
 async def read_scatters(
-    config: GameConfig,
-    split_dir: Path,
-    grid: SpinReelReading,
-    math: GameMath | None = None,
+    config: GameConfig, split_dir: Path, reading: SpinReelReading
 ) -> tuple[list[SpinScatterReading], str]:
     """Every scatter on a named grid, with the figure printed on it -- see
     :func:`_read_scatters`. Public for the same reason as :func:`reading`: an orb
     carries what it carries whether or not a spin put it there, and Evaluate
     Screen reads it off a screen nobody spun."""
-    return await _read_scatters(config, split_dir, grid, math)
+    return await _read_scatters(config, split_dir, reading)
 
 
 async def _read_reels(run: _ActiveRun) -> None:
@@ -1642,21 +1635,8 @@ async def _read_reels(run: _ActiveRun) -> None:
             # second reader. A game declaring no scatter codes leaves both
             # fields empty and the step reads exactly as it did before.
             _, config = _active_config()
-            # The maths this spin was prepared with (`_prepare`), reloaded here
-            # for the prize-figure digit floor it declares -- see
-            # `_read_scatter_value`. Loading is mtime/size-cached
-            # (`app.services.paytable`), so this is not a second read of the
-            # file. No maths, or one that fails to load, is not fatal to
-            # classifying the reels: scatters still read, just against the
-            # fallback floor.
-            math: GameMath | None = None
-            if run.paytable is not None:
-                with contextlib.suppress(GameMathError, OSError):
-                    math = await asyncio.to_thread(
-                        load_game_math, Path(run.paytable.math.path)
-                    )
             scatters, scatter_summary = await _read_scatters(
-                config, Path(split.output_dir), reading, math
+                config, Path(split.output_dir), reading
             )
             run.reels = reading.model_copy(
                 update={"scatters": scatters, "scatter_summary": scatter_summary}
@@ -2340,6 +2320,18 @@ def clip_path(run_id: str, file_name: str) -> Path:
 def state(*, images: bool = False) -> SpinAnalysisState:
     """The run in progress, or the last one that finished. Never fails."""
     return _snapshot(_run, images=images)
+
+
+def owns_recording() -> bool:
+    """Whether the OBS recording output, if it is running, belongs to a spin.
+
+    OBS records one output at a time, so a feature about to record has to know
+    whether this one is already using it -- and the answer is only ever "yes,
+    leave it alone" or "not mine", never "stop it". A run started with
+    ``record=False`` owns nothing, and neither does a finished one.
+    """
+    run = _run
+    return run is not None and run.record and run.state is SpinRunState.RUNNING
 
 
 async def abort() -> None:

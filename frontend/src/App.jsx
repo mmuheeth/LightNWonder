@@ -5,6 +5,7 @@ import { AnalyzeSpinEgmPage } from "@/pages/analyze-spin-egm-page";
 import { AnalyzeSpinPage } from "@/pages/analyze-spin-page";
 import { ImageClassifierPage } from "@/pages/image-classifier-page";
 import { CapturesPage } from "@/pages/captures-page";
+import { CyclicMessagesPage } from "@/pages/cyclic-messages-page";
 import { DashboardPage } from "@/pages/dashboard-page";
 import { EvaluateScreenPage } from "@/pages/evaluate-screen-page";
 import { GameConfigPage } from "@/pages/game-config-page";
@@ -19,6 +20,8 @@ export default function App() {
         <Route index element={<DashboardPage />} />
         <Route path="event-captures" element={<CapturesPage />} />
         <Route path="event-captures/:runId" element={<CapturesPage />} />
+        <Route path="cyclic-messages" element={<CyclicMessagesPage />} />
+        <Route path="cyclic-messages/:runId" element={<CyclicMessagesPage />} />
         <Route path="game-config" element={<GameConfigPage />} />
         <Route path="analyze-spin" element={<AnalyzeSpinPage />} />
         <Route path="analyze-spin-egm" element={<AnalyzeSpinEgmPage />} />
@@ -33,3 +36,9 @@ export default function App() {
     </Routes>
   );
 }
+
+
+
+
+
+   

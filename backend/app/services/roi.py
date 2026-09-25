@@ -21,7 +21,6 @@ from app.exceptions.base import (
     RoiFrameNotFoundError,
     RoiRegionNotFoundError,
 )
-from app.schemas.meter import MeterEngine
 from app.schemas.roi import (
     RoiCatalog,
     RoiExtractRequest,
@@ -319,15 +318,7 @@ def _extract(request: RoiExtractRequest) -> RoiExtractResult:
     values = None
     if request.region == _SAVED_REGION:
         _save_crop(crop, path)
-        # Which engine reads it is the caller's choice -- see `MeterEngine`. The
-        # crop, the saved copy and everything else about the region are the same
-        # either way; only the recognition differs.
-        read = (
-            meter_service.read_paddle
-            if request.engine is MeterEngine.PADDLE
-            else meter_service.read
-        )
-        values = read(crop, game=name, profile=config.meter)
+        values = meter_service.read(crop, game=name, profile=config.meter)
     return RoiExtractResult(
         game=name,
         region=request.region,

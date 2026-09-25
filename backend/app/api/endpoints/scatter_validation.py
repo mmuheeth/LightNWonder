@@ -13,7 +13,10 @@ from fastapi import APIRouter
 
 from app.core.logging import get_logger
 from app.schemas.response import ApiResponse
-from app.schemas.scatter_validation import ScatterValidationRequest, ScatterValidationResult
+from app.schemas.scatter_validation import (
+    ScatterValidationRequest,
+    ScatterValidationResult,
+)
 from app.services import scatter_validation as scatter_validation_service
 
 logger = get_logger("scatter_validation.api")

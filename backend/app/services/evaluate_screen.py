@@ -10,10 +10,9 @@ single frame rather than over a driven spin:
 * the figure on a scatter orb comes from :mod:`app.services.ocr`'s
   ``read_tile``, which is PaddleOCR;
 * the cash meter comes from :mod:`app.services.roi`'s extract of
-  ``roi.cash_meter``.
-
-The meter is read with **PaddleOCR**, through ``meter_service.read_paddle`` --
-the same engine Analyze Spin's meter validations now use.
+  ``roi.cash_meter``, which reads it with Tesseract through
+  ``meter_service.read`` -- the same path every other meter reading in the app
+  goes through; there is no engine choice here.
 
 What is *absent* is as deliberate. There is no spin, no log to follow, no
 recording, and **no validation**: a check like "balance fell by the bet" needs
@@ -49,7 +48,7 @@ from app.schemas.evaluate_screen import (
 )
 from app.schemas.grid import GridSplitRequest
 from app.schemas.image_classifier import ClassifyRequest, ClassifyResult
-from app.schemas.meter import MeterEngine, MeterMode
+from app.schemas.meter import MeterMode
 from app.schemas.obs import ScreenshotRequest
 from app.schemas.roi import RoiExtractRequest
 from app.services import analyze_spin as analyze_spin_service
@@ -89,26 +88,45 @@ async def _capture() -> tuple[Path, bool]:
     Written to disk rather than kept in memory, unlike the OCR service's live
     frame: the grid split reads the frame back by name, and a reading somebody
     disagrees with is only arguable if the picture behind it still exists.
+
+    The settle and the retry are Analyze Spin's, for its reasons and off its
+    settings -- this feature reads the same frames and should not drift from
+    how they are taken. ``obs.connect()`` ends in ``select_current_game_window``
+    on *every* call, not only the one that opens the session, so a capture that
+    follows it is a capture taken inside a re-point. Re-pointing a window
+    capture makes OBS render nothing for a moment and it reports a successful
+    write of that nothing, so without the wait every screenshot this feature
+    took came back black -- and a black frame is not a dark reading, it is
+    every reading below it silently meaningless.
     """
     await obs_service.connect()
-    result = await obs_service.take_screenshot(
-        ScreenshotRequest(
-            image_format="png",
-            width=settings.ANALYZE_SPIN_SCREENSHOT_WIDTH,
-            file_name=f"{_FRAME_PREFIX}-{int(time.time() * 1000)}",
-            output_dir=settings.OBS_SCREENSHOT_SUBDIR,
+    await asyncio.sleep(settings.ANALYZE_SPIN_SOURCE_SETTLE_SECONDS)
+
+    attempts = 0
+    while True:
+        attempts += 1
+        result = await obs_service.take_screenshot(
+            ScreenshotRequest(
+                image_format="png",
+                width=settings.ANALYZE_SPIN_SCREENSHOT_WIDTH,
+                file_name=f"{_FRAME_PREFIX}-{int(time.time() * 1000)}",
+                output_dir=settings.OBS_SCREENSHOT_SUBDIR,
+            )
         )
-    )
-    if result.file_path is None:
-        raise ScreenEvaluationFailedError(
-            "OBS returned the screenshot but wrote no file, so there is nothing to read"
-        )
-    path = Path(result.file_path)
-    # Read back rather than trusted, for the reason Analyze Spin does the same:
-    # OBS reports a successful write of a frame it rendered nothing into, so the
-    # only way to know the capture happened is to look at it.
-    blank = await asyncio.to_thread(roi_service.is_blank, path)
-    return path, blank
+        if result.file_path is None:
+            raise ScreenEvaluationFailedError(
+                "OBS returned the screenshot but wrote no file, so there is "
+                "nothing to read"
+            )
+        path = Path(result.file_path)
+        # Read back rather than trusted, for the reason Analyze Spin does the
+        # same: OBS reports a successful write of a frame it rendered nothing
+        # into, so the only way to know the capture happened is to look at it.
+        blank = await asyncio.to_thread(roi_service.is_blank, path)
+        if not blank or attempts > settings.ANALYZE_SPIN_BLANK_RETRIES:
+            return path, blank
+        logger.warning("Captured an empty frame (%s); retrying", path.name)
+        await asyncio.sleep(settings.ANALYZE_SPIN_BLANK_RETRY_SECONDS)
 
 
 def _source(path: Path, *, captured: bool, blank: bool) -> EvaluateScreenSource:
@@ -162,7 +180,8 @@ async def _read_grid(
 
 
 async def _read_meter(file_name: str, *, include_images: bool) -> EvaluateScreenMeter:
-    """Read the cash meter strip with PaddleOCR.
+    """Read the cash meter strip with Tesseract, the same path every other
+    meter reading in the app goes through.
 
     Never raises for a bad *reading* -- an unreadable strip comes back as
     ``error`` with the crop still attached, since the picture beside the failure
@@ -171,11 +190,7 @@ async def _read_meter(file_name: str, *, include_images: bool) -> EvaluateScreen
     failing the whole screen.
     """
     result = await roi_service.extract(
-        RoiExtractRequest(
-            region=_METER_REGION,
-            file_name=file_name,
-            engine=MeterEngine.PADDLE,
-        )
+        RoiExtractRequest(region=_METER_REGION, file_name=file_name)
     )
     values = result.meter
     balance = None
@@ -184,7 +199,6 @@ async def _read_meter(file_name: str, *, include_images: bool) -> EvaluateScreen
         # one of the two is set, and which one is what `mode` says.
         balance = values.cash if values.cash is not None else values.credits
     return EvaluateScreenMeter(
-        engine=MeterEngine.PADDLE,
         mode=MeterMode.UNKNOWN if values is None else values.mode,
         currency=None if values is None else values.currency,
         balance=balance,

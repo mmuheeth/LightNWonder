@@ -33,10 +33,7 @@ const PAYTABLE_URL = `${routes.API}/paytable`;
  *   scatter_combos: Array<{combo_id: number|null, combo_set: string, group: number|null,
  *   value: number|null, symbols: string[], names: Array<string|null>, min_symbols:
  *   number|null, max_symbols: number|null, base_multiplier: string|null, bonus_code:
- *   number|null}>, paytables: Array<{identifier: string, combo_set_ids: string[]}>,
- *   orb_value_tables: Array<{symbol_kind: string, bet: number, rows: Array<{value:
- *   number|null, jackpot_code: number|null, jackpot_label: string|null, weight: number,
- *   probability: number}>, expected_value: number|null}>},
+ *   number|null}>, paytables: Array<{identifier: string, combo_set_ids: string[]}>},
  *   win_geometry: {path: string, payline_set_id: string|null, resolved_from: string,
  *   line_count: number|null, sets: Array<{payline_set_id: string, line_count: number,
  *   is_applicable: boolean}>, paylines: Array<{line: number, number: number, elements:

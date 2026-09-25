@@ -21,6 +21,8 @@ from pathlib import Path
 
 from app.core.logging import get_logger
 from app.exceptions.base import AppException
+from app.schemas.analyze_spin import SpinScatterReading
+from app.schemas.paytable import PaytableView
 from app.schemas.scatter_validation import (
     ScatterValidationBetInfo,
     ScatterValidationRequest,
@@ -30,6 +32,7 @@ from app.schemas.scatter_validation import (
 from app.services import analyze_spin as analyze_spin_service
 from app.services import evaluate_screen as evaluate_screen_service
 from app.services import paytable as paytable_service
+from app.services import roi as roi_service
 from app.utils.game_math import GameMath, GameMathError, OrbValueTable, load_game_math
 
 logger = get_logger("scatter_validation")
@@ -76,7 +79,9 @@ def _table_for(
         if table is not None:
             return table, bet
     tables = [
-        t for t in math.orb_value_tables if t.symbol_kind == symbol_kind and t.context == context
+        t
+        for t in math.orb_value_tables
+        if t.symbol_kind == symbol_kind and t.context == context
     ]
     return (tables[0], tables[0].bet) if tables else (None, None)
 
@@ -96,7 +101,7 @@ _TWO_DOLLAR_MONEY_PER_CREDIT = 2.0
 
 
 def _check_scatter(
-    scatter,
+    scatter: SpinScatterReading,
     math: GameMath,
     live_bet: int | None,
     money_per_credit: float | None = None,
@@ -128,14 +133,17 @@ def _check_scatter(
         )
 
     tiers = {tier.code: tier for tier in math.jackpot_tiers}
-    raw_expected_values = sorted({item.value for item in table.weights if not item.is_jackpot})
-    expected_labels = sorted(
-        {
-            tiers[item.value].type_label
-            for item in table.weights
-            if item.is_jackpot and item.value in tiers and tiers[item.value].type_label
-        }
+    raw_expected_values = sorted(
+        {item.value for item in table.weights if not item.is_jackpot}
     )
+    expected_label_set: set[str] = set()
+    for item in table.weights:
+        if not item.is_jackpot:
+            continue
+        tier = tiers.get(item.value)
+        if tier is not None and tier.type_label is not None:
+            expected_label_set.add(tier.type_label)
+    expected_labels = sorted(expected_label_set)
 
     # At $2 the glass draws every plain credit amount already turned into money
     # (multiplier x money_per_credit), so the *table* is scaled up to match what
@@ -144,7 +152,9 @@ def _check_scatter(
     # reads off the report, so it needs to read in the same units the tile does.
     # Every other denomination scales by 1.0, a no-op -- see
     # _TWO_DOLLAR_MONEY_PER_CREDIT. Jackpot labels are words, never scaled.
-    scale = money_per_credit if money_per_credit == _TWO_DOLLAR_MONEY_PER_CREDIT else 1.0
+    scale = (
+        money_per_credit if money_per_credit == _TWO_DOLLAR_MONEY_PER_CREDIT else 1.0
+    )
     expected_values = sorted({value * scale for value in raw_expected_values})
 
     if scatter.value is None and scatter.prize_label is None:
@@ -202,7 +212,7 @@ def _check_scatter(
     )
 
 
-def _bet_info(view) -> ScatterValidationBetInfo:
+def _bet_info(view: PaytableView) -> ScatterValidationBetInfo:
     """Narrow a :class:`~app.schemas.paytable.PaytableView` to the bet/denomination panel."""
     bet_config = view.bet_config
     denomination = view.denomination
@@ -239,10 +249,8 @@ async def validate(
         path, blank = await evaluate_screen_service._capture()
         captured = True
     else:
-        path = await asyncio.to_thread(
-            evaluate_screen_service.roi_service.resolve_frame, payload.file_name
-        )
-        blank = await asyncio.to_thread(evaluate_screen_service.roi_service.is_blank, path)
+        path = await asyncio.to_thread(roi_service.resolve_frame, payload.file_name)
+        blank = await asyncio.to_thread(roi_service.is_blank, path)
         captured = False
 
     source = await asyncio.to_thread(
@@ -267,7 +275,7 @@ async def validate(
     except GameMathError as exc:
         bet_info_error = str(exc)
         errors.append(f"Bet info: {bet_info_error}")
-    except Exception as exc:  # noqa: BLE001 - recorded, never raised
+    except Exception as exc:
         bet_info_error = f"{type(exc).__name__}: {exc}"
         errors.append(f"Bet info: {bet_info_error}")
         logger.exception("Reading the paytable for %s failed", name)
@@ -279,35 +287,39 @@ async def validate(
     grid_image: str | None = None
     try:
         reels, result, split_dir = await evaluate_screen_service._read_grid(
-            source.file_name, payload.architecture, include_images=payload.include_images
+            source.file_name,
+            payload.architecture,
+            include_images=payload.include_images,
         )
     except AppException as exc:
         reels_error = exc.message
         errors.append(f"Grid: {exc.message}")
-    except Exception as exc:  # noqa: BLE001 - recorded, never raised
+    except Exception as exc:
         reels_error = f"{type(exc).__name__}: {exc}"
         errors.append(f"Grid: {reels_error}")
         logger.exception("Reading the grid of %s failed", name)
     else:
         grid_image = result.overlay_image
-        # `math` is the same maths just loaded above (or `None` when it could
-        # not be read), passed through so the scatter reading's OCR digit floor
-        # matches this game's own paytable -- see
-        # `app.services.analyze_spin._read_scatter_value`.
         scatters, summary = await analyze_spin_service.read_scatters(
-            config, split_dir, reels, math
+            config, split_dir, reels
         )
-        reels = reels.model_copy(update={"scatters": scatters, "scatter_summary": summary})
+        reels = reels.model_copy(
+            update={"scatters": scatters, "scatter_summary": summary}
+        )
 
     checks: list[ScatterValueCheck] = []
     checkable = [
-        s for s in (reels.scatters if reels else []) if s.symbol not in _EXCLUDED_FROM_CHECK
+        s
+        for s in (reels.scatters if reels else [])
+        if s.symbol not in _EXCLUDED_FROM_CHECK
     ]
     if checkable:
         if math is not None:
             live_bet = bet_info.current_bet if bet_info else None
             money_per_credit = bet_info.money_per_credit if bet_info else None
-            checks = [_check_scatter(s, math, live_bet, money_per_credit) for s in checkable]
+            checks = [
+                _check_scatter(s, math, live_bet, money_per_credit) for s in checkable
+            ]
         else:
             checks = [
                 ScatterValueCheck(

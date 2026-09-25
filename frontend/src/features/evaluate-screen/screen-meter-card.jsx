@@ -1,9 +1,7 @@
 import { ChevronRight, Gauge, TriangleAlert } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -139,7 +137,7 @@ function Unmapped({ unmapped }) {
   );
 }
 
-/** The cash meter strip, as PaddleOCR read it. */
+/** The cash meter strip, as Tesseract read it. */
 export function ScreenMeterCard({ meter }) {
   const money = meter.mode === "cash";
   const values = meter.values;
@@ -152,14 +150,9 @@ export function ScreenMeterCard({ meter }) {
           Cash meter
         </CardTitle>
         <CardDescription>
-          Read off the meter strip with PaddleOCR — the balance, the last win and the
+          Read off the meter strip with Tesseract — the balance, the last win and the
           bet, in whichever unit the strip was drawing
         </CardDescription>
-        <CardAction>
-          <Badge variant="outline" className="font-mono text-[0.65rem]">
-            {meter.engine}
-          </Badge>
-        </CardAction>
       </CardHeader>
 
       <CardContent className="space-y-4">

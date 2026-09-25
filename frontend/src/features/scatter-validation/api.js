@@ -13,8 +13,8 @@ const SCATTER_VALIDATION_URL = `${routes.API}/scatter-validation`;
 
 /**
  * Same budget as Evaluate Screen: this is the same pipeline (screenshot, grid
- * split, classifier, PaddleOCR per scatter and per meter cell) plus a paytable
- * read, all on CPU.
+ * split, classifier, OCR per scatter -- but not the meter, which this feature
+ * has no use for) plus a paytable read, all on CPU.
  */
 const ANALYZE_TIMEOUT_MS = 240_000;
 

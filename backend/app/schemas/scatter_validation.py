@@ -182,7 +182,8 @@ class ScatterValueCheck(BaseModel):
         )
     )
     reason: str | None = Field(
-        default=None, description="Why the status is what it is, for anything but a plain match."
+        default=None,
+        description="Why the status is what it is, for anything but a plain match.",
     )
 
 
@@ -194,10 +195,12 @@ class ScatterValidationResult(BaseModel):
     source: EvaluateScreenSource = Field(description="The screen that was read.")
     duration_ms: int = Field(ge=0, description="How long the whole reading took.")
     reels: SpinReelReading | None = Field(
-        default=None, description="What landed, tile by tile, and every scatter's figure."
+        default=None,
+        description="What landed, tile by tile, and every scatter's figure.",
     )
     reels_error: str | None = Field(
-        default=None, description="Why the grid could not be read, when it could not be."
+        default=None,
+        description="Why the grid could not be read, when it could not be.",
     )
     grid_image: str | None = Field(
         default=None, description="The reels crop with a ring over every named cell."

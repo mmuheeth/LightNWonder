@@ -312,9 +312,9 @@ class SpinMeterValidation(BaseModel):
         default=None,
         description=(
             "The symbol drawn on the values in cash mode, e.g. '$'. '?' means "
-            "money was read but no symbol the OCR engine will name -- the yen "
-            "glyph these games draw reads as nothing at every mode and scale. "
-            "Null in credits mode and when nothing was read."
+            "money was read but no symbol Tesseract will name -- the yen glyph "
+            "these games draw reads as nothing at every mode and scale. Null in "
+            "credits mode and when nothing was read."
         ),
     )
     denomination: DenominationInfo | None = Field(

@@ -114,11 +114,14 @@ class OcrSettings(BaseSettings):
     OCR_SCREENSHOT_WIDTH: int | None = Field(default=None, ge=8, le=4096)
 
     # --- orb numbers (PaddleOCR) ------------------------------------------
-    # The figure printed on a symbol orb is read by PaddleOCR: measured on this
-    # project's own tiles, Tesseract reads nothing at all off dataset/SC/r1c4.png
-    # where Paddle reads 160 at 0.9998. Named regions and whole frames (the
-    # generic OCR endpoint) still read with Tesseract -- Paddle has no options
-    # or per-word geometry equivalent to what that endpoint exposes.
+    # The figure printed on a symbol orb is read by PaddleOCR instead of
+    # Tesseract, and *only* that: meters, named regions and whole frames stay on
+    # Tesseract. Measured on this project's own tiles, Tesseract reads nothing at
+    # all off dataset/SC/r1c4.png where Paddle reads 160 at 0.9998.
+    #
+    # false falls the orb reader back to Tesseract, for a host without Paddle
+    # installed (it needs Python 3.13 or lower) or to compare the two engines.
+    OCR_ORB_PADDLE_ENABLED: bool = True
 
     # PaddleOCR's language pack. "en" is the Latin-digit recogniser; the figures
     # on an orb are digits, so this is not the same choice as OCR_LANGUAGE.

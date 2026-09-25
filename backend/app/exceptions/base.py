@@ -247,6 +247,36 @@ class EventCaptureRunNotFoundError(AppException):
     message = "The requested capture run was not found"
 
 
+# --- Cyclic Messages ------------------------------------------------------
+# Its own codes rather than event capture's: the two features run independently
+# and a frontend showing "a run is already in progress" must be able to say
+# *which* one, since stopping the other would not help.
+
+
+class CyclicMessagesAlreadyRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CYCLIC_MESSAGES_ALREADY_RUNNING"
+    message = "A cyclic message run is already in progress"
+
+
+class CyclicMessagesNotRunningError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CYCLIC_MESSAGES_NOT_RUNNING"
+    message = "No cyclic message run is in progress"
+
+
+class CyclicMessagesLogUnavailableError(AppException):
+    status_code = HTTPStatus.CONFLICT
+    error_code = "CYCLIC_MESSAGES_LOG_UNAVAILABLE"
+    message = "The active game's log is not available to follow"
+
+
+class CyclicMessagesRunNotFoundError(AppException):
+    status_code = HTTPStatus.NOT_FOUND
+    error_code = "CYCLIC_MESSAGES_RUN_NOT_FOUND"
+    message = "The requested cyclic message run was not found"
+
+
 # --- OCR ------------------------------------------------------------------
 # 409: no Tesseract install (a Retry button would be a lie). 404: region not
 # declared by the active game (a typo, not an unreadable meter). 502: no frame
@@ -374,22 +404,6 @@ class SpinClipNotFoundError(AppException):
     message = "No such tile clip"
 
 
-# --- Evaluate screen ------------------------------------------------------
-# Holds no run, so there is nothing to be in the wrong state about: the only
-# failure of its own is being unable to get a frame to read at all. Everything
-# else fails as the service it came from -- an undeclared region is still
-# `ROI_REGION_NOT_FOUND`, and an unreadable grid or meter is not an HTTP failure
-# at all but an error carried on the result beside the reading that did work.
-
-
-class ScreenEvaluationFailedError(AppException):
-    """No frame to read, so there is nothing to evaluate."""
-
-    status_code = HTTPStatus.BAD_GATEWAY
-    error_code = "SCREEN_EVALUATION_FAILED"
-    message = "The screen could not be captured for evaluation"
-
-
 # --- Image classifier -----------------------------------------------------
 # Training is one process-wide run, like a spin analysis, so its failures split
 # the same way: 409 when the machine or the run is not in the state the caller
@@ -477,3 +491,17 @@ class GafNotIdleError(AppException):
     status_code = HTTPStatus.CONFLICT
     error_code = "GAF_NOT_IDLE"
     message = "The game is still playing, so it cannot be spun"
+# --- Evaluate screen ------------------------------------------------------
+# Holds no run, so there is nothing to be in the wrong state about: the only
+# failure of its own is being unable to get a frame to read at all. Everything
+# else fails as the service it came from -- an undeclared region is still
+# `ROI_REGION_NOT_FOUND`, and an unreadable grid or meter is not an HTTP failure
+# at all but an error carried on the result beside the reading that did work.
+
+
+class ScreenEvaluationFailedError(AppException):
+    """No frame to read, so there is nothing to evaluate."""
+
+    status_code = HTTPStatus.BAD_GATEWAY
+    error_code = "SCREEN_EVALUATION_FAILED"
+    message = "The screen could not be captured for evaluation"
