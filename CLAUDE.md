@@ -5,10 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A Windows-hosted control surface for slot-game simulators. The FastAPI backend
-(`backend/`, port 8001) drives five local integrations — OBS Studio over
+(`backend/`, port 8001) drives six local integrations — OBS Studio over
 obs-websocket v5, a Virtual OLED button deck served by `OledPanelSvc.exe`, a
-log-following screenshot recorder, Tesseract OCR over the frames OBS wrote, and
-posted mouse clicks into the game's own Unity window — and the React dashboard
+log-following screenshot recorder, Tesseract OCR over the frames OBS wrote,
+posted mouse clicks into the game's own Unity window, and GAF, which drives the
+game by calling its own methods through a local `NRobot.Server.exe` — and the
+React dashboard
 (`frontend/`, port 3001) is the UI for them. Every one is host-machine specific:
 they talk to processes, windows and log files on the developer's own PC, not to a
 network service.
@@ -18,12 +20,13 @@ EfficientNet-B0 on symbol artwork and reads back the tiles the reel grid already
 wrote, so it needs no running game, no OBS and no elevation. torch is a real
 dependency but a lazily imported one, so a machine without it still boots.
 
-The dashboard covers the first three, plus `features/games` for choosing the
-active game, `features/roi` for cropping a configured region out of the latest
-screenshot, `features/paylines` for checking which of the game's winning patterns
-those tiles satisfy, and `features/paytable` for the maths the running game
-actually loaded. `game-input` and `ocr` are backend-only so far — endpoints
-and services with no `src/features/` slice — so don't go hunting for their UI.
+The dashboard covers the first three and GAF, plus `features/games` for
+choosing the active game, `features/roi` for cropping a configured region out
+of the latest screenshot, `features/paylines` for checking which of the game's
+winning patterns those tiles satisfy, and `features/paytable` for the maths the
+running game actually loaded. `game-input` and `ocr` are backend-only so far —
+endpoints and services with no `src/features/` slice — so don't go hunting for
+their UI.
 **`features/grid` no longer exists**: the frontend slice was deleted in
 `f0b5721` ("Dashboard Cleanup") while `/api/grid` and its `queryKeys.grid` entry
 stayed, so a reel split is a backend-only operation now.
@@ -36,14 +39,22 @@ current paytable, win geometry, payline combos, reel strips — out of a respons
 that also carries the symbol table those names come from and the scatter awards;
 the slice is deliberately not a one-to-one rendering of the payload.
 
-`features/analyze-spin` (`/analyze-spin`, the "Analyze Spin" tab) is every other
-integration in one press: it records, screenshots, spins the i-deck, follows the
-game log to the result, clicks take-win if anything was won, screenshots each
-moment, stops recording, and then validates the cash meter, names the symbols on
-the reels with the image classifier, and checks the paylines those symbols paid.
-It is the only slice whose live half is not react-query — a run publishes a
-snapshot per step over a WebSocket — and the only one that composes other
-features' services rather than wrapping one of its own.
+`features/analyze-spin` (`/analyze-spin` and `/analyze-spin-egm`, the "Analyze
+Spin" and "Analyze Spin with EGM" tabs) is every other integration in one press:
+it records, screenshots, spins, follows the game log to the result, takes the win
+if anything was won, screenshots each moment, stops recording, and then validates
+the cash meter, names the symbols on the reels with the image classifier, and
+checks the paylines those symbols paid. It is the only slice whose live half is
+not react-query — a run publishes a snapshot per step over a WebSocket — and the
+only one that composes other features' services rather than wrapping one of its
+own.
+
+**The two tabs are one slice and one backend sequence**, parameterised by
+`?control=` (`ideck` | `gaf`) — see the service note below. The frontend half is
+`SpinAnalysisView` plus `controls.js`, with two fifteen-line pages under
+`pages/`; a card added to the view appears on both, which is the point. Don't
+copy the slice to add a third channel: add an entry to `SPIN_CONTROLS` and a
+branch to the two press helpers.
 
 `features/image-classifier` (`/image-classifier`, the "Image Classifier" tab)
 trains a model and then names the tiles of a written split. Its own route because
@@ -117,9 +128,9 @@ Adding a backend resource is three files plus one line: `app/schemas/<thing>.py`
 ## Backend architecture
 
 **Services are module-level singletons, not classes.** `obs.py`, `ideck.py`,
-`event_capture.py`, `game_input.py`, `ocr.py`, `analyze_spin.py` and
+`event_capture.py`, `game_input.py`, `gaf.py`, `ocr.py`, `analyze_spin.py` and
 `image_classifier.py` each hold their state (client, lock, running run, cached
-engine, loaded model) in module globals and expose a `reset()` that
+engine, loaded model, open session) in module globals and expose a `reset()` that
 `tests/conftest.py` calls autouse before and after every test. Callers import the
 namespace, not the functions: `from app.services import obs as obs_service`.
 `event_capture.reset()` and `analyze_spin.reset()` are async because both have a
@@ -129,8 +140,9 @@ latter.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
 inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
-`GameInputSettings`, `OcrSettings`, `FrameSettings`, `PaylineSettings`,
-`PaytableSettings`, `AnalyzeSpinSettings` and `ImageClassifierSettings`
+`GameInputSettings`, `GafSettings`, `OcrSettings`, `FrameSettings`,
+`PaylineSettings`, `PaytableSettings`, `AnalyzeSpinSettings` and
+`ImageClassifierSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
 module-level `settings` instance is imported directly by services — so tests
@@ -152,7 +164,9 @@ Two keys point *out* of the repo, at the game's own install: `game_config`
 (its `GameConfig` directory) and `win_geometry` (that directory's
 `winGeometry.xml`). Neither is checked at load time: the install is not part of
 this repo and a config naming it stays valid on a machine without it, so the
-service reading the file is where a missing one becomes an error.
+service reading the file is where a missing one becomes an error. A third,
+`gaf.object_query_root`, points out of the repo the same way — at an AGTF
+Perforce workspace — and makes the same bargain.
 
 A third, `symbols`, is the display name per two-letter symbol code. It is the
 one thing about a game's maths that is *declared* rather than read, and only
@@ -165,6 +179,13 @@ with no game installed. The list is **closed on purpose** — the codes left out
 are the scatters and feature symbols the game pays by counting across the grid,
 so a wild beside two orbs is not three orbs. Omitting the block substitutes
 nothing, which is exactly what every config did before it existed.
+
+A fifth, `scatter_symbols`, is the other side of that same coin: the codes the
+game pays by counting anywhere on the grid. **The loader refuses a code listed
+in both blocks**, since a scatter is exactly what the wild must not stand in for,
+and the two answers about one tile would otherwise disagree. It is read by
+`analyze_spin`'s classify step (below) and nothing else; both blocks are parsed
+by one `_symbol_codes` helper, so they accept the same shape.
 
 **Foreign formats get their own `app/utils` module**, deliberately ignorant of
 who consumes them: `panel_xml.py` (i-deck layout), `panel_log.py` (panel service
@@ -194,14 +215,24 @@ no longer what `analyze_spin` reads a spin by),
 with the reel background the cut-outs ship without put back — torch-free on
 purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
 its transforms, the training loop and a checkpoint),
-`tile_video.py` (the only module that imports cv2: buffers tile crops and writes
-one short video per reel position, probing its codec by writing a frame because
-OpenCV reports a writer as open for an encoder that then fails to initialise),
+`tile_video.py` (one of the two modules that import cv2 — the writing one:
+buffers tile crops and writes one short video per reel position, probing its
+codec by writing a frame because OpenCV reports a writer as open for an encoder
+that then fails to initialise),
+`video_frames.py` (the reading one: a recorded clip back as still frames at a
+fixed interval, decoding *forward* with `grab()`/`retrieve()` rather than
+seeking — `CAP_PROP_POS_FRAMES` lands on the preceding keyframe and decodes
+forward anyway, so seeking each sample re-decodes most of the clip once per
+sample and measured 12x slower over a 90s file),
 `symbol_overlay.py` (draws
 rings the cells that were named, over the reels -- no
 text on it, because the codes and confidences are a table beside it and drawing
 them over the artwork duplicates them at their least readable size),
 `payline_overlay.py` (draws evaluated lines over a crop, and owns their palette),
+`nrobot.py` (the Robot Framework remote-library protocol over XML-RPC — a
+FAIL is a reply, not a fault, and every argument crosses as a string),
+`gaf_objects.py` (the AGTF object-query files: friendly control name → Unity
+GameObject, BOM-encoded, merged in order with game-specific last),
 `paths.py` (resolves untrusted filenames inside a root — use it for anything
 that came off the wire).
 
@@ -225,7 +256,15 @@ thing for a screenshot to catch), the box is found once per frame rather than
 once per region, and every response reports it beside the region's own box —
 a crop of the wrong thing is either a badly measured region or a misdetected box,
 and only the pair says which. `FRAME_LETTERBOX_TRIM=false` reverts to canvas
-fractions. **Region values in a game config are therefore fractions of the game,
+fractions, and a game overrides that (and the threshold, and the minimum
+fraction) for itself with a `letterbox` block keyed the same way — per-game
+because detection is only as good as the game's own edges: HuffNPuffHighRise
+drifts clouds across both sides of its window, so twelve idle captures gave a
+content box starting at x=136 eleven times and x=0 once, and its regions are
+fractions of the whole window instead (`"letterbox": {"trim": false}`).
+`services/roi.letterbox_options()` is where the two are combined, and
+`content_box`/`resolve_box`/`is_blank` take an optional `config=` so a caller
+holding the active game does not reload it. **Region values in a game config are therefore fractions of the game,
 not of the canvas** — measuring one off a letterboxed screenshot means
 subtracting the bars first.
 
@@ -504,15 +543,124 @@ grid, copied field by field by `analyze_spin._reading()` rather than a second
 answer to compare it against. The log-derived counterpart it used to sit beside is
 gone from that payload.
 
+**Scatters are the one thing a second reader answers about a tile.** The classify
+step in `analyze_spin` follows the classifier with `_read_scatters`: for every
+tile whose code is in the config's `scatter_symbols`, it reads that tile back out
+of the split just written — not a fresh crop of the frame, so OCR sees exactly
+the pixels the code was named from — and OCRs it for the prize figure a tile may
+be drawn with. The result is `SpinReelReading.scatters`/`scatter_summary`.
+
+**Every scatter is read, not a declared subset**: whether a tile carries a number
+is a property of the *tile*, so a free-games scatter simply comes back with no
+digits, which is `value: null` and **no error** — an error means the crop could
+not be read at all.
+
+**The tile options are the OCR service's, not this module's.**
+`ocr.read_tile_options()` layers them over the environment's defaults, and a game
+overrides them under an `ocr.symbol_tile` key. That key is not an `roi` region,
+so it stays out of `ocr.regions()` and the region catalogue while sharing the
+block's shape. `ocr.read_crop()` / `ocr.engine_for_reading()` exist so a caller
+holding its own crop has a door in that does not re-derive either —
+`analyze_spin` still owns no image handling.
+
+**`psm 8` is what reads a prize tile, and `psm 11` is the trap.** A figure on an
+orb is one run of large gold digits, so "treat the crop as a single word" reads
+it: measured against the written FortuneOx tiles, 8 reads 600/300/240/150/100/50
+with **no thresholding at all** and holds across every upscale. `psm` 11 ("sparse
+text"), the intuitive choice for digits floating over artwork, reads most of those
+same tiles as the empty string — which is what the first cut of this shipped and
+what "no text" in the UI meant. Don't change it back. There is no `threshold`
+either: gold on a light orb has no grey level that separates them, and 8 does not
+need one.
+
+**Because `psm 8` is told the crop is a word, it always answers with one** — so a
+tile carrying no figure comes back as a stray digit off the artwork, and a
+misclassified Ox reads as a one-digit prize. `ocr.TILE_MIN_DIGITS` (2) is the cut,
+and **it is a digit count, not a confidence floor — a floor cannot work here.**
+Measured over every written split: all 16 misreads are a *single* digit
+(`1`,`7`,`3`,`0`,`4`) and all 21 genuine figures are two or three (50 … 600),
+while the two groups' confidences **overlap outright** — a stray `1` scores 40.0
+against a true `150` at 17.8 and a true `100` at 19.1. So any threshold both
+rejects real prizes and admits noise, whereas digit count separates that sample
+perfectly. This was shipped as a confidence floor first and it silently dropped
+the `100` off a three-orb spin; don't reintroduce one. A bare prize is never one
+digit — **the one exception is a currency mark**. The filigree does not draw a
+`$`, so a reading that carries one is evidence of an amount rather than of noise,
+and `utils/paddle_ocr._AMOUNT_MARKS` admits `$5` at a single digit while a bare
+`5` is still refused. Currency marks only: a figure drawn with a decimal point
+already clears the count on its own digits, so admitting `.` would buy nothing
+and would promote a digit sitting beside a speck of filigree.
+
+A rejected reading keeps its raw `text` and `ocr_confidence` on the payload rather
+than vanishing, because a dropped number should be visible as something read and
+refused — that pair is what the card's "What OCR read" panel exists to show, and
+it is how the dropped `100` was caught. `ocr_confidence` is reported but
+**deliberately not used as a gate**, per the overlap above.
+
+**`services/gaf.py` drives the game by calling its methods, and it is the one
+integration that needs no coordinates at all.** The simulator hosts an
+automation service on a per-game Thrift port; a local `NRobot.Server.exe`
+(8270, started by its own batch file, not by this repo) translates Robot
+Framework keywords into it, so `utils/nrobot.py` is stdlib XML-RPC and nothing
+speaks Thrift. `utils/gaf_objects.py` reads the eight AGTF object-query files
+that name the controls -- BOM-encoded, merged in order, game-specific last,
+and all eight required. The public surface is `status()`, `connect()`,
+`disconnect()`, `spin()` and `take_win()`; the endpoints take no body, because
+the endpoint, theme wrapper and control names all come from the active game's
+`gaf` block. Four invariants:
+
+- **A win holds the game in `statePlaying` until it is collected**, so a
+  settle loop waiting only for idle times out on exactly the spins worth
+  having. `spin()` waits for *either*, and `win_offered` is a finished spin.
+- **Nothing is spun on top of a spin that has not finished.** Measured: a
+  free-spin bonus outlasted the 120s settle timeout and the next spin landed
+  mid-bonus, so its result belonged to the previous spin. The pre-press state
+  read catches it (409 `GAF_NOT_IDLE`), and `force=True` is the escape hatch.
+- **The press is bracketed.** Before it, one state read proves the session is
+  alive *and* supplies the before-picture; after it, `_await_departure` waits
+  for the game to move, because the press is acknowledged before the game
+  does. Past the press nothing is retried -- a retried spin is a second spin.
+- **A FAIL is a reply, not a fault, and a PASS can still answer `"False"`.**
+  `_run_true` is what refuses the second; collapsing either into success is
+  how a press that never happened gets reported as a spin.
+
+Meters ride on both results as the game's **own strings** (`"$995.80"`), not
+parsed -- that is the whole advantage over OCR. The win meter is read
+mid-rack-up, so only a post-collect figure is real. Treat all of it as a
+control channel and a cross-check against the classifier and OCR, never as a
+silent replacement: GAF reads the scene graph, which is closer to the glass
+than the log but still not pixels.
+
 **`services/analyze_spin.py` is orchestration and nothing else.** It owns no
 image handling, no XML, no win32 — it is the *order* the other services go in
-(OBS record/screenshot, i-deck press, game log wait, game-input click, then
+(OBS record/screenshot, the spin press, game log wait, the collect, then
 then ROI's meter, then grid+classifier, then paylines), and every step carries the underlying
 service's own error code. `_step` also has one convention worth knowing: a body
 that sets `step.error` **without raising** is recorded as failed and the run
 carries on, for the step that did its work and knows the result is unusable. Six
 things it exists to get right:
 
+- **Exactly two steps know how the game is driven, and `control` is the whole
+  difference.** `spin` and `take-win` press something; every other step does
+  identical work either way, which is why `ideck` and `gaf` are one sequence
+  with two branch points (`_press_spin`, `_take_win`) rather than two
+  orchestrations. `ideck` is the i-deck key plus a posted click; `gaf` is the
+  game's own methods, so no key layout and no coordinates take part. Resolved by
+  the now-public `resolve_control()` in `start()` **before the game config is
+  read**, exactly as the architecture is, so an unknown name is a 400 rather
+  than a failed step four steps in — and recorded on the run, because one
+  service holds every run and both tabs watch the same stream. Four things the
+  GAF side does deliberately: it presses with `settle=False` (GAF's own settle
+  would hold the run inside one XML-RPC call for the length of the spin, where
+  every wait here is sliced so a cancel lands within 100ms — and the *log*, not
+  GAF, is what the next three steps read); it does **not** force, so a game
+  holding an uncollected win is `GAF_NOT_IDLE` on the press rather than a result
+  belonging to the previous spin; it collects with `settle=True`, because the
+  game back at idle is what the next screenshot is of; and it opens its session
+  in `prepare` rather than reporting it, since unlike a panel at `access_denied`
+  there is nothing to fall back on. A take-win button GAF calls not interactable
+  is recorded through the error-without-raising convention above — the reels are
+  still on screen and still worth reading.
 - **A losing spin is proven by silence.** The game logs `[WinBangDone]` when the
   win meter counts up and logs nothing at all when there is no win, so "no win"
   is that line's absence within `ANALYZE_SPIN_WIN_WAIT_SECONDS`. Set below the
@@ -855,10 +1003,16 @@ one directory. Shared plumbing is in `src/lib/`.
 - **Take-win and gamble are not on the i-deck.** The panel has fourteen keys and
   neither is among them — the games' logs prove it, arriving as a `TouchMsg` from
   the glass. So `services/game_input.py` posts clicks into the simulator's Unity
-  window. There is no API to ask politely with: Unity implements neither UI
-  Automation nor MSAA, and GDK's GAF Thrift server (which has a literal
-  `SimulateTouch`) is present in `Assembly-CSharp.dll` but not started by a
-  normal launch. If it ever is, it belongs behind that module's public API.
+  window: Unity implements neither UI Automation nor MSAA, so there is no tree
+  of controls to address by name.
+- **GDK's GAF Thrift server *is* started on newer builds, and
+  `services/gaf.py` drives it.** This contradicted the older FortuneOx
+  finding, which is where "not started by a normal launch" came from:
+  HuffNPuffHighRise logs `Starting the Thrift Server ....` on every launch and
+  answers on 9090. Nothing here speaks Thrift, though — a second local
+  process, `NRobot.Server.exe`, hosts Robot Framework keyword libraries on
+  8270 and translates plain XML-RPC into it, so `app/utils/nrobot.py` needs
+  nothing but the standard library. See **GAF automation** below.
 - **A missed click is silent** — no error, no exception, just nothing. So each
   one records the game log's size first and reads only what was appended.
   A target's `confirm` key names a `game_log` event, which proves *which* button

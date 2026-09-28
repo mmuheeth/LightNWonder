@@ -530,8 +530,19 @@ async def status() -> ObsStatus:
 
 
 async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
-    """Capture a screenshot of a source or scene, always as a base64 data URI.
-    Supplying ``file_name`` also has OBS write the file to disk."""
+    """Capture a screenshot of a source or scene, always as a base64 data URI
+    unless the caller has said it does not want one. Supplying ``file_name``
+    also has OBS write the file to disk.
+
+    ``GetSourceScreenshot`` and ``SaveSourceScreenshot`` are two independent
+    requests and OBS answers each with its own full re-encode of the frame --
+    there is no request that both saves a file and returns its bytes in one
+    round trip. A caller writing a file it never reads back as ``image_data``
+    (a capture loop screenshotting for its own record, say) can skip the first
+    one via ``include_image_data=False`` and pay for one encode instead of two,
+    which on a machine also encoding a recording is the difference between a
+    single-digit-seconds screenshot and one twice that.
+    """
     source_name = payload.source_name or await _current_scene()
     request_data: dict[str, Any] = {
         "sourceName": source_name,
@@ -552,20 +563,25 @@ async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
         else None
     )
 
-    # Always fetched, so the caller gets an inline preview whether or not the
-    # shot is also being saved to disk.
-    data = await _call("GetSourceScreenshot", request_data)
-    image_data = _as_str(data.get("imageData"))
-    if not image_data:
-        raise ObsRequestError("OBS returned a screenshot with no image data")
+    image_data: str | None = None
+    if payload.include_image_data:
+        data = await _call("GetSourceScreenshot", request_data)
+        image_data = _as_str(data.get("imageData"))
+        if not image_data:
+            raise ObsRequestError("OBS returned a screenshot with no image data")
+
+        if target is None:
+            return ScreenshotResult(
+                source_name=source_name,
+                image_format=payload.image_format,
+                image_data=image_data,
+            )
 
     if target is None:
-        return ScreenshotResult(
-            source_name=source_name,
-            image_format=payload.image_format,
-            image_data=image_data,
-        )
-
+        # Unreachable through the API: `ScreenshotRequest` refuses
+        # `include_image_data=False` without `file_name`, and the branch above
+        # already returned when a file was not requested at all.
+        raise ObsRequestError("No screenshot was requested")
     target.parent.mkdir(parents=True, exist_ok=True)
     request_data["imageFilePath"] = str(target)
     await _call("SaveSourceScreenshot", request_data)

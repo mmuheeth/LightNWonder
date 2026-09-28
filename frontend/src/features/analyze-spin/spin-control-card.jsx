@@ -26,6 +26,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { spinFrameUrl } from "@/features/analyze-spin/api";
+import { SPIN_CONTROLS } from "@/features/analyze-spin/controls";
 import { cn } from "@/lib/utils";
 
 /** What fixes a refused start; the backend's own message says what happened. */
@@ -33,7 +34,15 @@ const ERROR_HINTS = {
   SPIN_ANALYSIS_UNAVAILABLE:
     "Start the game so it begins writing its log, then try again.",
   SPIN_ANALYSIS_ALREADY_RUNNING: "Wait for the run to finish, or cancel it.",
+  // The three a GAF-driven run can be refused by before it presses anything.
+  // Each names a different link of the chain, so each has its own fix.
+  GAF_NOT_CONFIGURED: "The active game declares no GAF block, so it cannot be driven.",
+  GAF_UNAVAILABLE:
+    "Start NRobot.Server.exe with NRobotStartUpScript.bat — a reboot always kills it.",
+  GAF_NOT_IDLE:
+    "The game is still playing. Collect the win it is holding, or let the bonus finish.",
 };
+
 
 /** The networks a spin can be graded by, and the order they are offered in. */
 const ARCHITECTURES = [
@@ -98,7 +107,14 @@ function Frames({ frames }) {
 }
 
 /** The button, and the run it started. */
-export function SpinControlCard({ run, active, connected, start, cancel }) {
+export function SpinControlCard({
+  run,
+  active,
+  connected,
+  start,
+  cancel,
+  control = SPIN_CONTROLS.ideck,
+}) {
   // Off by default: a spin is not recorded unless this run's own toggle says
   // so, and that choice is only asked for at the moment of pressing spin.
   const [record, setRecord] = useState(false);
@@ -118,12 +134,9 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Dices className="size-4" />
-          Analyze Spin
+          {control.title}
         </CardTitle>
-        <CardDescription>
-          Spin once, and validate the meter and the paylines against the maths the game
-          has loaded
-        </CardDescription>
+        <CardDescription>{control.description}</CardDescription>
         <CardAction>
           <Badge
             variant="outline"
@@ -150,7 +163,7 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
               size="sm"
               onClick={() => {
                 cancel.reset();
-                start.mutate({ record, architecture });
+                start.mutate({ record, architecture, control: control.name });
               }}
               disabled={active || busy}
             >
@@ -262,6 +275,25 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
                 )}
               </StatRow>
               <StatRow label="Game">{run.label}</StatRow>
+              {/* One backend service holds every run and only one cabinet
+                  exists, so this page can be showing a run the other one
+                  started. Which channel drove it is the only way to tell. */}
+              <StatRow label="Driven by">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "font-mono text-[0.65rem]",
+                    run.control !== control.name && "text-muted-foreground",
+                  )}
+                  title={
+                    run.control === control.name
+                      ? "Started from this page"
+                      : "Started from the other Analyze Spin page"
+                  }
+                >
+                  {SPIN_CONTROLS[run.control]?.badge ?? run.control}
+                </Badge>
+              </StatRow>
               <StatRow label="Elapsed">{formatDuration(run.duration_ms)}</StatRow>
               <StatRow label="Id">
                 <span className="font-mono text-xs">{run.run_id}</span>
@@ -292,10 +324,7 @@ export function SpinControlCard({ run, active, connected, start, cancel }) {
             ) : null}
           </>
         ) : (
-          <p className="text-muted-foreground text-sm">
-            No spin analysed yet. The game and OBS need to be running, and the i-deck
-            panel open.
-          </p>
+          <p className="text-muted-foreground text-sm">{control.idle}</p>
         )}
       </CardContent>
     </Card>

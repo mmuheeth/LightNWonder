@@ -20,8 +20,10 @@ from app.middleware import RequestContextMiddleware
 from app.schemas.response import ApiResponse
 from app.schemas.system import ServiceInfo
 from app.services import analyze_spin as analyze_spin_service
+from app.services import cyclic_messages as cyclic_messages_service
 from app.services import database as database_service
 from app.services import event_capture as event_capture_service
+from app.services import gaf as gaf_service
 from app.services import image_classifier as image_classifier_service
 from app.services import obs as obs_service
 
@@ -30,7 +32,7 @@ logger = get_logger("main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Connect the database and (optionally) OBS on startup; tear both down on shutdown."""
+    """Start optional local integrations without opening an unused database connection."""
     settings: Settings = app.state.settings
     logger.info(
         "Starting %s v%s (env=%s, debug=%s)",
@@ -39,7 +41,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.ENVIRONMENT,
         settings.DEBUG,
     )
-    app.state.db = await database_service.connect(settings)
 
     # OBS is optional, so a missing one must never stop the app booting. It is
     # also deliberately not a health probe: a closed screen recorder should not
@@ -56,6 +57,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Before OBS goes: a run still going needs its manifest sealed, and
         # sealing it takes one last screenshot-free read, not a live socket.
         await event_capture_service.abort()
+        # This one needs the socket for the same reason analyze-spin does: it
+        # holds a running OBS recording, and shutting down without stopping it
+        # leaves the cabinet recording into the next session.
+        await cyclic_messages_service.abort()
         # This one needs the socket, not just the absence of it: a spin
         # interrupted mid-run would otherwise leave OBS still recording.
         await analyze_spin_service.abort()
@@ -63,8 +68,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # being awaited -- but it does need awaiting, or the pending task
         # outlives the loop.
         await image_classifier_service.abort()
-        await database_service.disconnect(app.state.db)
-        app.state.db = None
+        # A session left open on the game's side blocks the next client,
+        # so a backend restart would otherwise cost a game restart too.
+        await gaf_service.shutdown()
         await obs_service.disconnect()
         logger.info("Shutdown complete")
 

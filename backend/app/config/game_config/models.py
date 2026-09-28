@@ -74,6 +74,17 @@ class GameConfig:
     installed. :class:`app.utils.paylines.WildRule` is what turns it into the
     substitution rule."""
 
+    scatter_symbols: Sequence[str]
+    """Symbol codes this game pays by counting anywhere on the grid rather than
+    along a line, upper-cased and in the order declared -- the complement of
+    :attr:`wild_card_replacement`, and declared for the same reason.
+
+    Read by :mod:`app.services.analyze_spin`, which reports every scatter that
+    landed and where. Some of them are drawn with a number on the tile (a
+    prize orb); that is not declared, because it is a property of the *tile that
+    landed* and not of the code -- the analyse step OCRs each scatter crop and
+    reports a value for the ones that turn out to carry digits."""
+
     roi: Mapping[str, Any]
     """Named screen regions, as fractions of the game's content box (not the
     OBS canvas -- see :mod:`app.utils.letterbox`). Shape enforced at use by
@@ -97,9 +108,45 @@ class GameConfig:
     """Named in-game click targets, as fractions of the window client area --
     the same space :attr:`roi` is measured in."""
 
+    gaf: Mapping[str, Any]
+    """Optional GAF automation block: where this game hosts its automation
+    service and which object-query dictionary names its controls.
+
+    Per-game because every value in it is a property of the game, not of this
+    machine -- ``host``/``port`` (the Thrift endpoint the game itself listens
+    on), ``game_type`` and ``gdk_version`` (which client wrapper drives its
+    theme), and ``object_query_root`` plus the two query-file lists (the
+    dictionary that turns a control name into a Unity GameObject). Empty when
+    the game declares none, which means it cannot be driven this way.
+
+    Like :attr:`game_config_dir`, ``object_query_root`` points *out* of this
+    repo -- into an AGTF Perforce workspace -- and is deliberately not checked
+    at load time. Shape is validated by :func:`app.config.gaf.resolve_target`;
+    existence becomes an error in :mod:`app.services.gaf`, which is what reads
+    the files."""
+
+    letterbox: Mapping[str, Any]
+    """Optional per-game letterbox overrides, keyed exactly as the three
+    ``FRAME_LETTERBOX_*`` settings they replace: ``trim`` (bool),
+    ``threshold`` (0-255) and ``min_fraction`` (0-1). Absent keys keep the
+    environment's value, and an absent block changes nothing.
+
+    Per-game because whether trimming finds the same box twice is a property of
+    what the game *draws*, not of the capture: a game whose art reaches the
+    window edge only sometimes -- a drifting cloud, a fading border -- moves its
+    own content box between frames, and regions measured against one box are
+    aimed at the wrong thing against the next. Turning trimming off for that
+    game leaves the games that really are letterboxed alone. Resolved against
+    the environment by :func:`app.services.roi.letterbox_options`."""
+
     meter: Mapping[str, Any]
     """Optional cash-meter overrides: ``band`` is ``[top, bottom]`` fraction of
-    strip height, ``windows`` maps a field to its ``[low, high]`` width span.
+    strip height, ``windows`` maps a field to its ``[low, high]`` width span, and
+    ``ordinal`` (bool) files cash/win/bet by left-to-right position instead of by
+    window -- for a skin whose title text (and therefore its window) cannot be
+    trusted, e.g. one occasionally drawn over by another object. Cash is always
+    first and always has a value, bet is always last and always has a value, win
+    sits between them and may be empty. See :func:`app.utils.meter.assign_fields`.
     Defaults come from :mod:`app.services.meter` / :data:`app.utils.meter.DEFAULT_WINDOWS`."""
 
     event_rules: Sequence[EventRule]

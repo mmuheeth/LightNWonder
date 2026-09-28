@@ -188,6 +188,51 @@ class ScatterComboInfo(BaseModel):
     )
 
 
+class OrbValueRow(BaseModel):
+    """One outcome an orb can land on: a credit amount, or a jackpot tier."""
+
+    value: int | None = Field(
+        default=None, description="Credits this outcome pays. Null for a jackpot."
+    )
+    jackpot_code: int | None = Field(
+        default=None,
+        description="math.xml's negative code for this tier. Null for a credit amount.",
+    )
+    jackpot_label: str | None = Field(
+        default=None,
+        description=(
+            "Best available name for the tier -- math.xml's own Jackpots_Type "
+            "code (e.g. 'JP5') when it has one. Not the progressive's real name "
+            "(Mega, Major, ...), which lives in progConfig.xml and is not read."
+        ),
+    )
+    weight: int = Field(description="This outcome's share of the table's weights.")
+    probability: float = Field(
+        description="weight divided by the table's total weight."
+    )
+
+
+class OrbValueTableInfo(BaseModel):
+    """The declared value range for one orb kind, in the base game, at the bet
+    actually in play -- everything a landed orb of this kind can show."""
+
+    symbol_kind: str = Field(description="'SC' (the scatter orb) or 'NonSC'.")
+    bet: int = Field(
+        description=(
+            "Bet-per-unit rung these credit amounts are priced at: the log's "
+            "last reported bet when there is one, else the paytable's declared "
+            "minimum."
+        )
+    )
+    rows: list[OrbValueRow] = Field(
+        description="Highest credit amount first, jackpot tiers last."
+    )
+    expected_value: float | None = Field(
+        default=None,
+        description="Credits, averaged over every outcome. Jackpots priced at their reset value.",
+    )
+
+
 class MathDefaultsInfo(BaseModel):
     """What the maths starts a base game with."""
 
@@ -253,6 +298,14 @@ class GameMathInfo(BaseModel):
     )
     scatter_combos: list[ScatterComboInfo]
     paytables: list[PaytableRefInfo]
+    orb_value_tables: list[OrbValueTableInfo] = Field(
+        default_factory=list,
+        description=(
+            "What a landed SC/NonSC orb can show, base game, at the bet "
+            "actually in play (see 'bet_config.current_bet'). Empty when "
+            "math.xml carries no such tables."
+        ),
+    )
 
 
 # --- win geometry ---------------------------------------------------------
@@ -328,6 +381,31 @@ class BetConfigInfo(BaseModel):
             "Credits one spin costs at one bet per unit. Should equal the "
             "folder's own MinTotalBet, which is a free corroboration of this "
             "read rather than its source."
+        ),
+    )
+    current_bet: int | None = Field(
+        default=None,
+        description=(
+            "The bet actually in play right now: the log's last "
+            "'BetChangeMsg' when there is one, else 'unit_cost' as the only "
+            "bet known to be live. Null when neither is available. This is "
+            "the bet 'math.orb_value_tables' is priced at."
+        ),
+    )
+    current_bet_source: str | None = Field(
+        default=None,
+        description=(
+            "'log' when 'current_bet' came from the game's own log, "
+            "'unit_cost' when it fell back to the paytable's minimum. Null "
+            "when 'current_bet' is null."
+        ),
+    )
+    current_bet_logged_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp on the 'BetChangeMsg' line 'current_bet' was read from, "
+            "in the host's local time. Null unless 'current_bet_source' is "
+            "'log'."
         ),
     )
     error: str | None = Field(

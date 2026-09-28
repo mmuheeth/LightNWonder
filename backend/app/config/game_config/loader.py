@@ -69,12 +69,69 @@ def _meter(raw: Any, *, path: Path) -> dict[str, Any]:
             str(field): _fractions(span, where=f"'meter.windows.{field}' in {path}")
             for field, span in windows.items()
         }
-    unknown = set(block) - {"band", "windows"}
+    if "ordinal" in block:
+        ordinal = block["ordinal"]
+        if not isinstance(ordinal, bool):
+            raise GameConfigError(f"'meter.ordinal' in {path} must be true or false")
+        parsed["ordinal"] = ordinal
+    unknown = set(block) - {"band", "windows", "ordinal"}
     if unknown:
-        known = "band, windows"
+        known = "band, windows, ordinal"
         raise GameConfigError(
             f"'meter' in {path} has no {', '.join(sorted(unknown))} setting "
             f"(settings are: {known})"
+        )
+    return parsed
+
+
+_LETTERBOX_KEYS = ("trim", "threshold", "min_fraction")
+
+
+def _letterbox(raw: Any, *, path: Path) -> dict[str, Any]:
+    """Read the optional ``letterbox`` block: this game's answers to the three
+    ``FRAME_LETTERBOX_*`` settings. Only the keys present are overridden, so the
+    block is a patch on the environment rather than a replacement for it."""
+    block = _object(raw, where=f"'letterbox' in {path}")
+    parsed: dict[str, Any] = {}
+
+    if "trim" in block:
+        trim = block["trim"]
+        if not isinstance(trim, bool):
+            raise GameConfigError(f"'letterbox.trim' in {path} must be true or false")
+        parsed["trim"] = trim
+
+    if "threshold" in block:
+        threshold = block["threshold"]
+        # `bool` is an `int`, and `true` as a luminance is a mistake, not a 1.
+        if isinstance(threshold, bool) or not isinstance(threshold, int):
+            raise GameConfigError(
+                f"'letterbox.threshold' in {path} must be a whole number"
+            )
+        if not 0 <= threshold <= 255:
+            raise GameConfigError(
+                f"'letterbox.threshold' in {path} must be between 0 and 255, "
+                f"got {threshold!r}"
+            )
+        parsed["threshold"] = threshold
+
+    if "min_fraction" in block:
+        fraction = block["min_fraction"]
+        if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
+            raise GameConfigError(
+                f"'letterbox.min_fraction' in {path} must be a number"
+            )
+        if not 0.0 < float(fraction) <= 1.0:
+            raise GameConfigError(
+                f"'letterbox.min_fraction' in {path} must be above 0 and at "
+                f"most 1, got {fraction!r}"
+            )
+        parsed["min_fraction"] = float(fraction)
+
+    unknown = set(block) - set(_LETTERBOX_KEYS)
+    if unknown:
+        raise GameConfigError(
+            f"'letterbox' in {path} has no {', '.join(sorted(unknown))} setting "
+            f"(settings are: {', '.join(_LETTERBOX_KEYS)})"
         )
     return parsed
 
@@ -101,12 +158,11 @@ def _symbols(raw: Any, *, path: Path) -> dict[str, str]:
     return names
 
 
-def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
-    """Read the optional ``wild_card_replacement`` block: the symbol codes the wild
-    stands in for."""
+def _symbol_codes(raw: Any, *, where: str) -> tuple[str, ...]:
+    """Narrow a decoded JSON value to an ordered, de-duplicated list of symbol
+    codes -- the shape both ``wild_card_replacement`` and ``scatter_symbols`` take."""
     if raw is None:
         return ()
-    where = f"'wild_card_replacement' in {path}"
     if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
         raise GameConfigError(f"{where} must be an array of symbol codes")
     codes: list[str] = []
@@ -116,16 +172,30 @@ def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
                 f"{where} must contain only symbol codes, got {entry!r}"
             )
         code = entry.strip().upper()
-        if not code:
-            continue
-        if code == payline_config.WILD_SYMBOL:
-            raise GameConfigError(
-                f"{where} lists {code!r}, which is the wild itself -- the block "
-                "is what the wild stands in for, not what stands in for it"
-            )
-        if code not in codes:
+        if code and code not in codes:
             codes.append(code)
     return tuple(codes)
+
+
+def _wild_card_replacement(raw: Any, *, path: Path) -> tuple[str, ...]:
+    """Read the optional ``wild_card_replacement`` block: the symbol codes the wild
+    stands in for."""
+    where = f"'wild_card_replacement' in {path}"
+    codes = _symbol_codes(raw, where=where)
+    if payline_config.WILD_SYMBOL in codes:
+        raise GameConfigError(
+            f"{where} lists {payline_config.WILD_SYMBOL!r}, which is the wild "
+            "itself -- the block is what the wild stands in for, not what stands "
+            "in for it"
+        )
+    return codes
+
+
+def _scatter_symbols(raw: Any, *, path: Path) -> tuple[str, ...]:
+    """Read the optional ``scatter_symbols`` block: the codes this game pays by
+    counting across the grid. Checked against ``wild_card_replacement`` by the
+    caller, which is the only place both are in hand."""
+    return _symbol_codes(raw, where=f"'scatter_symbols' in {path}")
 
 
 def _events(raw: Any, *, path: Path) -> tuple[tuple[EventRule, ...], tuple[str, ...]]:
@@ -185,6 +255,21 @@ def load_game_config(path: Path) -> GameConfig:
     if obs_window_source is not None and not isinstance(obs_window_source, str):
         raise GameConfigError(f"'obs.window_source' in {path} must be a string")
 
+    wild_card_replacement = _wild_card_replacement(
+        document.get("wild_card_replacement"), path=path
+    )
+    scatter_symbols = _scatter_symbols(document.get("scatter_symbols"), path=path)
+    # The two blocks are complements: a scatter is exactly what the wild must not
+    # be read as. A code in both makes the payline check and the scatter report
+    # disagree about the same tile, which is worth refusing at load time.
+    both = [code for code in scatter_symbols if code in wild_card_replacement]
+    if both:
+        raise GameConfigError(
+            f"'scatter_symbols' in {path} lists {', '.join(both)}, which "
+            "'wild_card_replacement' also lists -- a scatter is what the wild "
+            "must not stand in for"
+        )
+
     return GameConfig(
         name=name,
         path=path,
@@ -198,9 +283,8 @@ def load_game_config(path: Path) -> GameConfig:
             document.get("win_geometry"), where=f"'win_geometry' in {path}"
         ),
         symbols=freeze_mapping(_symbols(document.get("symbols"), path=path)),
-        wild_card_replacement=_wild_card_replacement(
-            document.get("wild_card_replacement"), path=path
-        ),
+        wild_card_replacement=wild_card_replacement,
+        scatter_symbols=scatter_symbols,
         roi=freeze_mapping(_object(document.get("roi"), where=f"'roi' in {path}")),
         reel_bounds=freeze_mapping(
             _object(document.get("reel_bounds"), where=f"'reel_bounds' in {path}")
@@ -212,6 +296,8 @@ def load_game_config(path: Path) -> GameConfig:
         button_targets=freeze_mapping(
             _object(document.get("button_targets"), where=f"'button_targets' in {path}")
         ),
+        gaf=freeze_mapping(_object(document.get("gaf"), where=f"'gaf' in {path}")),
+        letterbox=freeze_mapping(_letterbox(document.get("letterbox"), path=path)),
         meter=freeze_mapping(_meter(document.get("meter"), path=path)),
         event_rules=event_rules,
         disabled_events=disabled_events,

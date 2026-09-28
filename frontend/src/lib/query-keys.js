@@ -10,6 +10,10 @@ export const queryKeys = Object.freeze({
     status: () => [...queryKeys.ideck.all, "status"],
     buttons: () => [...queryKeys.ideck.all, "buttons"],
   }),
+  gaf: Object.freeze({
+    all: ["gaf"],
+    status: () => [...queryKeys.gaf.all, "status"],
+  }),
   games: Object.freeze({
     all: ["games"],
     catalog: () => [...queryKeys.games.all, "catalog"],
@@ -44,6 +48,13 @@ export const queryKeys = Object.freeze({
     status: () => [...queryKeys.eventCapture.all, "status"],
     runs: () => [...queryKeys.eventCapture.all, "runs"],
     run: (runId) => [...queryKeys.eventCapture.all, "run", runId],
+  }),
+  cyclicMessages: Object.freeze({
+    all: ["cyclic-messages"],
+    status: () => [...queryKeys.cyclicMessages.all, "status"],
+    live: () => [...queryKeys.cyclicMessages.all, "live"],
+    runs: () => [...queryKeys.cyclicMessages.all, "runs"],
+    run: (runId) => [...queryKeys.cyclicMessages.all, "run", runId],
   }),
   imageClassifier: Object.freeze({
     all: ["image-classifier"],

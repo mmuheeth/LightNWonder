@@ -123,6 +123,12 @@ def _declared_windows(
     return dict(windows) if windows else None
 
 
+def _ordinal(profile: Mapping[str, Any]) -> bool:
+    """Whether this game files cash/win/bet by left-to-right position rather than
+    by window -- see :func:`app.utils.meter.assign_fields`."""
+    return bool(profile.get("ordinal", False))
+
+
 def read(
     strip: Image.Image,
     *,
@@ -134,12 +140,15 @@ def read(
     started = time.perf_counter()
     block: Mapping[str, Any] = profile or {}
     windows = _declared_windows(block)
+    ordinal = _ordinal(block)
     try:
         executable = _executable()
         key = (game, strip.width, strip.height)
         band = _declared_band(block, strip.height) or _bands.get(key)
         if band is None:
-            band, scan = meter.fit_band(strip, executable=executable, windows=windows)
+            band, scan = meter.fit_band(
+                strip, executable=executable, windows=windows, ordinal=ordinal
+            )
             _bands[key] = band
             logger.info(
                 "Fitted meter band %s for %s at %dx%d",
@@ -150,7 +159,11 @@ def read(
             )
         else:
             scan = meter.extract(
-                strip, executable=executable, band=band, windows=windows
+                strip,
+                executable=executable,
+                band=band,
+                windows=windows,
+                ordinal=ordinal,
             )
     except (meter.MeterError, ocr.OcrError) as exc:
         return MeterValues(
@@ -159,6 +172,70 @@ def read(
             duration_ms=_elapsed_ms(started),
         )
 
+    return _assemble(scan, game=game, started=started, engine="tesseract")
+
+
+def read_paddle(
+    strip: Image.Image,
+    *,
+    game: str,
+    profile: Mapping[str, Any] | None = None,
+) -> MeterValues:
+    """Read the five values off a cash-meter crop with PaddleOCR instead of
+    Tesseract. Same contract as :func:`read` -- never raises, a declared band in
+    ``profile`` wins, and the reading comes back in the same ``MeterValues``.
+
+    Used by both Evaluate Screen and Analyze Spin's meter validations.
+
+    The fitted band is cached **separately** from :func:`read`'s, under its own
+    key: which rows read best is a judgement the engine makes, so a band fitted
+    by one reader is not a fact the other one may reuse.
+    """
+    started = time.perf_counter()
+    block: Mapping[str, Any] = profile or {}
+    windows = _declared_windows(block)
+    ordinal = _ordinal(block)
+    try:
+        if not paddle_ocr.available():
+            raise meter.MeterError(
+                "PaddleOCR is not installed, so the cash meter cannot be read "
+                "with it. Install paddleocr (it needs Python 3.13 or lower)"
+            )
+        options = _paddle_options()
+        key = (game, strip.width, strip.height)
+        band = _declared_band(block, strip.height) or _paddle_bands.get(key)
+        if band is None:
+            band, scan = meter_paddle.fit_band(
+                strip, options=options, windows=windows, ordinal=ordinal
+            )
+            _paddle_bands[key] = band
+            logger.info(
+                "Fitted meter band %s for %s at %dx%d with PaddleOCR",
+                band,
+                game,
+                strip.width,
+                strip.height,
+            )
+        else:
+            scan = meter_paddle.extract(
+                strip, band=band, options=options, windows=windows, ordinal=ordinal
+            )
+    except (meter.MeterError, ocr.OcrError) as exc:
+        return MeterValues(
+            mode=MeterMode.UNKNOWN,
+            error=str(exc),
+            duration_ms=_elapsed_ms(started),
+        )
+
+    return _assemble(scan, game=game, started=started, engine="PaddleOCR")
+
+
+def _assemble(
+    scan: meter.MeterScan, *, game: str, started: float, engine: str
+) -> MeterValues:
+    """One scan as the API reports it, whichever engine produced it. Shared so the
+    two readers cannot disagree about what a scan *means* -- only about how the
+    digits were recognised."""
     mode, currency = _classify(scan.fields)
     balance = scan.fields.get("cash", meter.MeterField()).value
     values = MeterValues(

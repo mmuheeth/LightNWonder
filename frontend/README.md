@@ -58,6 +58,9 @@ src/
 │   └── utils.js            cn() class merger
 ├── features/
 │   ├── ideck/              presses the Virtual OLED button deck
+│   ├── gaf/                spins and collects by calling the game's own
+│   │                   methods -- no coordinates, and the meters as the
+│   │                   game's own text
 │   ├── games/              active game catalog and selector
 │   ├── event-capture/      start/stop log-driven capture, and read runs back
 │   ├── obs/                OBS Studio control: connect, screenshot, record
@@ -74,7 +77,10 @@ src/
 │                       WebSocket, then the meter, the symbols the classifier
 │                       read off the reels, the lines those symbols paid, and
 │                       -- on a recorded spin that won -- one looping clip per
-│                       reel position, laid out the way the reels are
+│                       reel position, laid out the way the reels are.
+│                       Serves BOTH Analyze Spin routes: `spin-analysis-view`
+│                       is the whole page, and `controls.js` is the only
+│                       difference between them
 ├── components/
 │   ├── ui/                 shadcn/ui primitives (managed by the CLI)
 │   ├── layout/             app shell: header + outlet
@@ -105,6 +111,17 @@ status query on a short `refetchInterval`, mutations that invalidate
 `queryKeys.obs.all`, and one mutation (`useTakeScreenshot`) whose result is read
 straight from `mutation.data` rather than the cache, so the preview needs no
 component state.
+
+`features/gaf/` is a two-action panel over a device the browser never touches,
+and the slice to read for **a result that is not a failure**. Its actions can
+each come back with nothing having happened -- a spin that timed out, a
+take-win with nothing to collect -- and both are 200s carrying `detail`, so the
+card renders them as states rather than throwing them at `ApiErrorAlert`. The
+one genuine error it handles specially is 409 `GAF_NOT_IDLE`, which puts a
+"Spin anyway" button *beside* the alert rather than a standing force checkbox:
+the hazard stays attached to the moment it applies. Note it normalises the
+error itself (`ApiError.from`) -- a mutation's `error` is whatever the
+transport rejected with, not necessarily an `ApiError` already.
 
 `features/roi/` is the smallest complete slice, and the one to copy for a
 read-then-act panel: one query for what can be chosen, one mutation whose crop is
@@ -241,6 +258,29 @@ pair and `/start` 400s an unknown name, and a feature has to delete in one
 directory. The first entry is both what the dropdown opens on and what the backend
 would pick for a request naming none, so the visible default and the configured
 one cannot drift.
+
+### Two routes, one slice
+
+`/analyze-spin` and `/analyze-spin-egm` ("Analyze Spin with EGM") are the same
+page twice, and deliberately not two slices. The only difference is what
+presses spin and collects the win -- the panel key and a click into the game's
+window, or the game's own methods over GAF -- and the backend takes that as
+`?control=` on one endpoint, so the frontend takes it as one prop:
+`SpinAnalysisView` is the page, `SPIN_CONTROLS` in `controls.js` holds the two
+entries (the name that travels to the backend, plus the title, blurb and
+empty-state line each route needs), and the two files under `pages/` are
+fifteen lines each. A card added to the view appears on both, and a fix cannot
+land on only one -- which is the whole reason it is not a copy.
+
+`controls.js` is a plain module rather than an export beside the card, because
+a file exporting a constant next to a component trips `react-refresh`.
+
+One consequence is worth knowing: the backend holds **one** run at a time, for
+the good reason that there is one cabinet. So both routes watch the same
+stream and can each be showing a run the other started. The control card says
+which channel drove the run it is showing (`run.control`, greyed when it is
+not this page's), and the `prepare` step's own line says the same thing from
+the other end.
 
 The cards read down in the order the answers are produced, and the order is
 load-bearing:

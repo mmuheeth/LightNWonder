@@ -113,6 +113,38 @@ class OcrSettings(BaseSettings):
     # an event-capture screenshot, this frame exists only to be read.
     OCR_SCREENSHOT_WIDTH: int | None = Field(default=None, ge=8, le=4096)
 
+    # --- orb numbers (PaddleOCR) ------------------------------------------
+    # The figure printed on a symbol orb is read by PaddleOCR instead of
+    # Tesseract, and *only* that: meters, named regions and whole frames stay on
+    # Tesseract. Measured on this project's own tiles, Tesseract reads nothing at
+    # all off dataset/SC/r1c4.png where Paddle reads 160 at 0.9998.
+    #
+    # false falls the orb reader back to Tesseract, for a host without Paddle
+    # installed (it needs Python 3.13 or lower) or to compare the two engines.
+    OCR_ORB_PADDLE_ENABLED: bool = True
+
+    # PaddleOCR's language pack. "en" is the Latin-digit recogniser; the figures
+    # on an orb are digits, so this is not the same choice as OCR_LANGUAGE.
+    OCR_ORB_PADDLE_LANGUAGE: str = Field(default="en", min_length=1)
+
+    # No upscaling, and this is what decides how long the orb step takes. Unlike
+    # Tesseract (OCR_UPSCALE above, 3x, because it wants ~30px glyphs) Paddle's
+    # detector resizes internally. Measured over all 131 written scatter tiles,
+    # 1x reads 126 identically to 4x at 1.56s a tile against 10.07s, and the 5
+    # that differ are jackpot banner text bleeding into the crop rather than
+    # prizes. Raising this buys nothing and costs seconds per orb.
+    OCR_ORB_PADDLE_UPSCALE: float = Field(default=1.0, gt=0, le=10)
+
+    # Below this, a recognised string is noise off the artwork rather than a
+    # prize. Paddle scores a real figure at ~0.999, so this rejects junk without
+    # touching a genuine reading.
+    OCR_ORB_PADDLE_MIN_CONFIDENCE: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # Paddle runs in-process, so this bounds the worker thread rather than
+    # killing a subprocess. Higher than OCR_TIMEOUT_SECONDS because the first
+    # read of a process also builds the model.
+    OCR_ORB_PADDLE_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0)
+
     @property
     def ocr_tesseract_cmd(self) -> Path | None:
         """Absolute path to the engine, configured or discovered; ``None`` if missing."""

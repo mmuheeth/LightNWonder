@@ -205,6 +205,11 @@ async def _capture(run: _ActiveRun, detected: game_log.DetectedEvent) -> None:
                     width=settings.EVENT_CAPTURE_SCREENSHOT_WIDTH,
                     file_name=name,
                     output_dir=run.output_dir,
+                    # Never read back -- see the same note in
+                    # `services/cyclic_messages._record`. Skipping the inline
+                    # preview halves the OBS round trip for a screenshot
+                    # nothing here displays inline.
+                    include_image_data=False,
                 )
             )
         except AppException as exc:

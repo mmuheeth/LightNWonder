@@ -16,6 +16,7 @@ from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.exceptions.base import GameConfigInvalidError, GameNotFoundError
 from app.schemas.games import ActiveGame, GameCatalog, GameOption
+from app.services import gaf as gaf_service
 from app.services import game_input as game_input_service
 
 logger = get_logger("games")
@@ -86,6 +87,7 @@ def select(game: str) -> ActiveGame:
     # i-deck addresses keys by layout id (the cabinet's, not the game's), so it
     # doesn't need a reset here — only services caching a GameConfig do.
     game_input_service.reset_game_config()
+    gaf_service.reset_game_config()
     logger.info("Active game changed to %s", name)
 
     return ActiveGame(game=name, label=config.name, process=config.process)

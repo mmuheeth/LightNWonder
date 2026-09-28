@@ -30,6 +30,7 @@ FULL = {
     "win_geometry": r"C:\re\games\ExampleGame\GameConfig\winGeometry.xml",
     "symbols": {"wc": "WILD", "AA": "Ox", "BB": ""},
     "roi": {"cash_meter": [0.13, 0.75, 0.86, 0.78]},
+    "letterbox": {"trim": False, "threshold": 12, "min_fraction": 0.4},
     "button_targets": {"take_win": [0.124, 0.917]},
     "events": {
         "rules": [{"event": "jackpot-hit", "pattern": "MoneyLinkOutroSM"}],
@@ -59,6 +60,11 @@ def test_every_block_is_read(tmp_path: Path) -> None:
         r"C:\re\games\ExampleGame\GameConfig\winGeometry.xml"
     )
     assert game.roi["cash_meter"] == [0.13, 0.75, 0.86, 0.78]
+    assert dict(game.letterbox) == {
+        "trim": False,
+        "threshold": 12,
+        "min_fraction": 0.4,
+    }
     assert game.button_targets["take_win"] == [0.124, 0.917]
 
 
@@ -123,6 +129,31 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
             {"name": "X", "wild_card_replacement": ["AA", "wc"]},
             "which is the wild itself",
         ),
+        ({"name": "X", "letterbox": True}, "'letterbox' in .* must be a JSON object"),
+        (
+            {"name": "X", "letterbox": {"trim": "no"}},
+            "'letterbox.trim' in .* must be true or false",
+        ),
+        (
+            {"name": "X", "letterbox": {"threshold": 8.5}},
+            "'letterbox.threshold' in .* must be a whole number",
+        ),
+        (
+            {"name": "X", "letterbox": {"threshold": True}},
+            "'letterbox.threshold' in .* must be a whole number",
+        ),
+        (
+            {"name": "X", "letterbox": {"threshold": 300}},
+            "'letterbox.threshold' in .* between 0 and 255",
+        ),
+        (
+            {"name": "X", "letterbox": {"min_fraction": 0}},
+            "'letterbox.min_fraction' in .* above 0 and at most 1",
+        ),
+        (
+            {"name": "X", "letterbox": {"trimm": False}},
+            "'letterbox' in .* has no trimm setting",
+        ),
     ],
     ids=[
         "malformed-json",
@@ -131,18 +162,25 @@ def test_a_missing_file_names_the_path_it_looked_for(tmp_path: Path) -> None:
         "process-not-a-string",
         "obs-not-an-object",
         "obs-window-source-not-a-string",
-        "game-config-not-a-string",
-        "symbols-not-an-object",
-        "symbol-name-not-a-string",
-        "wild-replacement-not-an-array",
-        "wild-replacement-entry-not-a-string",
-        "wild-replacement-lists-the-wild",
         "name-not-a-string",
         "roi-not-an-object",
         "button-targets-not-an-object",
         "events-not-an-object",
         "events-disable-not-an-array",
         "events-rule-regex-invalid",
+        "game-config-not-a-string",
+        "symbols-not-an-object",
+        "symbol-name-not-a-string",
+        "wild-replacement-not-an-array",
+        "wild-replacement-entry-not-a-string",
+        "wild-replacement-lists-the-wild",
+        "letterbox-not-an-object",
+        "letterbox-trim-not-a-bool",
+        "letterbox-threshold-not-whole",
+        "letterbox-threshold-is-a-bool",
+        "letterbox-threshold-out-of-range",
+        "letterbox-min-fraction-zero",
+        "letterbox-unknown-key",
     ],
 )
 def test_a_malformed_config_says_what_is_wrong(

@@ -35,7 +35,10 @@ npm run dev
 ```
 
 Open **http://localhost:3001**. The dashboard lets you choose the active game
-and control the OBS and Virtual OLED integrations.
+and control the OBS, Virtual OLED and GAF integrations — the last of these
+spins the game and collects its wins by calling the game's own methods, and
+needs `NRobot.Server.exe` running alongside it (see
+[backend/README.md](backend/README.md#gaf-automation)).
 
 > Use `localhost`, not `127.0.0.1`, for the frontend: Vite binds the hostname
 > `localhost`, which resolves to IPv6 `[::1]` on Windows.

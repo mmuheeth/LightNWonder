@@ -16,12 +16,22 @@ class AnalyzeSpinSettings(BaseSettings):
     # recording subdirectory under the recording root.
     ANALYZE_SPIN_DIR_NAME: str = "analyze-spin"
 
+    # Which channel drives the two presses when the request does not say:
+    # `ideck` (the panel key, then a click into the game's window) or `gaf`
+    # (the game's own methods). Everything else about a run is the same either
+    # way, which is why this is one setting rather than a second sequence. A
+    # per-run choice first and a setting second, like the classifier.
+    ANALYZE_SPIN_CONTROL: str = "ideck"
+
     # The i-deck key that spins. A layout id from IDECK_PANEL_XML, not a game
     # concept: FortuneOx binds `Rebet` to SpinButtonMsg (see backend/README).
+    # Read only by an `ideck` run -- a GAF one presses by calling the game.
     ANALYZE_SPIN_SPIN_BUTTON: str = "Rebet"
 
     # The `button_targets` entry clicked to collect a win. Take-win is not on
     # the deck's fourteen keys, so it is a click into the game's own window.
+    # Read only by an `ideck` run -- a GAF one collects by calling the game,
+    # which names its own button in the game config's `gaf` block.
     ANALYZE_SPIN_TAKE_WIN_TARGET: str = "take_win"
 
     # Whether one run also records a video of itself. Off by default -- a
@@ -126,13 +136,13 @@ class AnalyzeSpinSettings(BaseSettings):
     ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE: str = ""
 
     # The confidence floor a tile has to clear to be named while grading a spin.
-    # 0.85 rather than the classifier page's own 0.90: that floor sits far above
+    # 0.80 rather than the classifier page's own 0.90: that floor sits far above
     # where the classes separate, which is safe on a page that shows the ranked
     # candidates beside every tile but costly here -- a payline through an unnamed
     # tile stops there, so the spin looks like it paid less than it did. Blank opts
     # back into CLASSIFIER_MIN_CONFIDENCE.
     ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE: float | None = Field(
-        default=0.85, ge=0.0, le=1.0
+        default=0.80, ge=0.0, le=1.0
     )
 
     @field_validator("ANALYZE_SPIN_SCREENSHOT_WIDTH", mode="before")

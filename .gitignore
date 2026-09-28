@@ -7,6 +7,9 @@ __pycache__/
 *.so
 dataset/
 obs-captured-files/
+OBS-capture
+OBS-capture/
+backend/OBS-capture
 
 # Distribution / packaging
 # These setuptools artifacts only ever appear at the repo root, so they are
@@ -156,6 +159,9 @@ activemq-data/
 .env
 .envrc
 .venv
+venv312
+venv312/
+backend/venv312/
 env/
 venv/
 ENV/
@@ -270,6 +276,9 @@ Thumbs.db
 backend/obs-captured-files/*
 backend/dataset/*
 !backend/obs-captured-files/.gitkeep
+
+backend/OBS-capture
+backend/OBS-capture/*
 
 # Local-only image data: the game's extracted symbol artwork, the hand-sorted
 # validation crops, and the classifier's training set. All three are large, none
