@@ -30,13 +30,10 @@ class PaylineMethod(StrEnum):
     is only ever narrowed to every paytable row paying at that run length."""
 
     SYMBOL = "symbol"
-    """The symbol codes a classifier read off each tile, compared for equality or
-    by substituting the wild. Names the symbol as well as the run, so an award is
-    one row and one number. Two *unnamed* tiles are never a match: "I could not
-    tell" twice is not "the same symbol", so a line through a tile below the
-    confidence floor stops there rather than being credited with a run nothing
-    measured. This is also the only method a wild can be read by -- see
-    ``wild_symbol`` on the result."""
+    """Classifier codes compared for equality or wild substitution -- names the
+    symbol as well as the run, so an award is one row and one number. Two
+    *unnamed* tiles are never a match, and it is the only method a wild can be
+    read by (see ``wild_symbol`` on the result)."""
 
 
 class PaylineSetOption(BaseModel):

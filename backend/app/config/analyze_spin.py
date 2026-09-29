@@ -20,7 +20,7 @@ class AnalyzeSpinSettings(BaseSettings):
     # `ideck` (the panel key, then a click into the game's window) or `gaf`
     # (the game's own methods). Everything else about a run is the same either
     # way, which is why this is one setting rather than a second sequence. A
-    # per-run choice first and a setting second, like the classifier.
+    # per-run choice first and a setting second.
     ANALYZE_SPIN_CONTROL: str = "ideck"
 
     # The i-deck key that spins. A layout id from IDECK_PANEL_XML, not a game
@@ -127,14 +127,6 @@ class AnalyzeSpinSettings(BaseSettings):
     # cannot grow one run's record without bound.
     ANALYZE_SPIN_MAX_EVENTS: int = Field(default=200, ge=1)
 
-    # Which trained network names the tiles of the spin's reels when the request
-    # does not say -- the same relationship `ANALYZE_SPIN_RECORD` has to
-    # `/start?record=`. Blank uses CLASSIFIER_ARCHITECTURE, which is
-    # EfficientNet-B0. Both networks stay trained at once and they do not read the
-    # same split equally well, so which one grades a spin is a per-run choice
-    # first and a setting second.
-    ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE: str = ""
-
     # The confidence floor a tile has to clear to be named while grading a spin.
     # 0.80 rather than the classifier page's own 0.90: that floor sits far above
     # where the classes separate, which is safe on a page that shows the ranked
@@ -156,14 +148,8 @@ class AnalyzeSpinSettings(BaseSettings):
     @field_validator("ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE", mode="before")
     @classmethod
     def _blank_floor_is_configured(cls, value: object) -> object:
-        """Read a blank ``ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE`` as the classifier's
-        own floor, which absent (the default above) does not mean."""
+        """Read a blank value as "use the classifier's own floor" -- not the same as
+        the 0.80 default above, which is this setting's own opinion, not an absence."""
         if isinstance(value, str) and not value.strip():
             return None
         return value
-
-    @property
-    def analyze_spin_classifier_architecture(self) -> str | None:
-        """Which network grades a spin, or ``None`` to let the classifier decide."""
-        chosen = self.ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE.strip()
-        return chosen or None

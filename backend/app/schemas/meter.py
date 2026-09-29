@@ -33,10 +33,10 @@ class MeterField(BaseModel):
     confidence: float = Field(
         default=0.0,
         description=(
-            "0-100; verified-correct strips scored 79 or better. Exactly 0 means "
-            "unmeasured, not wrong: Tesseract declines to score a word it read "
-            "under a character whitelist, and a correct balance often comes back "
-            "that way. Treat it as 'no score', and read `value` on its own merits."
+            "0-100, Paddle's own 0-1 rescaled. Exactly 0 also means 'no reading "
+            "at all' -- a field the engine never answered for -- so treat 0 as "
+            "'unmeasured' and read `value` on its own merits rather than as a "
+            "genuinely low score."
         ),
     )
     box: list[int] = Field(
@@ -98,7 +98,7 @@ class MeterValues(BaseModel):
     engine_calls: int = Field(
         default=0,
         ge=0,
-        description="Tesseract invocations this reading cost, at roughly 200ms each.",
+        description="PaddleOCR invocations this reading cost -- one per cell read.",
     )
     duration_ms: int = Field(default=0, ge=0, description="How long the read took.")
     error: str | None = Field(

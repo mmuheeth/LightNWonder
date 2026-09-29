@@ -3,13 +3,11 @@
 Most of this runs without PaddleOCR installed. ``FakePaddle`` replaces the built
 engine, which is the only thing in :mod:`app.utils.paddle_ocr` that loads a
 model, and answers with the shapes both Paddle 3.x and 2.x return -- enough to
-exercise the option layering, the result parsing, the digit/confidence gates and
-the fallback to Tesseract on a machine that has no Paddle at all.
+exercise the option layering, the result parsing and the digit/confidence gates
+on a machine that has no Paddle at all.
 
 The reads under *Against the real engine* run the installed PaddleOCR over this
-project's own written orb tiles, skipped when it is not installed. Those are the
-tests that prove the engine reads a figure Tesseract does not, which is the whole
-reason the dependency is here.
+project's own written orb tiles, skipped when it is not installed.
 """
 
 from __future__ import annotations
@@ -22,10 +20,9 @@ import pytest
 from PIL import Image
 
 from app.config.game_config import load_game_config
-from app.config.ocr import discover_executable
 from app.config.runtime import settings
 from app.services import ocr as ocr_service
-from app.utils import ocr, paddle_ocr
+from app.utils import paddle_ocr
 
 # A written orb carrying a figure, and the figure written on it. Committed
 # fixtures, so this is a real tile and not a drawn approximation of one.
@@ -119,7 +116,7 @@ def test_the_default_does_not_upscale() -> None:
 )
 def test_impossible_options_are_refused(field: str, value: object) -> None:
     """An option the engine would ignore is refused where it is set, not silently."""
-    with pytest.raises(ocr.OcrError):
+    with pytest.raises(paddle_ocr.OcrError):
         paddle_ocr.PaddleOptions(**{field: value})
 
 
@@ -206,12 +203,12 @@ def test_malformed_lines_cost_a_word_not_the_reading(
 
 
 def test_a_failed_read_is_an_ocr_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Paddle raises bare ``Exception``; callers get the same ``OcrError`` the
-    Tesseract reader raises, so one pair of excepts covers both engines."""
+    """Paddle raises a bare ``Exception``; callers get the project's own
+    ``OcrError`` instead, so every caller catches one thing."""
     fake = FakePaddle()
     fake.error = Exception("the detector fell over")
     install(monkeypatch, fake)
-    with pytest.raises(ocr.OcrError, match="the detector fell over"):
+    with pytest.raises(paddle_ocr.OcrError, match="the detector fell over"):
         paddle_ocr.read_image(orb())
 
 
@@ -222,7 +219,7 @@ def test_an_engine_without_predict_is_an_ocr_error(
     ``AttributeError`` from inside the reader."""
     install(monkeypatch, FakePaddle())
     monkeypatch.delattr(FakePaddle, "predict")
-    with pytest.raises(ocr.OcrError, match="neither"):
+    with pytest.raises(paddle_ocr.OcrError, match="neither"):
         paddle_ocr.read_image(orb())
 
 
@@ -395,16 +392,8 @@ def test_read_tile_carries_a_tier_through_the_service(
 ) -> None:
     """The seam reports the tier on `label`, leaves `text` null because it is not
     a figure, and still carries the confidence it was read at."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", True)
     install(monkeypatch, FakePaddle(page(("MAJOR", 0.9996))))
-
-    def unreachable(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a tier is a reading, so Tesseract is not asked")
-
-    monkeypatch.setattr(ocr, "read_image", unreachable)
-    reading = ocr_service.read_tile(
-        orb(), executable=Path("tesseract"), options=tile_options()
-    )
+    reading = ocr_service.read_tile(orb(), options=tile_options())
     assert reading.label == "MAJOR"
     assert reading.text is None
     assert reading.confidence == pytest.approx(99.96)
@@ -420,11 +409,11 @@ def test_missing_paddle_is_unavailable_not_a_crash(
     what to install and why 3.14 will not do."""
 
     def absent() -> tuple[Any, str]:
-        raise ocr.OcrUnavailableError("PaddleOCR is not installed")
+        raise paddle_ocr.OcrUnavailableError("PaddleOCR is not installed")
 
     monkeypatch.setattr(paddle_ocr, "_import_paddleocr", absent)
     assert paddle_ocr.available() is False
-    with pytest.raises(ocr.OcrUnavailableError):
+    with pytest.raises(paddle_ocr.OcrUnavailableError):
         paddle_ocr.read_image(orb())
 
 
@@ -436,7 +425,7 @@ def test_the_install_message_names_the_command() -> None:
     monkeypatch = pytest.MonkeyPatch()
     try:
         monkeypatch.setitem(sys.modules, "paddleocr", None)
-        with pytest.raises(ocr.OcrUnavailableError) as caught:
+        with pytest.raises(paddle_ocr.OcrUnavailableError) as caught:
             paddle_ocr._import_paddleocr()
     finally:
         monkeypatch.undo()
@@ -449,141 +438,57 @@ def test_the_install_message_names_the_command() -> None:
 
 # --- the service seam -----------------------------------------------------
 #
-# `read_tile` is the one door an orb is read through, so these check that the
-# engine actually swapped -- and that turning it off puts Tesseract back.
+# `read_tile` is the one door an orb is read through. There is no fallback any
+# more: an engine that cannot start fails the read, so these check that
+# failure propagates rather than being swallowed.
 
 
-def tile_options() -> ocr.OcrOptions:
-    """The Tesseract options an orb would otherwise be read with."""
+def tile_options() -> paddle_ocr.PaddleOptions:
+    """The options an orb is read with, as the service resolves them."""
     config = load_game_config(Path("app/config/game_config/games/FortuneOx.json"))
     return ocr_service.read_tile_options(config)
 
 
-def test_read_tile_uses_paddle_when_enabled(
+def test_read_tile_reads_the_figure_with_paddle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With Paddle on, the orb is read by Paddle and Tesseract is never run."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", True)
     install(monkeypatch, FakePaddle(page(("160", 0.9998))))
-
-    def unreachable(*args: object, **kwargs: object) -> None:
-        raise AssertionError("Tesseract should not be run for an orb")
-
-    monkeypatch.setattr(ocr, "read_image", unreachable)
-    reading = ocr_service.read_tile(
-        orb(), executable=Path("tesseract"), options=tile_options()
-    )
+    reading = ocr_service.read_tile(orb(), options=tile_options())
     assert reading.text == "160"
-    # Rescaled to Tesseract's 0-100, so `confidence` means one thing either way.
+    # Rescaled onto the 0-100 the API reports regardless of engine.
     assert reading.confidence == pytest.approx(99.98)
 
 
 def test_read_tile_reports_an_orb_with_no_figure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Paddle running and finding nothing is a reading of nothing -- it must not
-    fall through to Tesseract, whose ``psm 8`` would invent a digit."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", True)
     install(monkeypatch, FakePaddle([]))
-
-    def unreachable(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a numberless orb must not reach Tesseract")
-
-    monkeypatch.setattr(ocr, "read_image", unreachable)
-    reading = ocr_service.read_tile(
-        orb(), executable=Path("tesseract"), options=tile_options()
-    )
+    reading = ocr_service.read_tile(orb(), options=tile_options())
     assert reading.text is None
 
 
-def test_read_tile_falls_back_when_paddle_is_missing(
+def test_read_tile_propagates_a_missing_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No Paddle on the host: the Tesseract voting reader still answers."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", True)
+    """No fallback: an engine that cannot start fails the read outright."""
 
     def absent(*args: object, **kwargs: object) -> None:
-        raise ocr.OcrUnavailableError("PaddleOCR is not installed")
+        raise paddle_ocr.OcrUnavailableError("PaddleOCR is not installed")
 
-    monkeypatch.setattr(paddle_ocr, "read_number", absent)
-    calls: list[object] = []
-
-    def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
-        calls.append(image)
-        return ocr.OcrResult(text="50", words=(), confidence=80.0, size=image.size)
-
-    monkeypatch.setattr(ocr, "read_image", tesseract)
-    reading = ocr_service.read_tile(
-        orb(), executable=Path("tesseract"), options=tile_options()
-    )
-    assert calls, "Tesseract should have been asked instead"
-    assert reading.text == "50"
+    monkeypatch.setattr(paddle_ocr, "read_prize", absent)
+    with pytest.raises(paddle_ocr.OcrUnavailableError):
+        ocr_service.read_tile(orb(), options=tile_options())
 
 
-def test_read_tile_falls_back_when_paddle_errors(
+def test_read_tile_propagates_an_engine_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Paddle installed but broken is also Tesseract's turn, not a failed spin."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", True)
-
     def broken(*args: object, **kwargs: object) -> None:
-        raise ocr.OcrError("the detector fell over")
+        raise paddle_ocr.OcrError("the detector fell over")
 
-    monkeypatch.setattr(paddle_ocr, "read_number", broken)
-
-    def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
-        return ocr.OcrResult(text="300", words=(), confidence=75.0, size=image.size)
-
-    monkeypatch.setattr(ocr, "read_image", tesseract)
-    reading = ocr_service.read_tile(
-        orb(), executable=Path("tesseract"), options=tile_options()
-    )
-    assert reading.text == "300"
-
-
-def test_read_tile_uses_tesseract_when_paddle_is_switched_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``OCR_ORB_PADDLE_ENABLED=false`` restores the previous behaviour exactly,
-    without Paddle being consulted at all."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", False)
-
-    def unreachable(*args: object, **kwargs: object) -> None:
-        raise AssertionError("Paddle should not be consulted when switched off")
-
-    monkeypatch.setattr(paddle_ocr, "read_number", unreachable)
-
-    def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
-        return ocr.OcrResult(text="600", words=(), confidence=70.0, size=image.size)
-
-    monkeypatch.setattr(ocr, "read_image", tesseract)
-    reading = ocr_service.read_tile(
-        orb(), executable=Path("tesseract"), options=tile_options()
-    )
-    assert reading.text == "600"
-
-
-def test_only_the_orb_moved_engines(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A named screen region is still Tesseract's, Paddle enabled or not -- the
-    whole scope of this change is the orb."""
-    monkeypatch.setattr(settings, "OCR_ORB_PADDLE_ENABLED", True)
-
-    def unreachable(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a meter must not be read with Paddle")
-
-    monkeypatch.setattr(paddle_ocr, "read_number", unreachable)
-    monkeypatch.setattr(paddle_ocr, "read_image", unreachable)
-
-    def tesseract(image: Image.Image, **kwargs: object) -> ocr.OcrResult:
-        return ocr.OcrResult(
-            text="1,234.56", words=(), confidence=90.0, size=image.size
-        )
-
-    monkeypatch.setattr(ocr, "read_image", tesseract)
-    result = ocr_service.read_crop(
-        orb(), executable=Path("tesseract"), options=ocr.OcrOptions()
-    )
-    assert result.text == "1,234.56"
+    monkeypatch.setattr(paddle_ocr, "read_prize", broken)
+    with pytest.raises(paddle_ocr.OcrError, match="the detector fell over"):
+        ocr_service.read_tile(orb(), options=tile_options())
 
 
 # --- against the real engine ----------------------------------------------
@@ -623,30 +528,3 @@ def test_the_real_engine_reads_no_figure_off_a_feature_scatter() -> None:
         image.load()
         value, _ = paddle_ocr.read_number(image.copy())
     assert value is None
-
-
-@requires_paddle
-@requires_tiles
-def test_the_real_engine_reads_an_orb_tesseract_cannot() -> None:
-    """The measurement this dependency exists for: Tesseract's own tile options
-    read nothing off r1c4, and Paddle reads 160. Skipped without Tesseract, since
-    the comparison needs both."""
-    executable = discover_executable()
-    if executable is None:
-        pytest.skip("Tesseract is not installed, so there is nothing to compare")
-    with Image.open(ORB_WITH_160) as image:
-        image.load()
-        tile = image.copy()
-
-    options = ocr.OcrOptions(
-        psm=8,
-        char_whitelist="0123456789",
-        upscale=4.0,
-        grayscale=True,
-        autocontrast=True,
-    )
-    plain = ocr.read_image(tile, executable=executable, options=options)
-    value, _ = paddle_ocr.read_number(tile)
-
-    assert value == Decimal("160")
-    assert plain.number != Decimal("160")

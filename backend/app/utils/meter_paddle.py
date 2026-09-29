@@ -1,36 +1,11 @@
-"""Reads the numbers off a game's meter strip with PaddleOCR.
-
-**The geometry is not re-invented here.** :mod:`app.utils.meter` already knows
-how to find the row band the values sit in (:func:`~app.utils.meter.row_bands`),
-the column groups the cells occupy (:func:`~app.utils.meter.ink_groups`) and how
-to prepare one cell's picture (:func:`~app.utils.meter.cell_crop`) -- and every
-one of those is a property of how the *game* draws a meter, not of the engine
-that reads it. This module imports that work and replaces only the step that
-turns one column group into a number.
-
-Why a second reader rather than switching :mod:`app.utils.meter` over: both
-engines stay available on purpose. Tesseract is what Analyze Spin's meter
-validation was measured against, and the two do not read a strip identically --
-so which one answers is a per-feature choice, and Evaluate Screen makes the
-other one.
-
-What Paddle changes about reading a cell:
-
-* **One call, not a ladder.** Tesseract needs a page-segmentation mode and a
-  scale guessed per crop, so :func:`~app.utils.meter.read_group` tries up to
-  seven subprocesses and keeps the best. Paddle's detector finds the text line
-  itself and its recogniser scores what it read, so there is one call and its
-  own confidence decides.
-* **No whitelist, and therefore no unscored reading.** Tesseract will not score
-  a word produced under ``tessedit_char_whitelist`` (see
-  :data:`~app.utils.meter.UNMEASURED`), which is why that module carries a whole
-  ranking rule for transcriptions with no score. Paddle scores everything it
-  returns, so a confidence here is always a real one and
-  :data:`FLOOR` can simply be applied.
-* **No flattening.** :func:`app.utils.paddle_ocr.preprocess` hands the crop over
-  in colour; the greyscale-and-threshold pass Tesseract needs is what loses
-  gold-on-light meter digits.
-"""
+"""Reads the numbers off a game's meter strip with PaddleOCR -- the sole meter
+reader, for every feature that reads one -- reusing :mod:`app.utils.meter`'s
+geometry (row bands, column groups, cell crops -- properties of how the game
+draws a meter, not of the reading engine) and supplying only the per-cell
+recognition step. One call per cell, no escalation ladder; scores every
+reading (no whitelist, so :data:`FLOOR` applies with no unscored-reading
+exemption); reads in colour since greyscale-and-threshold loses gold-on-light
+digits."""
 
 from __future__ import annotations
 
@@ -41,7 +16,7 @@ from PIL import Image
 
 from app.utils import meter, paddle_ocr
 from app.utils.meter import Band, MeterError, MeterField, MeterScan, Unmapped
-from app.utils.ocr import OcrError, parse_number
+from app.utils.paddle_ocr import OcrError, parse_number
 
 __all__ = [
     "CONFIDENT",
@@ -55,8 +30,8 @@ __all__ = [
 # Paddle scores a legible meter cell at ~0.99, so below this a string is artwork
 # bleeding into the crop rather than a value -- the same judgement
 # ``PaddleOptions.min_confidence`` makes for an orb, and for the same reason.
-# Expressed 0-100 rather than 0-1 to match ``MeterField.confidence``, which is
-# Tesseract's scale and is what the API reports whichever engine read the strip.
+# Expressed 0-100 rather than 0-1 to match ``MeterField.confidence``'s own
+# scale, which is what the API reports regardless of how a reading was scored.
 FLOOR = 50.0
 
 # Stop fitting once a band reads this well. Cheaper than the Tesseract reader's
@@ -73,12 +48,9 @@ _SYMBOLS = "$€£¥"
 
 
 def _token(text: str) -> tuple[Decimal | None, str]:
-    """The value and its currency symbol out of one cell's recognised text.
-
-    The *longest* match wins rather than the first: a cell drawn ``$1,234.00``
-    beside a speck the detector also boxed should read as the amount, not the
-    speck.
-    """
+    """The value and its currency symbol out of one cell's recognised text. The
+    *longest* match wins rather than the first, so a cell drawn ``$1,234.00`` beside a
+    speck the detector also boxed reads as the amount, not the speck."""
     best = ""
     for match in _TOKEN.finditer(text):
         if len(match.group()) > len(best):
@@ -95,12 +67,10 @@ def read_group(
     *,
     options: paddle_ocr.PaddleOptions,
 ) -> MeterField:
-    """Read one cell of the strip with PaddleOCR.
-
-    Never raises for a crop the engine refused: that is one field of the strip,
-    and the others are still worth reading. It comes back as a ``MeterField``
-    with no value, which is the same shape an empty WIN cell produces.
-    """
+    """Read one cell of the strip with PaddleOCR. Never raises for a crop the engine
+    refused -- that is one field of the strip and the others are still worth reading --
+    it comes back as a ``MeterField`` with no value, the same shape an empty WIN cell
+    produces."""
     crop = meter.cell_crop(image, box, band)
     try:
         result = paddle_ocr.read_image(crop, options=options)
@@ -129,21 +99,13 @@ def extract(
     windows: dict[str, tuple[float, float]] | None = None,
     ordinal: bool = False,
 ) -> MeterScan:
-    """Read every number in ``band`` and file each under the field whose window it
-    sits in.
-
-    The filing rule is ``meter``'s, not a second one: :func:`~app.utils.meter.
-    assign_fields` claims a cell by the window its centre falls in (the best
-    reading wins a window two groups share) or, with ``ordinal``, by left-to-right
-    position -- and a number belonging to no field either way is reported as
-    :class:`~app.utils.meter.Unmapped` rather than filed under the nearest name --
-    that list is the warning that a skin's layout does not match the declared
-    one.
-
-    One difference from the Tesseract reader, and it is a simplification: the
-    :data:`FLOOR` here applies to every reading. There is no unscored-reading
-    exemption because there are no unscored readings.
-    """
+    """Read every number in ``band`` and file each under the field whose window it sits
+    in, via :func:`~app.utils.meter.assign_fields` (by window centre, or left-to-right
+    with ``ordinal``). A number belonging to no field is reported as
+    :class:`~app.utils.meter.Unmapped` rather than filed under the nearest name -- the
+    warning that a skin's layout doesn't match the declared one. Unlike the Tesseract
+    reader, :data:`FLOOR` applies to every reading here since there are no unscored
+    ones."""
     spans = meter.DEFAULT_WINDOWS if windows is None else windows
     boxes = meter.ink_groups(image, band)
     # Sequentially, unlike the Tesseract reader's thread pool. Paddle runs
@@ -184,18 +146,15 @@ def fit_band(
     windows: dict[str, tuple[float, float]] | None = None,
     ordinal: bool = False,
 ) -> tuple[Band, MeterScan]:
-    """Choose the row band that reads best, and return it with its scan.
-
-    Only reached for a game whose config declares no ``meter.band``; both shipped
-    games declare one, so this is the fallback for an unmeasured skin.
-    """
+    """Choose the row band that reads best, and return it with its scan. Only reached
+    for a game whose config declares no ``meter.band`` -- both shipped games declare
+    one, so this is the fallback for an unmeasured skin."""
     best: tuple[Band, MeterScan] | None = None
     for candidate in meter.row_bands(image):
         scan = extract(
             image, band=candidate, options=options, windows=windows, ordinal=ordinal
         )
-        # Mean confidence first, then read count as the tiebreaker -- the same
-        # comparison the Tesseract reader makes.
+        # Mean confidence first, then read count as the tiebreaker.
         if best is None or (scan.score, scan.read_count) > (
             best[1].score,
             best[1].read_count,

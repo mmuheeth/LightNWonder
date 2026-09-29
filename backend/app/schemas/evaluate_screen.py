@@ -1,13 +1,7 @@
-"""Payloads for Evaluate Screen: one screenshot, read.
-
-Where Analyze Spin *drives* a spin and grades it against the maths the game
-loaded, this reads a screen that is already on it -- no key is pressed, no log is
-followed, nothing is validated. So the reading types are deliberately **reused**
-rather than reinvented: what the classifier makes of a grid of tiles is the same
-answer here as there, and the frontend renders both with one card. What is new is
-only the envelope around them, because this feature has one result rather than a
-run of steps.
-"""
+"""Payloads for Evaluate Screen: one screenshot, read -- no key pressed, no log
+followed, nothing validated. Reuses Analyze Spin's reading types rather than
+reinventing them, since a classified grid means the same thing in both; only
+the envelope differs, since this feature has one result rather than a run."""
 
 from __future__ import annotations
 
@@ -38,15 +32,6 @@ class EvaluateScreenRequest(BaseModel):
             "filename. Omit to capture the game's current screen with OBS, "
             "which is the ordinary case -- 'evaluate the screen' means the one "
             "on the cabinet now."
-        ),
-    )
-    architecture: str | None = Field(
-        default=None,
-        description=(
-            "Which trained network names the tiles: 'resnet34' or "
-            "'efficientnet_b0'. Omit for the configured default. Both stay "
-            "trained at once and they do not read the same split equally well, "
-            "so it is a per-request choice."
         ),
     )
     include_images: bool = Field(
@@ -96,13 +81,9 @@ class EvaluateScreenSource(BaseModel):
 
 
 class EvaluateScreenMeter(BaseModel):
-    """The cash meter strip, as Tesseract read it.
-
-    Not ``SpinMeterValidation``: there is nothing to validate from a single
-    screen. Two readings of a meter are what make an arithmetic check possible,
-    and this feature has one -- so this reports what the strip *says* and stops
-    there.
-    """
+    """The cash meter strip, as PaddleOCR read it. Not ``SpinMeterValidation``:
+    an arithmetic check needs two readings and this feature has one, so this
+    just reports what the strip *says* and stops there."""
 
     mode: MeterMode = Field(
         description=(

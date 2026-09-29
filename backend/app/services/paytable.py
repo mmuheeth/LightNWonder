@@ -207,16 +207,10 @@ def _from_log(config: GameConfig) -> tuple[str, PaytableSource] | None:
 
 
 def _bet_from_log(config: GameConfig) -> tuple[int, str, datetime | None] | None:
-    """Last bet the game's log named -- the credit amount, its log line, and
-    when it was logged -- or ``None`` if the log never said or there is none.
-
-    ``BetChangeMsg``'s own ``totalBetValue`` is money-scaled by the same
-    ``denom`` the line reports (352 at denom 2.000 for a live bet of 176), not
-    the bare credit rung math.xml's "_88", "_176", ... tables are keyed on --
-    dividing by ``denom`` undoes that scaling. Both fields are decimal strings
-    ("176.000"), so they are read as floats and the quotient rounded rather
-    than either being parsed as an int outright.
-    """
+    """Last bet the game's log named -- amount, log line, timestamp -- or
+    ``None`` if it never said. ``totalBetValue`` is money-scaled by ``denom``
+    (352 at denom 2.000 is a bet of 176 credits); dividing by ``denom`` undoes
+    that scaling rather than parsing either decimal string as an int."""
     log_path = config.log_path
     if log_path is None:
         return None
@@ -526,15 +520,10 @@ def _orb_value_table_info(
 def _orb_values(
     math: GameMath, identity: PaytableIdentity | None, live_bet: int | None
 ) -> list[OrbValueTableInfo]:
-    """What a landed SC/NonSC orb can show, base game, at the bet actually in
-    play -- the log's own last ``BetChangeMsg`` when there is one, else the
-    paytable's declared minimum (the same rung ``BetConfigInfo.unit_cost``
-    should equal).
-
-    Only ``BG`` is surfaced: ``HNS``/``FF`` are the same orb in a feature state
-    and would be a second, near-identical table on a card meant to answer one
-    question plainly. math.xml keeps the rest on ``GameMath`` for a future
-    context/feature selector if one is ever wanted."""
+    """What a landed SC/NonSC orb can show, base game, at the bet in play (the
+    log's last ``BetChangeMsg``, else the paytable's declared minimum). Only
+    ``BG`` is surfaced -- ``HNS``/``FF`` are the same orb in a feature state
+    and would just duplicate the table; the rest stays on ``GameMath``."""
     bet = live_bet
     if bet is None:
         bet = identity.min_total_bet if identity is not None else None

@@ -1,5 +1,4 @@
-import { ChevronDown, Cpu, Loader2, ScanEye, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { Loader2, ScanEye, TriangleAlert } from "lucide-react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Badge } from "@/components/ui/badge";
@@ -11,13 +10,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-
-/** The networks a screen can be read by, and the order they are offered in. */
-const ARCHITECTURES = [
-  { name: "resnet34", label: "ResNet34" },
-  { name: "efficientnet_b0", label: "EfficientNet-B0" },
-];
 
 /** What fixes a refused reading; the backend's own message says what happened. */
 const ERROR_HINTS = {
@@ -93,11 +85,6 @@ function Source({ result }) {
 
 /** The button, and what the last press made of the screen. */
 export function ScatterValidationControlCard({ result, analyze }) {
-  // Which network names the tiles. A per-press choice rather than a setting, for
-  // the reason Evaluate Screen and Analyze Spin make it one: both stay trained at
-  // once and they do not read the same split equally well, so a disagreement
-  // between them says something about the grid.
-  const [architecture, setArchitecture] = useState(ARCHITECTURES[0].name);
   const busy = analyze.isPending;
   const hint = analyze.error ? ERROR_HINTS[analyze.error.code] : null;
 
@@ -117,45 +104,10 @@ export function ScatterValidationControlCard({ result, analyze }) {
 
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-4">
-          <Button
-            size="sm"
-            onClick={() => analyze.mutate({ architecture })}
-            disabled={busy}
-          >
+          <Button size="sm" onClick={() => analyze.mutate({})} disabled={busy}>
             {busy ? <Loader2 className="animate-spin" /> : <ScanEye />}
             {busy ? "Analyzing…" : "Analyze Screen"}
           </Button>
-
-          <div className="flex items-center gap-2">
-            <Label
-              htmlFor="scatter-validation-architecture"
-              className="text-muted-foreground text-sm font-normal"
-            >
-              <Cpu className="size-3.5" />
-              Classifier
-            </Label>
-            <div className="relative">
-              <select
-                id="scatter-validation-architecture"
-                aria-label="Classifier model"
-                value={architecture}
-                onChange={(event) => setArchitecture(event.target.value)}
-                disabled={busy}
-                className="border-input bg-background text-foreground hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 h-8 cursor-pointer appearance-none rounded-md border pr-8 pl-2.5 text-sm shadow-xs transition-[color,box-shadow,background-color] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
-              >
-                {ARCHITECTURES.map((option) => (
-                  <option
-                    key={option.name}
-                    value={option.name}
-                    className="bg-background text-foreground"
-                  >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="text-muted-foreground pointer-events-none absolute inset-y-0 right-2 my-auto size-3.5" />
-            </div>
-          </div>
         </div>
 
         {/* Said while it runs, because the whole reading is one request with no

@@ -69,8 +69,7 @@ from app.services import paylines as paylines_service
 from app.services import paytable as paytable_service
 from app.services import roi as roi_service
 from app.services import tile_clips as tile_clips_service
-from app.utils import game_log
-from app.utils import ocr as ocr_util
+from app.utils import game_log, paddle_ocr
 from app.utils import paylines as payline_config
 from app.utils.game_math import ANY_SYMBOL
 from app.utils.log_tail import LogTail
@@ -106,10 +105,9 @@ _WIN_COUNTED = frozenset({"win-collected"})
 # The spin the press was meant to cause, in the game's own words.
 _SPIN_STARTED = frozenset({"spin-started"})
 
-# The shortest run a combo can match, so the shortest a wild-led alternative is
-# worth looking up at all. The same floor :mod:`app.services.paylines` reports
-# `paying` by; kept here rather than imported because this module applies it to a
-# *second* length -- the leading wild count -- that the check never priced.
+# Shortest run a combo can match -- also the floor for a wild-led alternative.
+# Kept here rather than imported from `paylines` because this module applies it
+# to a second length, the leading wild count, that the check never prices.
 _MIN_RUN = 2
 
 
@@ -193,22 +191,13 @@ class _ActiveRun:
     rules: tuple[game_log.EventRule, ...]
     started_at: datetime
     control: SpinControl
-    """Which channel presses spin and collects the win. Everything between the
-    two presses is the same either way, so this is read in exactly two places
-    -- and recorded here because one service holds every run, so the record has
-    to say which channel drove this one."""
-
-    architecture: str
-    """Which trained network names this run's tiles. Resolved when the run is
-    asked for rather than when the classify step runs, so an unknown name is a
-    refused request instead of a failure eight steps in -- and so the record says
-    which model graded the spin even if the step never got there."""
+    """Which channel presses spin and collects the win -- the only two places
+    that differ between the two. Recorded here since one service holds every run."""
 
     record: bool
-    """Whether this run also makes a video of itself. When false the two
-    recording steps are left out of `steps` entirely, rather than shown and
-    immediately skipped -- a caller who did not ask to record should not see
-    anything about recording at all."""
+    """Whether this run also makes a video of itself. False leaves the two
+    recording steps out of `steps` entirely rather than shown and skipped -- a
+    caller who did not ask to record should see nothing about recording at all."""
 
     steps: dict[str, _StepRecord]
     state: SpinRunState = SpinRunState.RUNNING
@@ -497,7 +486,9 @@ def _finish_step(step: _StepRecord, state: SpinStepState) -> None:
 
 @contextlib.asynccontextmanager
 async def _step(run: _ActiveRun, key: str) -> AsyncIterator[_StepRecord]:
-    """Run one step of the sequence, recording how it went either way."""
+    """Run one step of the sequence, recording how it went either way. A body
+    that sets ``step.error`` without raising is recorded as failed but does not
+    stop the run -- for a step that did its work but knows the result is unusable."""
     _check_cancelled(run)
     step = run.steps[key]
     step.state = SpinStepState.RUNNING
@@ -612,13 +603,10 @@ async def _prepare(run: _ActiveRun) -> None:
 async def _prepare_control(run: _ActiveRun) -> str:
     """Get whichever channel drives this run ready, and say what it found.
 
-    The two are not equally forgiving, and deliberately. An i-deck run only
-    *reports* its two devices, because a panel at `access_denied` still leaves
-    a run worth having -- the screenshots and the readings are the same. A GAF
-    run opens its session here instead, because there is nothing to fall back
-    on: without it the press eight steps later cannot happen at all, and the
-    ~2.4s cold start would otherwise be charged to the spin.
-    """
+    Deliberately unequal: i-deck only *reports* its devices, since a panel at
+    `access_denied` still leaves a run worth having. GAF opens its session here
+    instead -- there's no fallback, and this is where its ~2.4s cold start belongs
+    rather than charged to the spin press eight steps later."""
     if run.control is SpinControl.GAF:
         state = await gaf_service.connect()
         named = "" if state.object_count is None else f", {state.object_count} controls"
@@ -741,16 +729,11 @@ async def _capture(run: _ActiveRun, key: str, step_key: str) -> None:
 
 
 async def _press_spin(run: _ActiveRun) -> tuple[str, str]:
-    """Make the spin happen, however this run drives the game.
-
-    Answers the two things the step's own line is written from: what was
-    pressed, and what it cost. Nothing here waits for the *result* -- the log
-    is what says the game spun, stopped and paid, and it says it the same way
-    for both channels. That is the whole reason a GAF run reaches for
-    ``settle=False``: letting GAF wait for the spin to finish would hold this
-    coroutine inside one XML-RPC call for the length of the spin, where every
-    other wait in this module is sliced so a cancel lands within 100ms.
-    """
+    """Make the spin happen, however this run drives the game -- nothing here
+    waits for the *result*, since the log says the game spun the same way for
+    both channels. GAF presses with ``settle=False`` for exactly that reason:
+    letting it wait would hold this coroutine in one XML-RPC call for the whole
+    spin, where every other wait here is sliced so a cancel lands within 100ms."""
     if run.control is SpinControl.GAF:
         # Not forced: GAF refuses to press into a spin that has not finished,
         # which is exactly the guard a run driving a cabinet wants. A game
@@ -765,9 +748,8 @@ async def _press_spin(run: _ActiveRun) -> tuple[str, str]:
 
 
 def _no_spin_published(run: _ActiveRun, pressed: str, timeout: float) -> str:
-    """Why a press the channel accepted produced no spin. The two channels fail
-    this way for different reasons, so they are told apart rather than blurred:
-    a key is a guess about the cabinet's layout, a GAF call is not."""
+    """Why a press the channel accepted produced no spin -- told apart per channel
+    since a key is a guess about the cabinet's layout and a GAF call is not."""
     if run.control is SpinControl.GAF:
         return (
             f"GAF accepted the spin press but {run.label} published no spin "
@@ -820,7 +802,8 @@ async def _wait_reels(run: _ActiveRun, reader: _LogReader) -> None:
 
 
 async def _detect_win(run: _ActiveRun, reader: _LogReader) -> None:
-    """Decide whether this spin paid, by whether the win meter counts up."""
+    """A win is proven positively (the meter counts up); a loss is proven only by
+    that count-up staying absent for the whole wait -- silence, not a signal."""
     wait = settings.ANALYZE_SPIN_WIN_WAIT_SECONDS
     async with _step(run, STEP_WIN_DETECT) as step:
         detected = await _wait_for(run, reader, _WIN_COUNTED, timeout=wait)
@@ -863,16 +846,10 @@ async def _record_tile_clips(run: _ActiveRun) -> None:
 
 
 async def _collect_by_gaf(run: _ActiveRun, step: _StepRecord) -> None:
-    """Collect the win by calling the game's own take-win button.
-
-    ``settle=True`` here where the spin press used ``settle=False``: collecting
-    is the short wait the spin is not, and what it waits for -- the game back
-    at idle -- is the thing the next screenshot is of. A button the game says
-    is not interactable is *recorded* rather than raised, per ``_step``'s
-    error-without-raising convention: the reels are still on screen and worth
-    reading, and the run reaching the collected screenshot is what shows that
-    the win was never taken.
-    """
+    """Collect the win via the game's own take-win button, with ``settle=True``
+    (unlike the spin press) since the game back at idle is what the next
+    screenshot is of. A button GAF finds not interactable is *recorded* on the
+    step rather than raised -- the reels are still worth reading either way."""
     result = await gaf_service.take_win(settle=True, read_meters=False)
     step.detail = result.detail
     if not result.pressed:
@@ -1124,14 +1101,12 @@ def _unit_checks(
             f"{_amount(paid)}, and the balance reads {_amount(end.balance)}",
         )
         # Deliberately no "the win meter cleared" check: these games leave the
-        # last win on the WIN cell after it has been collected, so an empty one
-        # would be the surprise. The balance moving is the proof of collection,
-        # and that is the check above.
+        # last win on the WIN cell after collection, so an empty one would be
+        # the surprise. The balance moving is the proof of collection.
 
-        # And the whole spin as one identity, end to end. Not implied by the two
-        # relations above even though it follows from them: each of those compares
-        # one *pair* of frames, so a compensating misread in the middle frame
-        # cancels out across them and only this notices.
+        # The whole spin as one identity, end to end. Not implied by the two
+        # relations above: each compares one *pair* of frames, so a compensating
+        # misread in the middle frame cancels out across them and only this notices.
         before = _figures(initial, unit) if initial is not None else SpinMeterFigures()
         reconciled = _plus(_minus(before.balance, before.bet), after.win)
         add(
@@ -1223,15 +1198,13 @@ def _derive_bet_per_unit(
     rungs = round(staked / cost)
     if rungs < 1:
         return None
-    # Rounding is not enough on its own: 300 credits over an 88-credit spin
-    # rounds to 3, and 3 is a rung, but 88 x 3 is 264 and not 300. So the
-    # product has to come back to the bet that was read -- otherwise a misread
-    # BET cell silently misprices every line on the run, which is the one
-    # failure worth refusing to guess through.
+    # Rounding alone isn't enough: 300 credits over an 88-credit spin rounds to
+    # rung 3, but 88 x 3 is 264, not 300. The product must come back to the bet
+    # that was read, or a misread BET cell silently misprices every line.
     if not _close(rungs * cost, staked, _tolerance(SpinMeterUnit.CREDITS)):
         return None
-    # A ladder is a whitelist when the game shipped one. Without it any whole
-    # number is allowed -- a machine with no install has no rungs to check.
+    # A ladder is a whitelist when the game shipped one; without it any whole
+    # number is allowed, since a machine with no install has no rungs to check.
     if bet.ladder and rungs not in bet.ladder:
         return None
     return rungs
@@ -1276,33 +1249,29 @@ async def _validate_meter(run: _ActiveRun) -> None:
                 try:
                     readings.append(await _read_meter(frame))
                 except AppException as exc:
-                    # An undeclared region or a missing engine is one problem for
-                    # every frame, so there is nothing to gain from the rest.
+                    # An undeclared region or missing engine is one problem for
+                    # every frame -- nothing to gain from reading the rest.
                     failure = exc.message
                     break
 
-            # The units are settled before anything is checked, and in this
-            # order: which side the strip was drawing comes from every frame at
-            # once, the rate that converts to the other side comes from the
-            # paytable read at `prepare` -- before the reels turned, so it is the
-            # denomination this spin actually played at -- and only then can a
-            # reading be expressed in both.
+            # Settled in order: which side the strip drew comes from every frame
+            # at once; the conversion rate comes from the paytable read at
+            # `prepare`, before the reels turned, so it's this spin's own
+            # denomination. Only then can a reading be expressed in both units.
             mode, currency = meter_service.combine(
                 reading.values for reading in readings
             )
             denomination = None if run.paytable is None else run.paytable.denomination
             rate = None if denomination is None else denomination.money_per_credit
-            # Which unit was drawn is settled before anything is converted by it,
-            # because getting it wrong divides every figure on the run by the
-            # denomination a second time.
+            # Unit must be settled before anything is converted by it -- getting
+            # it wrong divides every figure on the run by the denomination twice.
             mode, misread = _settle_mode(run, mode, readings)
             if misread is not None:
                 _note_error(run, f"Cash meter: {misread}")
             readings = [_in_both_units(reading, mode, rate) for reading in readings]
 
-            # What the player had staked, when nobody said. This step runs
-            # before the reels are read, so the stake is known in time to price
-            # every line the first time rather than re-pricing them after.
+            # Bet per unit is worked out here, before the reels are read, so the
+            # stake is known in time to price every line once instead of twice.
             if run.bet_per_unit is None:
                 derived = _derive_bet_per_unit(run, readings)
                 if derived is not None:
@@ -1357,9 +1326,8 @@ def _reading(result: ClassifyResult) -> SpinReelReading:
                 column=tile.column,
                 symbol=tile.symbol,
                 label=tile.label,
-                # The winner even when it was rejected: a tile that came back
-                # unnamed still leaned somewhere, and that is the whole evidence
-                # for the rejection.
+                # The winner even when rejected: an unnamed tile still leaned
+                # somewhere, and that's the whole evidence for the rejection.
                 leading=(
                     tile.predictions[0].symbol if tile.predictions else tile.symbol
                 ),
@@ -1377,14 +1345,9 @@ def _reading(result: ClassifyResult) -> SpinReelReading:
 
 
 def reading(result: ClassifyResult) -> SpinReelReading:
-    """The classifier's answer as a reading, for a caller outside this module.
-
-    Public alongside :func:`read_scatters` because **what landed is not a fact
-    about a spin**: it is a fact about a grid of tiles, and Evaluate Screen asks
-    the same question of a screen nobody spun. Sharing these two is what keeps
-    that feature from growing its own copy of the reading types and drifting from
-    this one.
-    """
+    """The classifier's answer as a reading, public for callers outside this
+    module -- what landed is a fact about a grid of tiles, not about a spin, and
+    Evaluate Screen asks the same question of a screen nobody spun."""
     return _reading(result)
 
 
@@ -1396,21 +1359,15 @@ def _scatter_codes(config: GameConfig) -> tuple[str, ...]:
 
 
 def _scatter_figure(value: float) -> str:
-    """A number off a scatter tile for a detail line. Not `_amount`, which formats a
-    *cash* meter to two places: what is printed on an orb is a prize figure the
-    game drew as whole digits, so a trailing `.00` would be this module's
-    invention rather than what the tile said."""
+    """A scatter number for a detail line -- not `_amount`, since a prize orb
+    draws whole digits and a trailing `.00` would be this module's invention."""
     return f"{value:g}"
 
 
 def _summarise_scatters(scatters: list[SpinScatterReading]) -> str:
-    """The scatters in one line, grouped by code and carrying whatever each orb
-    said: ``SC x3 (12, 50, MAJOR), FG x1``.
-
-    A jackpot tier is listed beside the figures rather than in a group of its
-    own, because it is the same question answered -- what is printed on this orb
-    -- and reading the line should not require knowing which orbs carry words.
-    """
+    """The scatters in one line, grouped by code: ``SC x3 (12, 50, MAJOR), FG x1``.
+    A jackpot tier sits beside the figures rather than its own group, since both
+    answer the same question -- what is printed on this orb."""
     if not scatters:
         return "no scatters landed"
     parts: list[str] = []
@@ -1426,39 +1383,27 @@ def _summarise_scatters(scatters: list[SpinScatterReading]) -> str:
     return ", ".join(parts)
 
 
-# What one scatter crop reads as. Named
-# because it is returned through `asyncio.to_thread`, which infers the callable's
-# type from the annotation rather than widening the returns to match it.
-# `(value, prize_label, text, ocr_confidence, error)`.
+# What one scatter crop reads as: (value, prize_label, text, ocr_confidence,
+# error). Named because `asyncio.to_thread` infers the callable's return type
+# from this annotation rather than widening it to match.
 _ScatterValue = tuple[float | None, str | None, str | None, float | None, str | None]
 
 
 def _read_scatter_value(
-    crop: Image.Image, *, executable: Path, options: ocr_util.OcrOptions
+    crop: Image.Image, *, options: paddle_ocr.PaddleOptions
 ) -> _ScatterValue:
-    """OCR one scatter's crop for the prize printed on it, as
-        ``(value, text, confidence, error)``.
-
-        Every scatter is read, not only the codes known to carry a figure: whether a
-        tile is drawn with a number is a property of the tile, and a feature scatter
-        simply comes back with no digits in it -- which is ``value=None`` and no
-        error. Only being unable to read the crop at all is an error.
-
-    :func:`app.services.ocr.read_tile` reads the crop several ways and returns a
-        figure only where the readings support one, so a tile carrying no number and a
-        tile whose number could not be made out both arrive as ``value=None`` with no
-        error. The best rejected candidate is still passed through as ``text`` -- a
-        refused reading should be visible as something read and refused, not as
-        silence."""
+    """OCR one scatter's crop for its prize figure. Whether a tile carries a number
+    is a property of the tile, so no digits is ``value=None`` with no error --
+    only an unreadable crop is an error. The best rejected candidate still comes
+    back as ``text``, so a refused reading is visible rather than silent."""
     try:
-        reading = ocr_service.read_tile(crop, executable=executable, options=options)
-    except ocr_util.OcrError as exc:
+        reading = ocr_service.read_tile(crop, options=options)
+    except paddle_ocr.OcrError as exc:
         failed: _ScatterValue = (None, None, None, None, str(exc))
         return failed
     if reading.text is None:
-        # A jackpot orb carries a tier name where a prize orb carries a figure.
-        # That is a reading of what the orb says, so it is reported rather than
-        # dropped for not being a number.
+        # A jackpot orb carries a tier name where a prize orb carries a figure --
+        # still a reading of what the orb says, so it's reported, not dropped.
         if reading.label is not None:
             tier: _ScatterValue = (
                 None,
@@ -1468,9 +1413,8 @@ def _read_scatter_value(
                 None,
             )
             return tier
-        # No figure the evidence supports. The best candidate is still reported as
-        # `text` so a rejected reading is visible as something read and refused
-        # rather than as silence -- but it is not a value.
+        # No figure the evidence supports; the best candidate is still reported
+        # as `text` so a rejection is visible rather than silent -- but not a value.
         rejected = reading.candidates[0][0] if reading.candidates else None
         unread: _ScatterValue = (None, None, rejected, None, None)
         return unread
@@ -1488,10 +1432,8 @@ async def _read_scatters(
     config: GameConfig, split_dir: Path, reading: SpinReelReading
 ) -> tuple[list[SpinScatterReading], str]:
     """Every scatter on the grid, with the number on it where it carries one.
-
-    Reads the tiles back off the split the classify step just wrote rather than
-    re-cropping the frame, so the pixels OCR sees are exactly the ones the
-    classifier named the code from."""
+    Reads the tiles back off the split the classify step already wrote, rather
+    than re-cropping the frame, so OCR sees exactly the pixels a code came from."""
     codes = _scatter_codes(config)
     if not codes:
         return [], ""
@@ -1500,12 +1442,12 @@ async def _read_scatters(
     if not landed:
         return [], _summarise_scatters([])
 
-    # Resolved once for the whole grid, not per tile: a missing Tesseract is one
+    # Resolved once for the whole grid, not per tile: a missing PaddleOCR is one
     # fact about the run and not five identical ones.
     try:
-        executable = await ocr_service.engine_for_reading()
+        ocr_service.ensure_available()
         options = ocr_service.read_tile_options(config)
-    except (AppException, ocr_util.OcrOptionsError) as exc:
+    except (AppException, paddle_ocr.OcrOptionsError) as exc:
         message = exc.message if isinstance(exc, AppException) else str(exc)
         unread = [
             SpinScatterReading(
@@ -1543,17 +1485,12 @@ async def _read_scatters(
                 crop_error or f"the split holds no {tile.name} tile to read",
             )
             return missing
-        return await asyncio.to_thread(
-            _read_scatter_value, crop, executable=executable, options=options
-        )
+        return await asyncio.to_thread(_read_scatter_value, crop, options=options)
 
-    # Concurrently, not one after another: reading a tile is several Tesseract
-    # subprocesses and the tiles are independent, so a five-scatter grid that
-    # takes ~15s in sequence takes about as long as its slowest tile instead.
-    # One tile at a time, deliberately. Reading them concurrently is *slower*:
-    # PaddleOCR inference is CPU-bound and serialized on its own engine lock, so
-    # the threads queue on that lock while still competing for cores. Measured on
-    # five scatter tiles: 51.0s sequential against 56.8s through `asyncio.gather`.
+    # One tile at a time, deliberately -- concurrent reads are *slower* here:
+    # PaddleOCR is CPU-bound and serialized on its own engine lock, so threads
+    # queue on that lock while competing for cores. Measured: 51.0s sequential
+    # vs 56.8s via `asyncio.gather` on five scatter tiles.
     reads = [await read_one(tile) for tile in landed]
 
     for tile, read in zip(landed, reads, strict=True):
@@ -1574,15 +1511,10 @@ async def _read_scatters(
             )
         )
     summary = _summarise_scatters(scatters)
-    # Which engine read the orbs, said once per spin rather than per tile. Worth
-    # a line because Tesseract is still identified before this loop for the
-    # fallback, so its "OCR engine: tesseract" line otherwise reads as if it were
-    # the one that answered.
     logger.info(
-        "Read %d scatter(s) of %s with %s: %s",
+        "Read %d scatter(s) of %s with PaddleOCR: %s",
         len(scatters),
         config.name,
-        "PaddleOCR" if ocr_service.orb_engine_is_paddle() else "Tesseract",
         summary,
     )
     return scatters, summary
@@ -1591,10 +1523,8 @@ async def _read_scatters(
 async def read_scatters(
     config: GameConfig, split_dir: Path, reading: SpinReelReading
 ) -> tuple[list[SpinScatterReading], str]:
-    """Every scatter on a named grid, with the figure printed on it -- see
-    :func:`_read_scatters`. Public for the same reason as :func:`reading`: an orb
-    carries what it carries whether or not a spin put it there, and Evaluate
-    Screen reads it off a screen nobody spun."""
+    """Public twin of :func:`_read_scatters`, for the same reason as :func:`reading`:
+    an orb carries what it carries whether or not a spin put it there."""
     return await _read_scatters(config, split_dir, reading)
 
 
@@ -1607,33 +1537,26 @@ async def _read_reels(run: _ActiveRun) -> None:
                 raise SpinAnalysisUnavailableError(
                     "No result screenshot was taken, so there are no reels to read"
                 )
-            # The split is written here rather than in the payline step because
-            # the tiles are what gets classified: the grid names the directory,
-            # the classifier names the tiles in it, and the payline check reads
-            # both back by that name.
+            # Split here, not in the payline step: the grid names the directory,
+            # the classifier names the tiles in it, and paylines reads both back.
             split = await grid_service.split(
                 GridSplitRequest(file_name=frame.file_name, include_images=False)
             )
             result = await classifier_service.classify(
                 ClassifyRequest(
                     split=Path(split.output_dir).name,
-                    architecture=run.architecture,
                     min_confidence=settings.ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE,
-                    # No pictures on the payload: the fifteen per-tile crops
-                    # and the ringed reels are both already on disk, and the
-                    # dashboard draws neither -- the codes and their
-                    # confidences are what it reads. The overlay is still
-                    # *written*, since a ring over a cell is the cheapest way
-                    # to check the split was named the way it looks.
+                    # No pictures on the payload -- the crops and ringed reels
+                    # are already on disk and the dashboard reads codes and
+                    # confidences instead. The overlay is still *written* though,
+                    # since a ring over a cell is the cheapest sanity check.
                     include_images=False,
                     include_overlay=True,
                 )
             )
             reading = _reading(result)
-            # Scatters are read here rather than in a step of their own because
-            # they are part of *what landed*: the same split, annotated by a
-            # second reader. A game declaring no scatter codes leaves both
-            # fields empty and the step reads exactly as it did before.
+            # Scatters are read here, not in a step of their own, since they are
+            # part of *what landed* -- the same split, annotated by a second reader.
             _, config = _active_config()
             scatters, scatter_summary = await _read_scatters(
                 config, Path(split.output_dir), reading
@@ -1733,10 +1656,10 @@ def _award(
     awards: list[SpinLineAward] = []
     for line in check.lines:
         symbols = list(line.symbols)
-        # What the *run* pays as, which the payline check already settled: the
-        # symbol the wilds stood in for, or the wild itself when every position
-        # of the run was one. Deliberately not `symbols[0]` -- that is the tile
-        # on reel 1, and a line that lands a wild there is not a line of wilds.
+        # What the *run* pays as, already settled by the payline check: the
+        # symbol the wilds stood in for, or the wild itself if the whole run was
+        # wilds. Deliberately not `symbols[0]` -- that's the reel-1 tile, and a
+        # wild landing there doesn't make the line a line of wilds.
         symbol = line.symbol
 
         note: str | None = None
@@ -1749,12 +1672,11 @@ def _award(
             combo, combo_value = _priced(view, symbol, line.pays)
             combo_pays = line.pays if combo_value is not None else None
 
-            # A line that leads with wilds resolves two ways and the game pays
-            # the better of them: as the symbol the wilds stood in for over the
-            # whole run, or as the wild's own combo over just the leading wilds.
-            # On FortuneOx four wilds then an Ox is five Ox (50 a bet unit) or
-            # four wilds (100), so taking the substituted reading on its own
-            # would halve a real win while looking certain about it.
+            # A wild-led run resolves two ways and the game pays the greater: the
+            # substituted symbol over the whole run, or the wild's own combo over
+            # just the leading wilds. FortuneOx: four wilds then an Ox is either
+            # five Ox (50/unit) or four wilds (100) -- pricing only the
+            # substituted reading would halve a real win while looking certain.
             if wild is not None and symbol != wild and line.leading_wilds >= _MIN_RUN:
                 other, value = _priced(view, wild, line.leading_wilds)
                 if value is not None and (combo_value is None or value > combo_value):
@@ -1780,10 +1702,9 @@ def _award(
                     "awards nothing"
                 )
 
-        # `awarded` is the maths' answer, so it is keyed on the paytable's own
-        # figure and never on the priced one: a run the maths pays for is a win
-        # whether or not this process was told what a unit cost. The stake
-        # scales an award; it cannot create or cancel one.
+        # `awarded` is keyed on the paytable's own figure, never the priced one:
+        # a run the maths pays for is a win regardless of whether the stake was
+        # known. The stake scales an award; it cannot create or cancel one.
         awarded = combo_value is not None
         credits = (
             None
@@ -1860,9 +1781,9 @@ def _expected(
     # counting the thing the paytable is denominated in.
     in_credits = meter is not None and meter.mode is MeterMode.CREDITS
 
-    # Both sides of the comparison in both units, off the readings' own converted
-    # figures rather than divided again here -- one conversion per run, done where
-    # the mode and the rate were settled together.
+    # Both sides in both units, off the readings' own converted figures rather
+    # than divided again here -- one conversion per run, where mode and rate
+    # were settled together.
     cash = None if rate is None else credits * rate
     observed_credits = None if outcome is None else outcome.credits.win
     observed_cash = None if outcome is None else outcome.cash.win
@@ -1874,15 +1795,14 @@ def _expected(
         None if bet_credits is None or not line_count else bet_credits / line_count
     )
 
-    # Compare in whatever the glass was drawing, since that side was read and the
-    # other is derived from it -- and it is the side whose tolerance means
-    # something. `observed` falls back to the raw reading so a run with no
-    # denomination is still graded in the one unit it does know.
+    # Compare in whatever the glass was drawing -- that side was read, the other
+    # derived, and only the read side's tolerance means anything. `observed`
+    # falls back to the raw reading so a run with no denomination still grades.
     unit = SpinMeterUnit.CREDITS if in_credits else SpinMeterUnit.CASH
-    # Without a bet per unit there is no award to compare: `credits` is 0 because
-    # every line's own figure is a rate this run was never given a multiplier
-    # for. Gated here rather than left to fall through, since 0 against an empty
-    # meter would otherwise read as a spin that correctly paid nothing.
+    # Without a bet per unit there's no award to compare: `credits` is 0 because
+    # every line's figure is a rate with no multiplier yet. Gated here rather
+    # than left to fall through, or 0 against an empty meter reads as a correct
+    # no-win instead of an unpriced one.
     staked = run.bet_per_unit
     owed = None if staked is None else (credits if in_credits else cash)
     observed = observed_credits if in_credits else observed_cash
@@ -1896,10 +1816,9 @@ def _expected(
             verdict = SpinVerdict.PASSED
             detail = "No line pays, and the win meter is empty"
         elif staked is None:
-            # The BET cell did not read, or the paytable never said what a
-            # spin costs. Named before the denomination below because a paytable
-            # value is a rate per bet unit, so without the number of units there
-            # is nothing to compare however well the rest of the meter read.
+            # BET cell unread, or the paytable never said what a spin costs.
+            # Checked before denomination below: a paytable value is a rate per
+            # bet unit, so without the unit count there's nothing to compare.
             verdict = SpinVerdict.INDETERMINATE
             detail = (
                 "The bet per unit could not be read off the BET cell, so each "
@@ -1916,10 +1835,9 @@ def _expected(
                 "priced in money"
             )
         else:
-            # Short list on purpose: what is left to price the award is the
-            # denomination and the win. The bet and the line count are not on it
-            # -- the multiplier is the bet *per unit*, which is given rather than
-            # read, and it was checked above.
+            # Short list on purpose: only the denomination and the win remain to
+            # price the award. Bet and line count aren't on it -- the multiplier
+            # is the bet *per unit*, already checked above.
             verdict = SpinVerdict.INDETERMINATE
             detail = (
                 "Not enough was readable to price the spin: needs the "
@@ -1996,9 +1914,8 @@ async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValid
         )
 
     if reels is None:
-        # No fallback on purpose: cosine similarity would answer a different
-        # question (which tiles are alike) and could not name the symbol this
-        # award is priced from. See the module docstring.
+        # No fallback on purpose: cosine similarity answers a different question
+        # (which tiles are alike) and can't name the symbol an award is priced from.
         return unchecked(
             run.reels_error
             or "The reels were never read, so there are no symbols to line up"
@@ -2029,11 +1946,10 @@ async def _check_paylines(run: _ActiveRun, frame: SpinFrame) -> SpinPaylineValid
     }
     awards = _award(view, check, elements, run.bet_per_unit)
 
-    # The check drew every run it found, because it had no paytable to ask. Now
-    # that there is one, the picture is redrawn over the lines that actually pay
-    # and replaces it -- a cancelled run traced across the reels is the same
-    # claim of a win the numbers just withdrew. Skipped when nothing was
-    # cancelled, which is the common case and already correct.
+    # The check drew every run it found, having no paytable to ask. Now that
+    # there is one, the picture is redrawn over the lines that actually pay and
+    # replaces it -- a cancelled run traced on the reels is still a claim of a
+    # win the numbers withdrew. Skipped, the common case, when nothing changed.
     overlay = check.overlay_image
     output_dir, output_file = check.output_dir, check.output_file
     awarded = {award.line for award in awards if award.awarded}
@@ -2145,11 +2061,9 @@ async def _execute(run: _ActiveRun) -> None:
             _skip(run, STEP_FRAME_COLLECTED, "Nothing was collected to photograph")
 
         await _stop_recording(run)
-        # The meter reads *first* of the three, because it is the only one of
-        # them that produces an input to another: which unit the strip drew and
-        # what was staked on a bet unit are what turn a line's paytable rate into
-        # an award. It used to read last, which meant the lines were priced
-        # before the stake was known and had to be re-priced afterwards.
+        # Meter reads *first* of the three: it's the only one that feeds another
+        # -- unit drawn and bet per unit turn a paytable rate into an award. It
+        # used to read last, pricing lines before the stake was known.
         await _validate_meter(run)
         await _read_reels(run)
         await _validate_paylines(run)
@@ -2199,13 +2113,9 @@ def _summary(run: _ActiveRun) -> str:
 
 
 def resolve_control(requested: str | None) -> SpinControl:
-    """Which channel a request meant, defaulting to the configured one.
-
-    Public and called from :func:`start` before anything else, for the reason
-    :func:`app.services.image_classifier.resolve_architecture` is: a typo
-    should be a refused request, not a run driven as far as its press and then
-    failed on a name.
-    """
+    """Which channel a request meant, defaulting to the configured one. Called
+    from :func:`start` before the game config loads, so a typo is a refused
+    request rather than a run driven to its press and failed on a name."""
     name = (requested or settings.ANALYZE_SPIN_CONTROL).strip().lower()
     try:
         return SpinControl(name)
@@ -2219,16 +2129,12 @@ def resolve_control(requested: str | None) -> SpinControl:
 async def start(
     *,
     record: bool | None = None,
-    architecture: str | None = None,
     control: str | None = None,
 ) -> SpinAnalysisState:
     """Drive one spin, and validate it."""
     global _run
     record_enabled = settings.ANALYZE_SPIN_RECORD if record is None else record
     channel = resolve_control(control)
-    chosen = classifier_service.resolve_architecture(
-        architecture or settings.analyze_spin_classifier_architecture
-    )
     async with _get_lock():
         current = _run
         if current is not None and current.state is SpinRunState.RUNNING:
@@ -2259,7 +2165,6 @@ async def start(
             ),
             started_at=started,
             control=channel,
-            architecture=chosen,
             record=record_enabled,
             steps={
                 key: _StepRecord(key=key, label=label)
@@ -2271,11 +2176,10 @@ async def start(
         run.task = asyncio.create_task(_execute(run), name=f"analyze-spin-{run_id}")
 
     logger.info(
-        "Spin %s started for %s over %s, reading its reels with %s",
+        "Spin %s started for %s over %s",
         run.run_id,
         run.game,
         run.control.value,
-        run.architecture,
     )
     return _snapshot(run, images=False)
 
@@ -2323,19 +2227,17 @@ def state(*, images: bool = False) -> SpinAnalysisState:
 
 
 def owns_recording() -> bool:
-    """Whether the OBS recording output, if it is running, belongs to a spin.
-
-    OBS records one output at a time, so a feature about to record has to know
-    whether this one is already using it -- and the answer is only ever "yes,
-    leave it alone" or "not mine", never "stop it". A run started with
-    ``record=False`` owns nothing, and neither does a finished one.
-    """
+    """Whether the running OBS recording, if any, belongs to a spin. OBS records
+    one output at a time, so the answer is only ever "yes, leave it alone" or
+    "not mine" -- never "stop it". A `record=False` or finished run owns nothing."""
     run = _run
     return run is not None and run.record and run.state is SpinRunState.RUNNING
 
 
 async def abort() -> None:
-    """End any run because the process is shutting down."""
+    """End any run because the process is shutting down. The one place that
+    force-cancels the task rather than waiting on the cooperative flag --
+    shutdown can't afford to wait a poll out."""
     run = _run
     if run is None or run.state is not SpinRunState.RUNNING:
         return

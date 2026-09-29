@@ -19,7 +19,7 @@ router = APIRouter()
 
 ResponseSpec = dict[int | str, dict[str, Any]]
 
-NO_ENGINE: ResponseSpec = {409: {"description": "No usable Tesseract install"}}
+NO_ENGINE: ResponseSpec = {409: {"description": "No usable PaddleOCR install"}}
 NO_REGION: ResponseSpec = {404: {"description": "No such region, or no run/frame"}}
 NO_FRAME: ResponseSpec = {
     502: {"description": "The frame to read could not be obtained"}

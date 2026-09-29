@@ -28,9 +28,9 @@ __all__ = [
     "load_paytable_identity",
 ]
 
-# "BG_SCPearlCredit_88", "HNS_NonSCPearlCredit_264" -- the orb value tables this
-# file carries under other names for other mechanics (e.g. "BG_SplitPearl_0"),
-# so a table is claimed by this feature only when its identifier matches.
+# "BG_SCPearlCredit_88", "HNS_NonSCPearlCredit_264" -- claims a table only when
+# its identifier matches; the file carries unrelated mechanics too (e.g.
+# "BG_SplitPearl_0") under the same shape.
 _ORB_VALUE_TABLE = re.compile(
     r"^(?P<context>[A-Za-z0-9]+)_(?P<kind>SC|NonSC)PearlCredit_(?P<bet>\d+)$"
 )
@@ -62,13 +62,9 @@ def _children(parent: ElementTree.Element, name: str) -> list[ElementTree.Elemen
 
 
 def _find(root: ElementTree.Element, name: str) -> ElementTree.Element | None:
-    """First element anywhere under ``root`` with this local name.
-
-    Every other top-level list here (``ReelStripList``, ``ComboSetList``, ...)
-    is a direct child of ``<GameMath>`` on every file this project has seen, so
-    ``_child`` is enough for those. ``WeightedTableList``/``ValueTableList`` are
-    not: FortuneOx nests both inside a ``<BonusInfo>`` wrapper, so this looks
-    anywhere in the document rather than assuming one more fixed level."""
+    """First element anywhere under ``root`` with this local name -- needed
+    because ``WeightedTableList``/``ValueTableList`` aren't direct children on
+    every file (FortuneOx nests both inside ``<BonusInfo>``)."""
     return next((el for el in root.iter() if _local(el.tag) == name), None)
 
 
@@ -162,21 +158,17 @@ class PaytableIdentity:
     min_total_bet: int | None
 
     min_denom_multiplier: int | None
-    """``MinDenomMultiplier``: how many of the base unit one credit is worth on
-    this folder -- 2 on a ``-2c-`` paytable. The only place the *amount* of a
-    denomination is declared rather than logged, so it is what corroborates the
-    value the log reported. See :mod:`app.utils.denomination`, which does the
-    corroborating; nothing here interprets it."""
+    """``MinDenomMultiplier``: units of the base denomination one credit is
+    worth on this folder (2 on a ``-2c-`` paytable) -- the one place this is
+    declared rather than logged; :mod:`app.utils.denomination` corroborates it."""
 
     max_bets: tuple[int, ...]
     """``SpecificMaxBets`` of the first denomination block that declares any."""
 
     denominations: tuple[float, ...]
-    """``DenomConfig``'s own ``Denom`` entries. **Not the denominations the
-    cabinet currently offers, and not guaranteed to contain the current one** --
-    the ``-2c-`` folder lists 1, 5, 10, 50 and 100 while running at 2. Kept
-    because it is what the file says; do not check a live denomination against
-    it."""
+    """``DenomConfig``'s own ``Denom`` entries -- **not** what the cabinet
+    currently offers (the ``-2c-`` folder lists 1, 5, 10, 50, 100 while running
+    at 2). Don't check a live denomination against this."""
 
 
 def load_paytable_identity(path: Path) -> PaytableIdentity:
@@ -319,10 +311,9 @@ class OrbValueWeight:
 
 @dataclass(frozen=True)
 class OrbValueTable:
-    """A weighted table of everything one orb symbol can show, in one game
-    context, at one bet. ``WeightedTableList`` carries several of these per
-    symbol kind -- one per context (``BG``/``HNS``/``FF``) and bet rung -- plus
-    unrelated tables (``BG_SplitPearl_0`` and the like) this ignores."""
+    """A weighted table of everything one orb can show, at one context/bet
+    rung. ``WeightedTableList`` carries several per symbol kind (context
+    ``BG``/``HNS``/``FF`` x bet) plus unrelated tables this ignores."""
 
     identifier: str
     context: str
@@ -443,20 +434,10 @@ class GameMath:
         )
 
     def min_prize_digits(self) -> int | None:
-        """The fewest digits any orb value table's own declared credit amount is
-        written with -- the floor a prize-figure OCR reading must clear to be
-        believed rather than dismissed as noise off the artwork.
-
-        A fixed floor tuned against one game's paytable (see
-        ``app.services.ocr.TILE_MIN_DIGITS``) is wrong for any game whose own
-        tables declare a single-digit prize: a `4` or `6` credit orb would be
-        indistinguishable, digit-count-wise, from the stray single digits that
-        floor exists to reject. This reads the answer out of the maths actually
-        loaded instead of assuming one game's figures apply to another's.
-
-        ``None`` when there are no non-jackpot values to measure, so the caller
-        falls back to its own constant rather than trusting an empty minimum.
-        """
+        """Fewest digits any orb table's own credit value is written with -- the
+        OCR floor a prize reading must clear (see ``ocr.TILE_MIN_DIGITS``, tuned
+        to one game and wrong for another with single-digit prizes). ``None``
+        with nothing to measure, so the caller keeps its own constant."""
         digit_counts = [
             len(str(abs(item.value)))
             for table in self.orb_value_tables
@@ -728,11 +709,9 @@ def _paytable_refs(root: ElementTree.Element, *, path: Path) -> tuple[PaytableRe
 
 
 def _orb_value_tables(root: ElementTree.Element) -> tuple[OrbValueTable, ...]:
-    """Read ``<WeightedTableList>``, keeping only the tables that describe an
-    orb's possible values -- ``BG_SCPearlCredit_88`` and its siblings. The list
-    also carries unrelated mechanics (``BG_SplitPearl_0``, ``ThrowTrigger_*``)
-    under the same element shape, so a table earns a place here by its
-    identifier matching the naming convention, not by its shape alone."""
+    """Read ``<WeightedTableList>``, keeping only orb-value tables like
+    ``BG_SCPearlCredit_88`` -- filtered by identifier since unrelated mechanics
+    (``BG_SplitPearl_0``, ``ThrowTrigger_*``) share the same element shape."""
     tables = _find(root, "WeightedTableList")
     if tables is None:
         return ()

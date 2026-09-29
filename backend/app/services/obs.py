@@ -530,19 +530,10 @@ async def status() -> ObsStatus:
 
 
 async def take_screenshot(payload: ScreenshotRequest) -> ScreenshotResult:
-    """Capture a screenshot of a source or scene, always as a base64 data URI
-    unless the caller has said it does not want one. Supplying ``file_name``
-    also has OBS write the file to disk.
-
-    ``GetSourceScreenshot`` and ``SaveSourceScreenshot`` are two independent
-    requests and OBS answers each with its own full re-encode of the frame --
-    there is no request that both saves a file and returns its bytes in one
-    round trip. A caller writing a file it never reads back as ``image_data``
-    (a capture loop screenshotting for its own record, say) can skip the first
-    one via ``include_image_data=False`` and pay for one encode instead of two,
-    which on a machine also encoding a recording is the difference between a
-    single-digit-seconds screenshot and one twice that.
-    """
+    """Capture a screenshot, as a data URI and/or written to disk via ``file_name``.
+    ``GetSourceScreenshot``/``SaveSourceScreenshot`` are independent requests that
+    each fully re-encode the frame, so a caller not reading back ``image_data``
+    should pass ``include_image_data=False`` to pay for one encode, not two."""
     source_name = payload.source_name or await _current_scene()
     request_data: dict[str, Any] = {
         "sourceName": source_name,

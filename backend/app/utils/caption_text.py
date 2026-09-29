@@ -1,38 +1,11 @@
-"""Repair an OCR reading of a caption drawn from a known, tiny vocabulary.
-
-The cyclic message strip says one of two things -- ``GAME PAYS 500`` or
-``LINE 12 PAYS 25`` -- so its whole alphabet is three words and the digits.
-That is a much stronger constraint than a general recogniser can use, and it
-is the constraint this module applies afterwards. Tesseract has
-``char_whitelist`` for exactly this; PaddleOCR, which reads these captions
-better, has no equivalent, so the whitelist has to be applied to the output.
-
-Two repairs, and the difference between them is why only one of them is safe
-to do character by character:
-
-* **A number slot cannot hold a letter.** After ``Line`` and after ``Pays``
-  the strip draws digits, always. So a letter there is a misread by
-  definition, and mapping it to the digit it resembles cannot make the reading
-  *less* right. Measured on FortuneOx's own font, the recogniser reads its 3
-  as ``a`` and its 8 as ``B`` at 90-98 confidence, through every model and
-  every upscale tried -- the glyphs simply look like that. This is what fixes
-  "Line a Pays 25".
-* **A word is repaired only as a whole.** The vocabulary has three entries and
-  none resembles another, so a token of letters near one of them is that one:
-  ``Lie`` is ``Line``, ``Pa`` is ``Pays``. Doing the same *per character*
-  would be the dangerous version -- see below.
-
-**What this deliberately does not do is fix a digit against another digit.**
-Two real captions differ by one character (``Line 1`` against ``Line 4``), so
-there is no safe tolerance there at all: the repair only ever moves a
-character from the wrong *class* to the right one, never from one digit to
-another.
-
-**And it guarantees a shape, not a value.** If a font's 8 also read as ``a``
-then ``Line a`` would come back as ``Line 3`` and be confidently wrong. The
-raw reading is kept beside the repaired one on every frame for that reason --
-``CyclicTextFrame.text`` is still verbatim, and ``repaired`` is this.
-"""
+"""Repair an OCR reading of a caption against its known, tiny vocabulary (three words
+plus the digits -- ``GAME PAYS 500`` or ``LINE 12 PAYS 25``, since PaddleOCR has no
+``char_whitelist`` equivalent to apply up front). A number slot (after ``Line``/``Pays``)
+is fixed digit-lookalike by character -- FortuneOx's font reads its 3 as ``a`` and 8 as
+``B`` at 90-98 confidence -- while a vocabulary word is fixed only as a whole, never
+per-character. Digit is never repaired against digit (real captions differ by one
+character, so there is no safe tolerance), and the raw reading always ships beside the
+repaired one, because this guarantees a shape, not a value."""
 
 from __future__ import annotations
 
@@ -93,20 +66,10 @@ def _as_word(run: str, vocabulary: tuple[str, ...]) -> str | None:
 
 
 def _split_words(token: str, vocabulary: tuple[str, ...]) -> list[str]:
-    """Break a token where a vocabulary word is welded to something else.
-
-    ``Line11`` and ``11Pas`` are one token to a splitter and two slots to the
-    grammar. Splitting on the *word* rather than on the letter/digit boundary
-    is the whole point: a letter run becomes its own token only when it is
-    recognisably one of the three words, so ``1e`` stays whole and reaches the
-    number slot as ``16``, while ``11Pas`` becomes ``11`` and ``Pays``.
-
-    Getting this wrong is not a missed repair but a corruption. An unsplit
-    ``11Pas`` reaches the number slot entire, where the lookalike map turns
-    its own ``a`` and ``s`` into 3 and 5 and it reads as ``1135``. Matching
-    the word loosely here is what covers the case the exact spelling misses,
-    which is the common one -- a welded word is usually a misread word.
-    """
+    """Break a token where a vocabulary word is welded to something else, splitting on
+    the *word* rather than the letter/digit boundary -- so ``1e`` stays whole and reaches
+    the number slot as ``16``, while ``11Pas`` becomes ``11`` and ``Pays`` instead of
+    reaching the number slot whole and corrupting to ``1135``."""
     parts: list[str] = []
     pending = ""
     for run in re.findall(r"[A-Za-z]+|[^A-Za-z]+", token):
@@ -124,22 +87,12 @@ def _split_words(token: str, vocabulary: tuple[str, ...]) -> list[str]:
 
 
 def _rejoin(tokens: list[str], vocabulary: tuple[str, ...]) -> list[str]:
-    """Put back together a vocabulary word the recogniser split in two.
-
-    The counterpart of :func:`_split_words`, which separates a word welded to
-    its neighbour; this joins one broken away from itself. PaddleOCR reads
-    "PLAY 880 CREDITS" off a thin band as ``Play 880 Cred its`` often enough to
-    matter, and each half is then close enough to "Credits" on its own that the
-    loose match in :func:`_as_word` snaps *both* to it -- turning a caption
-    that was read correctly into "Play 880 Credits Credits".
-
-    Joining only on an **exact** match of the concatenation, deliberately,
-    where :func:`_as_word` matches loosely. The pieces are already suspect; a
-    loose match on top of them would let two unrelated short tokens be welded
-    into a word the strip never drew. An exact hit cannot do that -- the result
-    is a word the game is known to draw, assembled from the letters that were
-    actually read, in order.
-    """
+    """Put back together a vocabulary word the recogniser split in two -- the
+    counterpart of :func:`_split_words`. PaddleOCR reads "PLAY 880 CREDITS" as
+    ``Play 880 Cred its`` often enough to matter, and each half then loosely matches
+    "Credits" on its own (see :func:`_as_word`), doubling it. Joins only on an **exact**
+    match of the concatenation, deliberately stricter than that loose match, so two
+    unrelated short tokens can never be welded into a word the strip never drew."""
     known = {word.casefold(): word for word in vocabulary}
     out: list[str] = []
     index = 0
@@ -161,13 +114,9 @@ def repair(
     text: str, *, vocabulary: tuple[str, ...], number_after: tuple[str, ...]
 ) -> str:
     """Return ``text`` with its number slots and its vocabulary put right.
-
-    ``vocabulary`` is every word the strip is known to draw and ``number_after``
-    the ones a number follows. An empty ``vocabulary`` turns the whole thing
-    off and returns the text unchanged, which is what a game nobody has
-    described yet should get -- guessing at an unknown strip's grammar is how
-    a repair becomes a corruption.
-    """
+    ``vocabulary`` is every word the strip draws and ``number_after`` the ones a number
+    follows; an empty ``vocabulary`` disables the repair, since guessing an unknown
+    strip's grammar is how a repair becomes a corruption."""
     if not vocabulary or not text:
         return text
 

@@ -43,10 +43,9 @@ GOLD_RGB = (201, 121, 37)
 GOLD_PROBABILITY = 0.40
 BLACK_PROBABILITY = 0.02
 
-# Opaque fraction inside its own alpha box, above which a source is taken to
-# already carry the game's field and frame and is left alone. Measured: the Ox is
-# 0.994 because its artwork is a framed portrait; every other symbol in this
-# game's set is a cut-out at 0.45-0.71, so the cut is wide rather than delicate.
+# Opaque-fraction cutoff above which a source is taken to already carry the
+# game's field/frame and is left alone. Measured: Ox is 0.994 (a framed
+# portrait) while every other symbol here is a 0.45-0.71 cut-out.
 DENSE_OPACITY = 0.90
 
 # Fraction of the plate's shorter side a pasted symbol is scaled to occupy.
@@ -316,12 +315,11 @@ def symbols(classes: Sequence[ClassSources]) -> list[str]:
 
 
 # --- Holding frames back, and admitting how little that proves ------------
-# A class here is an animation *loop*, not a set of independent pictures, so no
-# split of it is honestly unseen. Holding back the last few frames is nearly
-# worthless because the loop closes -- AA's and DD's last frames sit 0.02/255 from a
-# retained one -- so `frame_split` returns a contiguous block from the middle. Even
-# that leaks, and `leakage` measures how much, so the accuracy built on it can be
-# reported with its own caveat rather than passed off as a holdout score.
+# A class is an animation *loop*, not independent pictures, so no split is
+# truly unseen -- the loop closes, so AA's/DD's last frames sit 0.02/255 from a
+# retained one. `frame_split` holds back a contiguous middle block instead, and
+# `leakage` measures how much even that leaks, so accuracy built on it carries
+# its own caveat rather than passing as a real holdout score.
 
 _LEAK_THUMBNAIL = 64
 

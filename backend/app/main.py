@@ -21,7 +21,6 @@ from app.schemas.response import ApiResponse
 from app.schemas.system import ServiceInfo
 from app.services import analyze_spin as analyze_spin_service
 from app.services import cyclic_messages as cyclic_messages_service
-from app.services import database as database_service
 from app.services import event_capture as event_capture_service
 from app.services import gaf as gaf_service
 from app.services import image_classifier as image_classifier_service
@@ -32,7 +31,7 @@ logger = get_logger("main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start optional local integrations without opening an unused database connection."""
+    """Start optional local integrations, then shut each one down in reverse."""
     settings: Settings = app.state.settings
     logger.info(
         "Starting %s v%s (env=%s, debug=%s)",

@@ -253,7 +253,8 @@ def _is_repeat(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
 
 
 def _is_unchanged(run: _ActiveRun, detected: game_log.DetectedEvent) -> bool:
-    """Whether a rule that only fires on a change was handed the old values -- e.g."""
+    """Whether a rule that only fires on a change saw the same field values as
+    last time."""
     if not detected.only_on_change:
         return False
     fields = dict(detected.fields)

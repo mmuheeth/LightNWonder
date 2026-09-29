@@ -1,15 +1,8 @@
 """Scatter Value Validation: read one screen, then judge every landed scatter's
-prize figure against the value range ``math.xml`` declares for it.
-
-**Nothing here reads a screen or a maths file.** The grid half is read the same
-way ``app.services.evaluate_screen`` reads it (screenshot, grid split, CNN,
-PaddleOCR per scatter) -- but *not* its cash meter, which this feature has no
-use for. The bet and denomination half is
-:class:`~app.schemas.paytable.PaytableView`, produced by ``app.services.paytable``
-exactly as the Game Config tab does. This module adds one new judgement over
-both: does the number PaddleOCR read off a landed orb appear in that symbol's
-declared value table, at the bet the log last reported.
-"""
+prize figure against the value range ``math.xml`` declares for it. Nothing here
+reads a screen or a maths file itself -- the grid half reuses
+``app.services.evaluate_screen`` (minus its cash meter) and the bet/denomination
+half reuses ``app.services.paytable``, exactly as the Game Config tab does."""
 
 from __future__ import annotations
 
@@ -45,13 +38,6 @@ class ScatterValidationRequest(BaseModel):
             "filename. Omit to capture the game's current screen with OBS."
         ),
     )
-    architecture: str | None = Field(
-        default=None,
-        description=(
-            "Which trained network names the tiles: 'resnet34' or "
-            "'efficientnet_b0'. Omit for the configured default."
-        ),
-    )
     include_images: bool = Field(
         default=True,
         description="Return the meter crop and the ringed grid as data URIs.",
@@ -59,11 +45,10 @@ class ScatterValidationRequest(BaseModel):
 
 
 class ScatterValidationBetInfo(BaseModel):
-    """The bet and denomination in play right now, read the way the Game Config
-    tab reads them -- the log's last ``BetChangeMsg`` and ``UpdatePayTable``
-    lines, joined against the paytable folder they named. A value table is
-    priced per bet rung, so this is what a landed orb's figure is judged
-    against."""
+    """The bet and denomination in play, read the way Game Config reads them --
+    the log's last ``BetChangeMsg``/``UpdatePayTable`` lines joined against the
+    paytable folder they named. A value table is priced per bet rung, so this
+    is what a landed orb's figure gets judged against."""
 
     paytable_id: str = Field(description="Paytable folder the maths was read from.")
     source_origin: str = Field(

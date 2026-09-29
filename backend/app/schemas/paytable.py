@@ -36,7 +36,7 @@ class PaytableSource(BaseModel):
     supported_denominations: list[str] = Field(
         default_factory=list,
         description=(
-            "Every denomination that line said the cabinet accepts. Each one "
+            "Every denomination that log line said the cabinet accepts; each one "
             "loads a different paytable folder, so this is the set of maths a "
             "session can move between without restarting the game."
         ),
@@ -53,10 +53,9 @@ class SymbolInfo(BaseModel):
     name: str | None = Field(
         default=None,
         description=(
-            "Display name from the game config's 'symbols' block. Falls back to "
-            "what the maths' structure implies -- 'Wild' for a member of "
-            "WildSymbolList, 'Scatter' for a code a CountScatterCombo counts -- "
-            "and is null for an unnamed line symbol, whose code is its name."
+            "Display name from the game config's 'symbols' block, falling back "
+            "to what the maths' structure implies ('Wild', 'Scatter'); null for "
+            "an unnamed line symbol, whose code is its name."
         ),
     )
     role: str = Field(
@@ -83,9 +82,9 @@ class SymbolInfo(BaseModel):
     on_reels: bool = Field(
         default=True,
         description=(
-            "Whether any strip carries this code. False for one the symbol set "
-            "declares and no strip uses -- listed because the config names it, "
-            "but no spin can produce it."
+            "Whether any strip carries this code. False for a code the symbol "
+            "set declares but no strip uses -- listed because the config names "
+            "it, though no spin can produce it."
         ),
     )
 
@@ -150,8 +149,8 @@ class PaylineComboInfo(BaseModel):
 
 
 class PaylinePayRow(BaseModel):
-    """One row of the paytable poster: symbols that pay the same, and what they pay for
-    each run length."""
+    """One row of the paytable poster: symbols that pay the same, and what they
+    pay for each run length."""
 
     codes: list[str] = Field(description="Symbols sharing this row, in pay order.")
     names: list[str | None] = Field(description="Those codes' names, in step.")
@@ -201,9 +200,9 @@ class OrbValueRow(BaseModel):
     jackpot_label: str | None = Field(
         default=None,
         description=(
-            "Best available name for the tier -- math.xml's own Jackpots_Type "
-            "code (e.g. 'JP5') when it has one. Not the progressive's real name "
-            "(Mega, Major, ...), which lives in progConfig.xml and is not read."
+            "Best available tier name -- math.xml's own Jackpots_Type code (e.g. "
+            "'JP5') when it has one. Not the progressive's real name (Mega, "
+            "Major, ...), which lives in progConfig.xml and is not read."
         ),
     )
     weight: int = Field(description="This outcome's share of the table's weights.")
@@ -220,8 +219,7 @@ class OrbValueTableInfo(BaseModel):
     bet: int = Field(
         description=(
             "Bet-per-unit rung these credit amounts are priced at: the log's "
-            "last reported bet when there is one, else the paytable's declared "
-            "minimum."
+            "last reported bet, or the paytable's declared minimum."
         )
     )
     rows: list[OrbValueRow] = Field(
@@ -345,8 +343,7 @@ class WinGeometryInfo(BaseModel):
     resolved_from: str = Field(
         description=(
             "Where that id came from: 'game_config' (the paytable's own "
-            "NumberOfLines), 'math_default' (math.xml's DefaultConfiguration), "
-            "or 'unresolved'."
+            "NumberOfLines), 'math_default' (math.xml's default), or 'unresolved'."
         )
     )
     line_count: int | None = Field(
@@ -359,8 +356,8 @@ class WinGeometryInfo(BaseModel):
     )
     error: str | None = Field(
         default=None,
-        description="Why the geometry could not be read. Null when it was; the "
-        "rest of the page is still worth showing without it.",
+        description="Why the geometry could not be read; null when it was -- the "
+        "rest of the page still stands without it.",
     )
 
 
@@ -370,49 +367,47 @@ class BetConfigInfo(BaseModel):
     ladder: list[int] = Field(
         default_factory=list,
         description=(
-            "The bets per unit a player can select, in the file's own order -- "
-            "1, 2, 3, 5, 10 on FortuneOx. A ladder and never a range: there is "
-            "no 4. What a bet read off the meter is checked against."
+            "Bets per unit selectable, in the file's own order -- 1, 2, 3, 5, 10 "
+            "on FortuneOx. A ladder, never a range: there is no 4. What a bet "
+            "read off the meter is checked against."
         ),
     )
     unit_cost: int | None = Field(
         default=None,
         description=(
             "Credits one spin costs at one bet per unit. Should equal the "
-            "folder's own MinTotalBet, which is a free corroboration of this "
-            "read rather than its source."
+            "folder's own MinTotalBet -- a free corroboration, not the source."
         ),
     )
     current_bet: int | None = Field(
         default=None,
         description=(
-            "The bet actually in play right now: the log's last "
-            "'BetChangeMsg' when there is one, else 'unit_cost' as the only "
-            "bet known to be live. Null when neither is available. This is "
-            "the bet 'math.orb_value_tables' is priced at."
+            "The bet actually in play: the log's last 'BetChangeMsg' when there "
+            "is one, else 'unit_cost' as the only bet known to be live. Null "
+            "when neither is available. This is the bet 'math.orb_value_tables' "
+            "is priced at."
         ),
     )
     current_bet_source: str | None = Field(
         default=None,
         description=(
-            "'log' when 'current_bet' came from the game's own log, "
-            "'unit_cost' when it fell back to the paytable's minimum. Null "
-            "when 'current_bet' is null."
+            "'log' when 'current_bet' came from the game's own log, 'unit_cost' "
+            "when it fell back to the paytable's minimum. Null when "
+            "'current_bet' is null."
         ),
     )
     current_bet_logged_at: datetime | None = Field(
         default=None,
         description=(
             "Timestamp on the 'BetChangeMsg' line 'current_bet' was read from, "
-            "in the host's local time. Null unless 'current_bet_source' is "
-            "'log'."
+            "host-local time. Null unless 'current_bet_source' is 'log'."
         ),
     )
     error: str | None = Field(
         default=None,
         description=(
-            "Why the bet configuration could not be read. Null when it was; the "
-            "symbols, strips and combos above it are still true without it."
+            "Why the bet configuration could not be read; null when it was -- "
+            "the symbols, strips and combos above it are still true without it."
         ),
     )
 
@@ -441,18 +436,18 @@ class PaytableIdentityInfo(BaseModel):
     min_denom_multiplier: int | None = Field(
         default=None,
         description=(
-            "How many of the base unit one credit is worth on this folder -- 2 on "
-            "a '-2c-' paytable. The only *declared* statement of a denomination's "
-            "amount, so it is what corroborates the logged one."
+            "Base units one credit is worth on this folder -- 2 on a '-2c-' "
+            "paytable. The only *declared* statement of the denomination "
+            "amount, corroborating the logged one."
         ),
     )
     max_bets: list[int] = Field(default_factory=list)
     denominations: list[float] = Field(
         default_factory=list,
         description=(
-            "This folder's own DenomConfig entries. Not the denominations the "
-            "cabinet currently offers, and not guaranteed to contain the current "
-            "one -- the '-2c-' folder lists 1, 5, 10, 50, 100 while running at 2. "
+            "This folder's own DenomConfig entries -- not what the cabinet "
+            "currently offers, and not guaranteed to include the running one "
+            "(the '-2c-' folder lists 1, 5, 10, 50, 100 while running at 2). "
             "Do not check a live denomination against it."
         ),
     )
@@ -463,8 +458,8 @@ class DenominationInfo(BaseModel):
 
     value: float = Field(
         description=(
-            "The number the log reported, in `unit` -- 2.0 for a 2c game. Not a "
-            "rate: a bet divided by this is wrong by a factor of a hundred."
+            "The number the log reported, in `unit` -- 2.0 for a 2c game. Not "
+            "a rate: dividing a bet by this is wrong by a factor of a hundred."
         )
     )
     unit: str = Field(
@@ -473,18 +468,16 @@ class DenominationInfo(BaseModel):
     label: str = Field(
         description=(
             "The denomination as an operator says it, e.g. '2c'. Carries no "
-            "currency: which currency those cents are in is a property of the "
-            "meter and is read off the glass."
+            "currency -- that is a property of the meter, read off the glass."
         )
     )
     money_per_credit: float | None = Field(
         default=None,
         description=(
-            "One credit in money -- 0.02 for a 2c game. The only field to "
-            "multiply or divide by. Null when the paytable id named no unit, "
-            "which is a refusal to guess rather than a missing value: the "
-            "cabinet's supported ladder looks like proof of cents, but a machine "
-            "denominated in whole currency units prints the same shape."
+            "One credit in money -- 0.02 for a 2c game; the only field to "
+            "multiply or divide by. Null when the paytable id named no unit -- "
+            "a refusal to guess, since a whole-currency machine can look the "
+            "same shape as a cents one."
         ),
     )
     declared_multiplier: int | None = Field(
@@ -494,10 +487,9 @@ class DenominationInfo(BaseModel):
     agrees: bool | None = Field(
         default=None,
         description=(
-            "Whether every source that named an amount named the same one. Null "
-            "when there was nothing to check against. False changes no number "
-            "here -- the logged value is the current one, the others are "
-            "properties of a folder -- but it means a reading somewhere is stale."
+            "Whether every source that named an amount agreed. Null when there "
+            "was nothing to check against. False changes no number here -- the "
+            "logged value is still current -- but flags a stale reading elsewhere."
         ),
     )
     resolved_from: str = Field(
@@ -522,9 +514,9 @@ class PaytableView(BaseModel):
     denomination: DenominationInfo | None = Field(
         default=None,
         description=(
-            "The denomination in play, interpreted from the logged value and the "
-            "paytable id. Null when no value was reported -- a requested id, or a "
-            "log that never named one."
+            "Denomination in play, interpreted from the logged value and the "
+            "paytable id. Null when nothing was reported -- a requested id, or "
+            "a log that never named one."
         ),
     )
     math: GameMathInfo
@@ -532,8 +524,8 @@ class PaytableView(BaseModel):
     bet_config: BetConfigInfo | None = Field(
         default=None,
         description=(
-            "What a spin costs and what multiplies a line's value. Null when the "
-            "folder ships neither bet configuration file -- older installs, and "
-            "any machine without the game."
+            "What a spin costs and what multiplies a line's value. Null when "
+            "the folder ships neither bet configuration file -- older installs, "
+            "or any machine without the game."
         ),
     )

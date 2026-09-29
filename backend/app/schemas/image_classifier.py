@@ -71,9 +71,9 @@ class DatasetClass(BaseModel):
     heights: list[int] = Field(default_factory=list, description="Distinct heights.")
     composited: bool = Field(
         description=(
-            "Whether this artwork already carries the game's own reel field and "
-            "frame. False means it is a transparent cut-out and a background is "
-            "synthesised behind it before training."
+            "Whether this artwork already carries the game's reel field and frame. "
+            "False means it is a transparent cut-out, composited onto a synthesised "
+            "background before training."
         )
     )
     mean_opacity: float = Field(
@@ -98,9 +98,9 @@ class DatasetSummary(BaseModel):
     missing_symbols: list[str] = Field(
         default_factory=list,
         description=(
-            "Codes the active game declares that have no artwork here. Every one "
-            "of them will be shown to the model eventually and can only come back "
-            "as another class or as unknown."
+            "Codes the active game declares with no artwork here; each will be "
+            "shown to the model eventually and can only come back as another "
+            "class or as unknown."
         ),
     )
     warnings: list[str] = Field(default_factory=list)
@@ -128,25 +128,6 @@ class ClassifierMetrics(BaseModel):
     per_class_augmented: dict[str, float] = Field(default_factory=dict)
     single_image_classes: list[str] = Field(default_factory=list)
     seconds: float = Field(default=0.0, ge=0.0)
-
-
-class ArchitectureOption(BaseModel):
-    """One network the classifier can fit, and whether it has been."""
-
-    name: str = Field(description="Key used in requests, e.g. 'resnet34'.")
-    label: str = Field(description="Display name, e.g. 'ResNet34'.")
-    trained: bool = Field(description="Whether a checkpoint for it exists and loads.")
-    is_default: bool = Field(description="Whether a request naming none uses it.")
-    trained_at: str | None = None
-    holdout_accuracy: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Its held-back-frame accuracy, for comparing the two.",
-    )
-    detail: str | None = Field(
-        default=None, description="Why it is unusable, when it is."
-    )
 
 
 class ModelSummary(BaseModel):
@@ -233,18 +214,10 @@ class ClassifierStatus(BaseModel):
     threads: int = Field(ge=1, description="Threads torch is allowed.")
     min_confidence: float = Field(ge=0.0, le=1.0)
     architecture: str = Field(
-        default="", description="Which network a request naming none uses."
-    )
-    architectures: list[ArchitectureOption] = Field(
-        default_factory=list,
-        description=(
-            "Every network that can be fitted, and whether one is already trained. "
-            "Both can be kept at once -- each has its own checkpoint -- so this is a "
-            "list of options rather than a mode."
-        ),
+        default="", description="Which network names a tile, e.g. 'resnet34'."
     )
     model: ModelSummary | None = Field(
-        default=None, description="The default architecture's trained model."
+        default=None, description="The trained model, if one has been fitted."
     )
     dataset: DatasetSummary
     training: TrainingRun | None = Field(
@@ -267,13 +240,6 @@ class TrainRequest(BaseModel):
     batch_size: int | None = Field(default=None, ge=1, le=512)
     background: str | None = Field(
         default=None, description="'plate', 'solid' or 'none'."
-    )
-    architecture: str | None = Field(
-        default=None,
-        description=(
-            "Which network to fit: 'efficientnet_b0' or 'resnet34'. Each has its "
-            "own checkpoint, so fitting one leaves the other alone."
-        ),
     )
     pretrained: bool | None = None
     seed: int | None = Field(default=None, ge=0)
@@ -304,10 +270,10 @@ class ClassifiedTile(BaseModel):
     predictions: list[SymbolPrediction] = Field(
         default_factory=list,
         description=(
-            "Candidates ranked by probability, highest first. Present whether or "
-            "not the tile was named: on a named tile they show how far ahead the "
-            "winner was, and on a rejected one they are the whole evidence for the "
-            "rejection -- which is also what the dashboard shows in its place."
+            "Candidates ranked by probability, highest first. Shown for every "
+            "tile: on a named one they show how far ahead the winner was, and on "
+            "a rejected one they are the whole evidence for the rejection -- also "
+            "what the dashboard shows in its place."
         ),
     )
     width: int = Field(ge=1)
@@ -338,10 +304,6 @@ class ClassifyRequest(BaseModel):
     )
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     top_k: int | None = Field(default=None, ge=1, le=20)
-    architecture: str | None = Field(
-        default=None,
-        description="Which trained model should answer; omit for the default.",
-    )
     include_images: bool = True
     include_overlay: bool = True
 
@@ -362,9 +324,9 @@ class ClassifyResult(BaseModel):
     label_grid: list[list[str | None]] = Field(
         default_factory=list,
         description=(
-            "The same matrix in display names rather than codes, arranged here "
-            "rather than in the dashboard so the two grids cannot disagree about "
-            "which cell is which. Null in the same places `symbol_grid` is null."
+            "The same matrix in display names rather than codes -- computed here "
+            "rather than in the dashboard so the two grids cannot disagree. Null "
+            "wherever 'symbol_grid' is null."
         ),
     )
     tiles: list[ClassifiedTile] = Field(default_factory=list)

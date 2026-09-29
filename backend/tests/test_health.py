@@ -112,16 +112,11 @@ async def test_probe_failure_does_not_break_health(
     assert "RuntimeError: boom" in data["checks"][0]["error"]
 
 
-async def test_app_lifespan_does_not_open_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The app should not attempt to connect to Postgres when the DB is unused."""
+async def test_app_lifespan_shuts_down_every_integration_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown aborts each running integration before closing the OBS socket."""
     calls: list[str] = []
-
-    async def fake_db_connect(settings: Settings) -> None:
-        calls.append("db_connect")
-        return None
-
-    async def fake_db_disconnect(pool: object) -> None:
-        calls.append("db_disconnect")
 
     async def fake_obs_connect() -> None:
         calls.append("obs_connect")
@@ -135,8 +130,6 @@ async def test_app_lifespan_does_not_open_database(monkeypatch: pytest.MonkeyPat
     async def fake_shutdown() -> None:
         calls.append("shutdown")
 
-    monkeypatch.setattr("app.services.database.connect", fake_db_connect)
-    monkeypatch.setattr("app.services.database.disconnect", fake_db_disconnect)
     monkeypatch.setattr("app.services.obs.connect", fake_obs_connect)
     monkeypatch.setattr("app.services.obs.disconnect", fake_obs_disconnect)
     monkeypatch.setattr("app.services.event_capture.abort", fake_abort)

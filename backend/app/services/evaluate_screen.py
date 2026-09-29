@@ -1,28 +1,8 @@
-"""Evaluate Screen: read one screen of the game and say what is on it.
-
-**Nothing here is new logic.** Every reading this feature reports already existed
-for Analyze Spin, and this module is the composition of those pieces over a
-single frame rather than over a driven spin:
-
-* the grid comes from :mod:`app.services.grid` (crop ``roi.reels``, cut it into
-  tiles, write the split) and :mod:`app.services.image_classifier` (name every
-  tile with the trained CNN);
-* the figure on a scatter orb comes from :mod:`app.services.ocr`'s
-  ``read_tile``, which is PaddleOCR;
-* the cash meter comes from :mod:`app.services.roi`'s extract of
-  ``roi.cash_meter``, which reads it with Tesseract through
-  ``meter_service.read`` -- the same path every other meter reading in the app
-  goes through; there is no engine choice here.
-
-What is *absent* is as deliberate. There is no spin, no log to follow, no
-recording, and **no validation**: a check like "balance fell by the bet" needs
-two readings of a meter and this feature has one. So it reports what the screen
-says and stops -- the judging is Analyze Spin's job.
-
-Unlike Analyze Spin this holds no run state, so there is no lock, no stream and
-no ``reset()``: every request is answered from the frame it names or captures,
-and two callers asking at once are two independent readings.
-"""
+"""Evaluate Screen: read one screen and say what is on it, by composing pieces
+Analyze Spin already has (grid+classifier, scatter OCR, PaddleOCR cash meter)
+rather than new logic. Deliberately no spin, log, recording or validation --
+that judging is Analyze Spin's job -- and no run state, so no lock, stream or
+``reset()``."""
 
 from __future__ import annotations
 
@@ -83,22 +63,11 @@ def _active_config() -> tuple[str, GameConfig]:
 
 
 async def _capture() -> tuple[Path, bool]:
-    """Take a screenshot of the game as it is now, as ``(path, blank)``.
-
-    Written to disk rather than kept in memory, unlike the OCR service's live
-    frame: the grid split reads the frame back by name, and a reading somebody
-    disagrees with is only arguable if the picture behind it still exists.
-
-    The settle and the retry are Analyze Spin's, for its reasons and off its
-    settings -- this feature reads the same frames and should not drift from
-    how they are taken. ``obs.connect()`` ends in ``select_current_game_window``
-    on *every* call, not only the one that opens the session, so a capture that
-    follows it is a capture taken inside a re-point. Re-pointing a window
-    capture makes OBS render nothing for a moment and it reports a successful
-    write of that nothing, so without the wait every screenshot this feature
-    took came back black -- and a black frame is not a dark reading, it is
-    every reading below it silently meaningless.
-    """
+    """Screenshot the game now, as ``(path, blank)``, written to disk so the grid
+    split can read it back by name. Settle-then-retry reuses Analyze Spin's own
+    timing: re-pointing OBS's window source renders nothing for a moment and
+    reports the write as successful anyway, which is why a capture taken
+    without the wait came back black."""
     await obs_service.connect()
     await asyncio.sleep(settings.ANALYZE_SPIN_SOURCE_SETTLE_SECONDS)
 
@@ -130,12 +99,9 @@ async def _capture() -> tuple[Path, bool]:
 
 
 def _source(path: Path, *, captured: bool, blank: bool) -> EvaluateScreenSource:
-    """Describe the frame that was read, content box included.
-
-    One decode for both answers: the content box is a property of this frame's
-    shape at this moment, so it is found here rather than left for each region's
-    own crop to rediscover.
-    """
+    """Describe the frame that was read, content box included -- one decode for
+    both, since the content box is a property of this frame's shape right now
+    rather than something for each region's own crop to rediscover."""
     image = roi_service.open_frame(path)
     frame = roi_service.describe(path, image)
     content = roi_service.content_box(image)
@@ -152,22 +118,17 @@ def _source(path: Path, *, captured: bool, blank: bool) -> EvaluateScreenSource:
 
 
 async def _read_grid(
-    file_name: str, architecture: str | None, *, include_images: bool
+    file_name: str, *, include_images: bool
 ) -> tuple[SpinReelReading, ClassifyResult, Path]:
-    """Crop the grid, cut it into tiles, and name every one of them.
-
-    The split is written to disk because the tiles are what gets classified *and*
-    what the scatter reader OCRs -- so the pixels Paddle sees are exactly the
-    ones the classifier named the code from, which is the same reason Analyze
-    Spin reads its orbs back off the split rather than re-cropping the frame.
-    """
+    """Crop the grid, cut it into tiles, and name every one. Written to disk so
+    the scatter reader OCRs the exact pixels the classifier named -- the same
+    reason Analyze Spin reads its orbs off the split rather than re-cropping."""
     split = await grid_service.split(
         GridSplitRequest(file_name=file_name, include_images=False)
     )
     result = await classifier_service.classify(
         ClassifyRequest(
             split=Path(split.output_dir).name,
-            architecture=architecture,
             min_confidence=settings.ANALYZE_SPIN_CLASSIFIER_MIN_CONFIDENCE,
             # No per-tile pictures: fifteen data URIs nothing renders. The ringed
             # grid is the one picture this feature shows, and `include_overlay`
@@ -180,15 +141,10 @@ async def _read_grid(
 
 
 async def _read_meter(file_name: str, *, include_images: bool) -> EvaluateScreenMeter:
-    """Read the cash meter strip with Tesseract, the same path every other
-    meter reading in the app goes through.
-
-    Never raises for a bad *reading* -- an unreadable strip comes back as
-    ``error`` with the crop still attached, since the picture beside the failure
-    is what makes it diagnosable. Only a region or frame it cannot reach at all
-    is an exception, and the caller records that against the meter rather than
-    failing the whole screen.
-    """
+    """Read the cash meter with PaddleOCR, the same path every other meter
+    reading in the app goes through. Never raises for a bad *reading* -- an
+    unreadable strip comes back as ``error`` with its crop still attached; only
+    an unreachable region or frame is an exception."""
     result = await roi_service.extract(
         RoiExtractRequest(region=_METER_REGION, file_name=file_name)
     )
@@ -217,16 +173,10 @@ async def _read_meter(file_name: str, *, include_images: bool) -> EvaluateScreen
 async def evaluate(
     request: EvaluateScreenRequest | None = None,
 ) -> EvaluateScreenResult:
-    """Read one screen: the symbols on the grid, the figures on its scatters, and
-    the cash meter.
-
-    **Partial by design.** The grid and the meter are independent readings of one
-    picture, so a failure of either is recorded and the other still returned --
-    a screen whose meter is unreadable still has a grid worth seeing. Both
-    failures leave a result carrying two errors and no readings, which is still
-    a more useful answer than an exception saying only the first thing that went
-    wrong.
-    """
+    """Read one screen: grid symbols, scatter figures, and the cash meter.
+    Partial by design -- the grid and meter are independent readings of one
+    picture, so either can fail while the other is still returned, rather than
+    raising on just the first thing that went wrong."""
     started = time.perf_counter()
     payload = request or EvaluateScreenRequest()
     name, config = _active_config()
@@ -257,7 +207,6 @@ async def evaluate(
     try:
         reels, result, split_dir = await _read_grid(
             source.file_name,
-            payload.architecture,
             include_images=payload.include_images,
         )
     except AppException as exc:

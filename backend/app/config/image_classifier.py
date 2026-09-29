@@ -10,20 +10,13 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
-__all__ = ["Architecture", "BackgroundStyle", "ImageClassifierSettings"]
+__all__ = ["BackgroundStyle", "ImageClassifierSettings"]
 
 # How a cut-out symbol is given the background the game draws it on. `plate` is
 # the measured reel cell (see app/utils/symbol_dataset.py); `solid` is the flat
 # field colour with no texture, gradient or frame; `none` composites over black
 # and is only useful for proving the background is what matters.
 BackgroundStyle = Literal["plate", "solid", "none"]
-
-# Which network to fit. Both take the same 224px ImageNet-normalised input and the
-# same transforms, so only the backbone differs -- which is the point: two
-# independent architectures disagreeing about a tile is worth more than one of them
-# being confident. EfficientNet-B0 is 5.3M parameters, ResNet34 21.8M, and on CPU
-# the larger is not the slower, so pick on measured accuracy not parameter count.
-Architecture = Literal["efficientnet_b0", "resnet34"]
 
 
 class ImageClassifierSettings(BaseSettings):
@@ -43,7 +36,7 @@ class ImageClassifierSettings(BaseSettings):
     # artefact this service writes, and sits beside grid/ and cash-meter/.
     CLASSIFIER_MODEL_DIR: Path = Path("obs-captured-files/classifier")
 
-    # Square input the network sees. 224 is EfficientNet-B0's native size, and
+    # Square input the network sees. 224 is ResNet34's native ImageNet size, and
     # the pretrained weights are worth more than the cost of upscaling a 61px
     # tile -- what matters is that training and inference upscale identically.
     CLASSIFIER_IMAGE_SIZE: int = Field(default=224, ge=32, le=600)
@@ -75,12 +68,6 @@ class ImageClassifierSettings(BaseSettings):
     CLASSIFIER_SAMPLES_PER_EPOCH: int = Field(default=320, ge=8, le=100_000)
 
     CLASSIFIER_BATCH_SIZE: int = Field(default=16, ge=1, le=512)
-
-    # Which network a train request fits when it names none, and which trained
-    # model a classify request reads when it names none. Both architectures can be
-    # trained and kept at once -- each has its own checkpoint file -- so this is a
-    # default rather than a mode.
-    CLASSIFIER_ARCHITECTURE: Architecture = "resnet34"
 
     CLASSIFIER_LR_HEAD: float = Field(default=1e-3, gt=0.0)
     CLASSIFIER_LR_FINETUNE: float = Field(default=1e-4, gt=0.0)
@@ -131,8 +118,10 @@ class ImageClassifierSettings(BaseSettings):
 
     @property
     def classifier_checkpoint_path(self) -> Path:
-        """The default architecture's trained model."""
-        return self.classifier_checkpoint_for(self.CLASSIFIER_ARCHITECTURE)
+        """The trained model. Still named `model-resnet34.pt` on disk -- see
+        `app.utils.symbol_model.ARCHITECTURE` -- so an already-trained checkpoint
+        is not orphaned by there being only the one architecture now."""
+        return self.classifier_checkpoint_for("resnet34")
 
     @property
     def classifier_sample_dir(self) -> Path:

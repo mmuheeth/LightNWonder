@@ -1,9 +1,6 @@
 """Cyclic message endpoints, thin wrappers over :mod:`app.services.cyclic_messages`.
-One run exists process-wide, so two callers pointed at the same backend share it.
-
-Independent of event capture's run: the two follow the same log with different
-rules, and either may run without the other.
-"""
+One run exists process-wide, so two callers share it. Independent of event
+capture's run -- same log, different rules, either can run without the other."""
 
 from __future__ import annotations
 
@@ -58,16 +55,11 @@ async def get_status() -> ApiResponse[CyclicStatus]:
     summary="The win presentation being captured right now",
 )
 async def get_live() -> ApiResponse[CyclicLiveView]:
-    """Every frame of the current (or most recent) win presentation, each with
-    whatever the reader has made of its caption.
-
-    Read off the live run rather than off its manifest, so a frame is here as
-    soon as OBS wrote it -- the manifest is flushed at most once a second. A
-    frame whose ``reading`` is still null has not reached the front of the
-    reader's queue; ``queue_depth`` says how far behind that queue is.
-
-    Always 200 -- check ``data.active``, like ``/status``.
-    """
+    """Every frame of the current (or most recent) win presentation, with its
+    caption reading if the reader has reached it. Read off the live run, not
+    the manifest (flushed at most once a second), so a frame appears as soon
+    as OBS writes it; ``queue_depth`` says how far behind the reader is.
+    Always 200 -- check ``data.active``, like ``/status``."""
     view = cyclic_service.live()
     return ApiResponse[CyclicLiveView].ok(
         data=view,
@@ -176,13 +168,10 @@ async def read_text(
         ),
     ),
 ) -> ApiResponse[CyclicTextReading]:
-    """Cut the clip into frames, crop the caption out of each and read it.
-
-    Slow by nature -- at one frame a second a 90s clip is ~90 frames and as
-    many OCR passes -- so this is a request that takes tens of seconds rather
-    than milliseconds. Which engine reads is CYCLIC_MESSAGES_TEXT_ENGINE, and
-    the reading says which one did.
-    """
+    """Cut the clip into frames, crop the caption out of each and OCR it. Slow
+    by nature -- ~90 OCR passes for a 90s clip at one frame a second, so this
+    takes tens of seconds. Reads with CYCLIC_MESSAGES_TEXT_ENGINE; the reading
+    says which engine ran."""
     reading = await cyclic_text_service.read_run(
         run_id, cycle=cycle, interval_seconds=interval_seconds
     )

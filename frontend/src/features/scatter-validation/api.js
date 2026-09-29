@@ -20,16 +20,14 @@ const ANALYZE_TIMEOUT_MS = 240_000;
 
 /**
  * Read the game's current screen and validate every landed scatter's figure.
- * @param {{fileName?: string, architecture?: string, includeImages?: boolean}} [options]
+ * @param {{fileName?: string, includeImages?: boolean}} [options]
  *   `fileName` reads a screenshot already on disk instead of capturing one.
- *   `architecture` picks which trained network names the tiles — omit for the
- *   backend's default.
  * @param {{signal?: AbortSignal}} [request] for a caller that has its own signal.
  * @returns {Promise<object>} the reading: `source`, `reels`, `meter`, `bet_info`,
  *   `checks`, `errors`
  */
 export function analyzeScatterValidation(
-  { fileName, architecture, includeImages = true } = {},
+  { fileName, includeImages = true } = {},
   { signal } = {},
 ) {
   return apiRequest({
@@ -37,7 +35,6 @@ export function analyzeScatterValidation(
     url: `${SCATTER_VALIDATION_URL}/analyze`,
     data: {
       file_name: fileName ?? null,
-      architecture: architecture ?? null,
       include_images: includeImages,
     },
     timeout: ANALYZE_TIMEOUT_MS,

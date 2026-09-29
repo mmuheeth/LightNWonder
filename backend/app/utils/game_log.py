@@ -265,19 +265,18 @@ def _on(message_name: str) -> str:
     return rf" on event \[{_QUALIFIER}{message_name}\]"
 
 
-# Fallback proof a posted click reached the game glass at all, for targets with
-# no named ``confirm`` event. Deliberately not a DEFAULT_RULES entry -- a touch
-# isn't visible on screen. The leading \b excludes ``ForceTouchMsg``, which is
-# the platform injecting a touch *into* the client and would confirm nothing we did.
+# Fallback proof a posted click reached the game glass, for targets with no
+# named ``confirm`` event -- not a DEFAULT_RULES entry since a touch isn't
+# visible on screen. Leading \b excludes ``ForceTouchMsg``, the platform
+# injecting a touch *into* the client, which would confirm nothing we did.
 TOUCH_REGISTERED = re.compile(r"\b(?:TouchMsg|TouchEventNotificationMsg)\b")
 
 
-# The game names the paytable it loaded here, and ``paytable`` is byte-identical to
-# the folder holding that paytable's maths -- which is what lets
-# :mod:`app.services.paytable` join a running game to its ``math.xml``. Shared with
-# the ``paytable-changed`` rule below rather than written twice: the same line
-# answers "did it just change" and "what is loaded now". ``supported`` is optional,
-# so an older log that stops after the id still matches.
+# ``paytable`` is byte-identical to the folder holding that paytable's maths,
+# which is what lets :mod:`app.services.paytable` join a running game to its
+# ``math.xml``. Shared with ``paytable-changed`` below rather than written
+# twice. ``supported`` is optional, so an older log stopping after the id
+# still matches.
 PAYTABLE_LOADED = re.compile(
     r"\[WagerGameApp\.UpdatePayTable\] current denom\[(?P<denom>[\d.]+)\]"
     r" current paytableId\[(?P<paytable>[^\]]+)\]"
@@ -285,12 +284,10 @@ PAYTABLE_LOADED = re.compile(
 )
 
 
-# The game names the bet it just moved to here -- ``total_bet`` is the credit
-# amount math.xml's own "_88", "_176", ... orb value tables are keyed on, which
-# is what lets :mod:`app.services.paytable` show the orb table for the bet
-# actually in play rather than always the paytable's minimum. Shared with the
-# ``bet-changed`` rule below, the same relationship ``PAYTABLE_LOADED`` has with
-# ``paytable-changed``.
+# ``total_bet`` is the credit amount math.xml's "_88", "_176", ... orb value
+# tables are keyed on, letting :mod:`app.services.paytable` show the orb table
+# for the bet in play rather than always the minimum. Shared with
+# ``bet-changed`` below, as ``PAYTABLE_LOADED`` is with ``paytable-changed``.
 BET_CHANGED = re.compile(
     r"BetChangeMsg betData:\s*denom:\s*(?P<denom>[\d.]+)\s+"
     r"units:\s*(?P<units>\d+).*?totalBetValue:\s*(?P<total_bet>[\d.]+)"
@@ -298,23 +295,20 @@ BET_CHANGED = re.compile(
 
 
 # --- the cyclic message strip ---------------------------------------------
-# The strip under the reels rotates two *unrelated* families of message, and the
-# whole difficulty of this rule set is that the game logs them very differently:
+# The strip under the reels carries two *unrelated* message families, logged
+# very differently:
 #
-# 1. **The idle strip** ("PLAY 40 LINES", "GOOD LUCK") is driven by
-#    ``AttractStateMachine``, which logs a line every time it puts a new message
-#    up. One event per message, so one screenshot per message.
-# 2. **The win strip** ("GAME PAYS 168", then "LINE 3 PAYS 20", ...) is driven by
-#    the results cycle, which logs only where it *starts* and where its first
-#    pass *ends* -- measured on FortuneOx, the client log is completely silent
-#    for the 6.5-7.3s in between. Boundaries, not messages.
+# 1. **The idle strip** ("PLAY 40 LINES", "GOOD LUCK") -- ``AttractStateMachine``
+#    logs a line each time it puts up a new message: one event per message.
+# 2. **The win strip** ("GAME PAYS 168", then "LINE 3 PAYS 20", ...) -- the
+#    results cycle logs only where it *starts* and where its first pass *ends*;
+#    on FortuneOx the client log is silent for the 6.5-7.3s in between.
 #
-# In neither family is the strip's *text* ever logged -- not by these state
-# machines, not by ``LocalizationManager``, nowhere in the client or the server
-# log. So every rule here says **when** the strip changed and the screenshot is
-# what says *what* it changed to. For family 2 the boundaries are all the log
-# offers, which is why :mod:`app.services.cyclic_messages` samples frames
-# between them rather than waiting for a per-message line that does not exist.
+# Neither family ever logs the strip's *text*, so every rule here says **when**
+# the strip changed and the screenshot says *what* it changed to. For family 2
+# the boundaries are all the log offers, which is why
+# :mod:`app.services.cyclic_messages` samples frames between them instead of
+# waiting for a per-message line that doesn't exist.
 #
 # --- family 1: one idle loop, as the game writes it ---
 #
@@ -330,12 +324,10 @@ BET_CHANGED = re.compile(
 #       AttractSingleDisplayCompleted    message 3 ends
 #     AttractSequenceEndCompleted    <- the loop is complete
 #
-# The trigger is deliberately the transition *into* ``stateDisplayAttract``
-# rather than ``AttractSingleDisplayCompleted``. The two fire the same number
-# of times but are offset by one: a completion marks a message *ending*, so
-# following it would miss the first message of every loop and spend its last
-# shot on the post-loop idle screen. Entering the display state is exactly
-# "a new message is now up", for the first message and every one after it.
+# Triggered on entering ``stateDisplayAttract`` rather than on
+# ``AttractSingleDisplayCompleted``: the two fire equally often but offset by
+# one, so following completion would miss each loop's first message and spend
+# its last shot on the post-loop idle screen instead.
 #
 # --- family 2: one win presentation, as the game writes it ---
 #
@@ -350,11 +342,11 @@ BET_CHANGED = re.compile(
 #     CycleResultsStoppedMsg             <- the strip stops cycling results
 #     GameOverMsg                        <- "GAME OVER"
 #
-# ``OnGameStateResults`` is the one line in either log that carries the amount
-# the strip is about to display, which is why it -- and not the ``PanelState``
-# transitions 8ms either side of it -- is the rule that takes the "GAME PAYS"
-# frame. The other two are kept as ``capture=False`` structure so a reader can
-# see the rack-up bracket without paying for two near-identical screenshots.
+# ``OnGameStateResults`` is the only line in either log carrying the amount
+# about to display, which is why it -- not the ``PanelState`` transitions 8ms
+# either side -- takes the "GAME PAYS" frame. The other two are kept as
+# ``capture=False`` structure so a reader can see the rack-up bracket without
+# paying for two near-identical screenshots.
 CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
     # --- family 1: the idle strip ---
     EventRule(
@@ -374,9 +366,8 @@ CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
         event="cyclic-cycle-started",
         pattern=re.compile(_message("AttractStartedMsg")),
         summary="Cyclic message loop started",
-        # Recorded as a boundary in the timeline, not screenshotted: it lands in
-        # the same millisecond as the first message's own rule above, which is
-        # the one carrying the frame.
+        # Boundary only, not screenshotted: it lands in the same millisecond as
+        # the rule above, which carries the frame.
         capture=False,
     ),
     EventRule(
@@ -400,37 +391,27 @@ CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
     EventRule(
         event="cyclic-game-pays",
         # The only line in either log carrying what the strip is about to show.
-        # ``Zero()=True`` is the losing spin and deliberately not matched -- the
-        # strip shows no "GAME PAYS" at all, so there is nothing to screenshot.
+        # ``Zero()=True`` is the losing spin, deliberately not matched here --
+        # the strip shows no "GAME PAYS" at all, so nothing to screenshot.
         pattern=re.compile(
             r"SpinBufferManager\.OnGameStateResults"
             r" resultsStateEvent\.totalWin\.Zero\(\)=False:(?P<win_cents>[\d.]+)"
         ),
-        # The service rewrites this once it knows the denomination, since
-        # "GAME PAYS 168" is the cents over the denom and a summary cannot divide.
+        # Rewritten once the service knows the denomination: "GAME PAYS 168" is
+        # cents over denom, and a summary can't divide.
         summary="Game pays {win_cents} cents",
-        # The banner draws a beat after the state change, and the win meter is
-        # counting up behind it -- far enough in to have text, early enough to
-        # still be the GAME PAYS message rather than the first line message.
+        # A beat after the state change, with the win meter already counting up
+        # behind it -- early enough to still be GAME PAYS, not the first line.
         delay_ms=500,
     ),
     EventRule(
         event="cyclic-no-pay",
-        # The other half of the same line, and the reason it is here at all:
-        # ``Zero()=True`` is a spin that paid nothing, so the strip shows no
-        # "GAME PAYS", no line messages and nothing to screenshot.
-        #
-        # Recognised rather than ignored, and recorded without a frame -- the
-        # same bargain the loop boundaries make. A losing spin is the *common*
-        # case (measured on FortuneOx's own log: 29 of them against 26 wins),
-        # and left unmatched it is indistinguishable from a run that has broken:
-        # both look like a tracker sitting there capturing nothing. The marker
-        # is what says "the game spun and it did not pay" instead.
-        #
-        # It opens no capture window. The strip a losing spin leaves up is the
-        # *between-spins* strip, and that is bracketed by
-        # ``cyclic-idle-strip-started`` below -- which a won spin reaches too,
-        # once its win has been taken.
+        # The losing half of the same line: no "GAME PAYS", no line messages,
+        # nothing to screenshot. Recognised (not ignored) so a losing spin --
+        # the *common* case, measured 29 against 26 wins on FortuneOx -- isn't
+        # indistinguishable from a broken tracker capturing nothing. Opens no
+        # capture window: the between-spins strip it leaves up is bracketed by
+        # ``cyclic-idle-strip-started`` below.
         pattern=re.compile(
             r"SpinBufferManager\.OnGameStateResults"
             r" resultsStateEvent\.totalWin\.Zero\(\)=True"
@@ -441,22 +422,17 @@ CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
     ),
     EventRule(
         event="cyclic-idle-strip-started",
-        # The spin is over and the game is sitting idle, which is when the
-        # between-spins strip runs: "GAME OVER", "GAME PAYS n", "PLAY 880
-        # CREDITS", round and round until somebody spins again.
+        # The between-spins strip runs while idle: "GAME OVER", "GAME PAYS n",
+        # "PLAY 880 CREDITS", on repeat until the next spin.
         #
-        # **One line for both ways a spin ends**, which is the point of
-        # bracketing on this rather than on the results line. Measured on
-        # FortuneOx's own log, every spin arrives here on ``GameOverMsg``: a
-        # losing spin within a few hundred milliseconds of its result, and a
-        # winning one only once its win has been taken -- 78s after the line
-        # messages finished, on one of them. So the strip that says "GAME PAYS
-        # 0" after a loss and "GAME PAYS 30" after a collected win is the same
-        # strip in the same window, and neither is inside the win presentation.
+        # **One line covers both ways a spin ends** -- a loss reaches here
+        # within milliseconds, a win only once collected (measured 78s after
+        # the line messages finished, on one case) -- so this strip is never
+        # inside the win presentation either way.
         #
-        # Deliberately matched on the state machine rather than on
-        # ``GameOverMsg`` itself: the message is published a millisecond
-        # earlier and is what ``cyclic-game-over`` claims for its own frame.
+        # Matched on the state machine rather than ``GameOverMsg`` itself: that
+        # message publishes a millisecond earlier and is claimed by
+        # ``cyclic-game-over`` for its own frame.
         pattern=re.compile(
             r"StateMachine\[IdleStateMachine\] transitioned from"
             r" \[(?P<from_state>[^\]]+)\] to \[stateIdleWithCredits\]"
@@ -467,11 +443,9 @@ CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
     ),
     EventRule(
         event="cyclic-idle-strip-ended",
-        # The player has touched the machine again, so whatever the strip was
-        # saying between spins is over. Leaving ``stateIdleWithCredits`` is the
-        # first line of the next spin and the only thing that reliably marks
-        # the end -- the strip itself writes nothing when it stops, exactly as
-        # it writes nothing while it runs.
+        # The player touched the machine again, ending the idle strip. Leaving
+        # ``stateIdleWithCredits`` is the only reliable marker -- the strip
+        # never logs its own text or its own stop, same as while running.
         pattern=re.compile(
             r"StateMachine\[IdleStateMachine\] transitioned from"
             r" \[stateIdleWithCredits\] to \[(?P<to_state>[^\]]+)\]"
@@ -482,10 +456,9 @@ CYCLIC_MESSAGE_RULES: tuple[EventRule, ...] = (
     ),
     EventRule(
         event="cyclic-win-presented",
-        # The count-up has finished, so this frame is the last one that is
-        # certainly still "GAME PAYS": the line messages start from here.
-        # The dispatch and the publish land in the same millisecond, so both
-        # forms are accepted and the debounce collapses them into one event.
+        # Count-up finished: the last frame certainly still "GAME PAYS" before
+        # line messages start. Dispatch and publish land in the same
+        # millisecond, so both forms are matched and debounced into one event.
         pattern=re.compile(
             rf"InputManager - dispatchMessage: WinBangDone|{_message('WinBangDone')}"
         ),
@@ -560,11 +533,10 @@ DEFAULT_RULES: tuple[EventRule, ...] = (
     ),
     EventRule(
         event="win-collected",
-        # Logged bare in FortuneOx and published as a message in HuffNPuffLink,
-        # so the brackets are all the two shapes have in common. The free spin
-        # version is deliberately not matched: it only ever appears as the
-        # per-feature `FreeSpinWinBangDone_CoinOnReelFS`, and only on the
-        # `not handled by state` echo lines this module exists to ignore.
+        # Bare in FortuneOx, published as a message in HuffNPuffLink -- the
+        # brackets are all the two shapes share. Free-spin variant excluded on
+        # purpose: it only appears as `FreeSpinWinBangDone_CoinOnReelFS` inside
+        # the `not handled by state` echo lines this module ignores.
         pattern=re.compile(r"\[\w*WinBangDone\]"),
         summary="Win meter finished counting up",
     ),

@@ -1,17 +1,8 @@
-"""Scatter Value Validation: read one screen, then judge every landed scatter's
-figure against the value range ``math.xml`` declares for it.
-
-**Nothing here is new reading logic for the grid.** The screenshot capture, the
-grid crop and split, the CNN naming every tile, and PaddleOCR reading the figure
-off each scatter are exactly what :mod:`app.services.evaluate_screen` does for
-its own grid reading -- this calls the same private capture/grid helpers rather
-than its public ``evaluate()``, because that also reads the cash meter, which
-this feature has no use for and should not pay the OCR cost of. The bet and
-denomination in play are exactly :func:`app.services.paytable.view`, called
-unchanged. What is new is the one judgement neither of those makes: whether the
-figure OCR read is one the loaded maths actually declares for that symbol at
-that bet.
-"""
+"""Scatter Value Validation: read one screen and judge each landed scatter's OCR
+figure against the range ``math.xml`` declares for it -- the one new judgement
+here. Reuses Evaluate Screen's private capture/grid helpers (not its public
+``evaluate()``, which also reads the meter) and ``paytable.view()`` unchanged
+for the live bet."""
 
 from __future__ import annotations
 
@@ -37,16 +28,14 @@ from app.utils.game_math import GameMath, GameMathError, OrbValueTable, load_gam
 
 logger = get_logger("scatter_validation")
 
-# Scatter codes excluded from the value check entirely. FG is a free-games
-# trigger drawn without a figure -- there is nothing on math.xml's orb value
-# tables to judge it against, and it is not an orb, so it does not belong in
-# this list at all rather than being reported as an empty match every time.
+# FG is a free-games trigger with no figure and no orb value table row, so it
+# doesn't belong in the value check at all rather than reporting an empty
+# match every time.
 _EXCLUDED_FROM_CHECK = {"FG"}
 
-# The only game context this feature checks against today. There is no signal
-# yet that says whether a screenshot was taken in a Hold-and-Spin or Free
-# Games feature rather than the base game, so every check is judged against
-# the base game's own tables until that detection exists -- see `_table_for`.
+# The only context checked today: nothing yet signals whether a screenshot was
+# taken during Hold-and-Spin or Free Games rather than the base game, so every
+# check judges against BG's own tables -- see `_table_for`.
 _DEFAULT_CONTEXT = "BG"
 
 
@@ -62,18 +51,10 @@ def _table_for(
     math: GameMath, symbol_kind: str, bet: int | None, context: str = _DEFAULT_CONTEXT
 ) -> tuple[OrbValueTable | None, int | None]:
     """The declared value table for a symbol kind, at ``bet`` when one is live.
-
-    ``context`` picks which game state's tables to look in -- ``BG`` (base
-    game) is the only one this feature resolves today, since nothing yet tells
-    it a screenshot was taken during Hold-and-Spin or Free Games instead. A
-    future caller that can tell will pass that context in; nothing else here
-    needs to change to support it.
-
-    Falls back to the first table of that kind and context when there is no
-    live bet or none matches it, so an unlogged or unrecognised bet does not
-    hide every row -- the same fallback :func:`app.services.paytable._orb_values`
-    makes.
-    """
+    ``context`` picks the game state's tables -- only ``BG`` is resolved today,
+    since nothing yet signals a screenshot came from Hold-and-Spin or Free Games
+    instead. Falls back to the first table of that kind/context when no bet
+    matches, the same fallback :func:`app.services.paytable._orb_values` makes."""
     if bet is not None:
         table = math.orb_values(symbol_kind, context=context, bet=bet)
         if table is not None:
@@ -86,17 +67,13 @@ def _table_for(
     return (tables[0], tables[0].bet) if tables else (None, None)
 
 
-# The $2 denomination's own `money_per_credit` (200 cents a credit). math.xml's
-# orb tables declare a bet-unit multiplier, but the glass shows that multiplier
-# already turned into money -- at every other shipped denomination the two are
-# either identical ($1) or a fraction the checker has not yet been taught to
-# scale, so this constant scopes the correction to the one denomination it has
-# been verified against rather than guessing the same scaling is safe
-# everywhere. Scaling the *table* up to money (rather than dividing the OCR
-# reading back to a multiplier) is deliberate: ocr_value must stay exactly what
-# PaddleOCR read off the glass, and expected_values is what the report should
-# show the user as "what this game actually displays" -- 4, 8, ... 200, not
-# math.xml's own 2, 4, ... 100.
+# The $2 denomination's own money_per_credit (200 cents/credit). math.xml's
+# orb tables declare a bet-unit multiplier, but the glass shows it already
+# converted to money -- verified true only at $2, so this constant scopes the
+# fix rather than assuming other denominations scale the same way. The
+# *table* is scaled up to match the glass, never the OCR reading divided back
+# down: ocr_value must stay exactly what PaddleOCR read, while expected_values
+# is what a user should see as "what this game displays".
 _TWO_DOLLAR_MONEY_PER_CREDIT = 2.0
 
 
@@ -145,13 +122,9 @@ def _check_scatter(
             expected_label_set.add(tier.type_label)
     expected_labels = sorted(expected_label_set)
 
-    # At $2 the glass draws every plain credit amount already turned into money
-    # (multiplier x money_per_credit), so the *table* is scaled up to match what
-    # is on screen rather than the OCR reading being divided back down -- ocr_value
-    # must stay exactly what PaddleOCR read, and expected_values is what a user
-    # reads off the report, so it needs to read in the same units the tile does.
-    # Every other denomination scales by 1.0, a no-op -- see
-    # _TWO_DOLLAR_MONEY_PER_CREDIT. Jackpot labels are words, never scaled.
+    # Scale the table up to match the glass, never divide the OCR reading back
+    # down -- see _TWO_DOLLAR_MONEY_PER_CREDIT. Every other denomination scales
+    # by 1.0 (a no-op); jackpot labels are words, never scaled.
     scale = (
         money_per_credit if money_per_credit == _TWO_DOLLAR_MONEY_PER_CREDIT else 1.0
     )
@@ -232,14 +205,10 @@ def _bet_info(view: PaytableView) -> ScatterValidationBetInfo:
 async def validate(
     request: ScatterValidationRequest | None = None,
 ) -> ScatterValidationResult:
-    """Read one screen and judge every landed scatter against the value range
-    the loaded maths declares for it.
-
-    The grid and the bet info are independent readings of one picture, exactly
-    as Evaluate Screen composes the grid and the meter: a screen that reads but
-    whose maths cannot be found still comes back with every scatter's OCR
-    figure, just with no verdict on it.
-    """
+    """Read one screen and judge every landed scatter against the value range the
+    loaded maths declares. Grid and bet info are independent readings of one
+    picture -- a screen whose maths can't be found still returns every
+    scatter's OCR figure, just with no verdict on it."""
     started = time.perf_counter()
     payload = request or ScatterValidationRequest()
     name, config = evaluate_screen_service._active_config()
@@ -288,7 +257,6 @@ async def validate(
     try:
         reels, result, split_dir = await evaluate_screen_service._read_grid(
             source.file_name,
-            payload.architecture,
             include_images=payload.include_images,
         )
     except AppException as exc:

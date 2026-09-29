@@ -1,14 +1,4 @@
-import {
-  ChevronDown,
-  Circle,
-  Cpu,
-  Dices,
-  Film,
-  Play,
-  Square,
-  Wifi,
-  WifiOff,
-} from "lucide-react";
+import { Circle, Dices, Film, Play, Square, Wifi, WifiOff } from "lucide-react";
 import { useState } from "react";
 
 import { ApiErrorAlert } from "@/components/api-error-alert";
@@ -42,13 +32,6 @@ const ERROR_HINTS = {
   GAF_NOT_IDLE:
     "The game is still playing. Collect the win it is holding, or let the bonus finish.",
 };
-
-
-/** The networks a spin can be graded by, and the order they are offered in. */
-const ARCHITECTURES = [
-  { name: "resnet34", label: "ResNet34" },
-  { name: "efficientnet_b0", label: "EfficientNet-B0" },
-];
 
 const RUN_STATE_LOOKS = {
   running: { variant: "destructive", label: "running" },
@@ -118,12 +101,6 @@ export function SpinControlCard({
   // Off by default: a spin is not recorded unless this run's own toggle says
   // so, and that choice is only asked for at the moment of pressing spin.
   const [record, setRecord] = useState(false);
-  // Which network names the tiles of the reels, and so what every payline run is
-  // counted from. A per-run choice rather than a setting because both networks
-  // stay trained at once and they do not read the same split equally well — two
-  // of them agreeing about a spin is worth more than one being confident, and a
-  // disagreement says something about the reels.
-  const [architecture, setArchitecture] = useState(ARCHITECTURES[0].name);
   const busy = start.isPending || cancel.isPending;
   const actionError = start.error ?? cancel.error;
   const hint = actionError ? ERROR_HINTS[actionError.code] : null;
@@ -163,7 +140,7 @@ export function SpinControlCard({
               size="sm"
               onClick={() => {
                 cancel.reset();
-                start.mutate({ record, architecture, control: control.name });
+                start.mutate({ record, control: control.name });
               }}
               disabled={active || busy}
             >
@@ -181,40 +158,6 @@ export function SpinControlCard({
                 Cancel
               </Button>
             ) : null}
-          </div>
-
-          {/* Between the button and the record toggle: the last thing decided
-              before pressing spin, and the one that changes what the run
-              *concludes* rather than what it captures. */}
-          <div className="flex items-center gap-2">
-            <Label
-              htmlFor="analyze-spin-architecture"
-              className="text-muted-foreground text-sm font-normal"
-            >
-              <Cpu className="size-3.5" />
-              Classifier
-            </Label>
-            <div className="relative">
-              <select
-                id="analyze-spin-architecture"
-                aria-label="Classifier model"
-                value={architecture}
-                onChange={(event) => setArchitecture(event.target.value)}
-                disabled={active || busy}
-                className="border-input bg-background text-foreground hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 h-8 cursor-pointer appearance-none rounded-md border pr-8 pl-2.5 text-sm shadow-xs transition-[color,box-shadow,background-color] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-60 dark:bg-input/30"
-              >
-                {ARCHITECTURES.map((option) => (
-                  <option
-                    key={option.name}
-                    value={option.name}
-                    className="bg-background text-foreground"
-                  >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="text-muted-foreground pointer-events-none absolute inset-y-0 right-2 my-auto size-3.5" />
-            </div>
           </div>
 
           <div className="flex items-center gap-2">

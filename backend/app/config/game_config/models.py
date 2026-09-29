@@ -38,52 +38,34 @@ class GameConfig:
     """The game's own log, when it declares one."""
 
     game_config_dir: Path | None
-    """The game's installed ``GameConfig`` directory, outside this repo, holding
-    one folder per paytable named exactly as the log's ``paytableId``. ``None``
-    when the game declares none, which is a real state -- every dashboard slice
-    but the paytable one works without the game installed."""
+    """The game's installed ``GameConfig`` directory (outside this repo), holding
+    one folder per paytable named as the log's ``paytableId``. ``None`` is a real
+    state -- every slice but the paytable one works without the game installed."""
 
     win_geometry_path: Path | None
     """The game's own ``winGeometry.xml``, which sits beside those folders and
     is shared by all of them. Read by :mod:`app.utils.win_geometry`."""
 
     symbols: Mapping[str, str]
-    """Display name per symbol code, e.g. ``{"WC": "WILD", "AA": "Ox"}``.
-
-    Configured because it cannot be read: the maths files carry two-letter codes
-    and no display text in any element -- not in ``SymbolSetList``, not in
-    ``ReelStripList`` -- so a code becomes readable here or nowhere. *Which*
-    codes exist is still read from the maths; only what to call them is
-    declared. A code with no entry keeps whatever the maths implies about it
-    (``Wild``/``Scatter``) or stays a bare code."""
+    """Display name per symbol code, e.g. ``{"WC": "WILD", "AA": "Ox"}``. Declared
+    because it cannot be read -- the maths files carry no display text in any
+    element -- so a code is named here or not at all; which codes *exist* still
+    comes from the maths."""
 
     wild_card_replacement: Sequence[str]
     """Symbol codes the wild (:data:`app.utils.paylines.WILD_SYMBOL`) stands in
-    for when a payline is read, upper-cased and in the order declared.
-
-    A closed list, not "anything": the codes left out of it are exactly the ones
-    a wild must *not* be read as -- the scatters and feature symbols this family
-    of games pays by counting anywhere on the grid rather than along a line. An
-    empty list (or no block at all) means the game substitutes nothing, so its
-    wild is compared by equality like any other symbol, which is what every
-    config written before this block did.
-
-    Declared rather than read for the same reason as :attr:`paylines`: the
-    running game's ``math.xml`` does carry it (in ``WildSymbolList``), but
-    :mod:`app.services.paylines` checks a screenshot on machines with no game
-    installed. :class:`app.utils.paylines.WildRule` is what turns it into the
-    substitution rule."""
+    for, upper-cased in declared order -- a **closed list** that deliberately
+    excludes scatters/feature symbols (a wild beside one is not a match). Declared
+    rather than read from ``math.xml``'s ``WildSymbolList`` because
+    :mod:`app.services.paylines` also checks a screenshot with no game installed;
+    an empty list substitutes nothing."""
 
     scatter_symbols: Sequence[str]
-    """Symbol codes this game pays by counting anywhere on the grid rather than
-    along a line, upper-cased and in the order declared -- the complement of
-    :attr:`wild_card_replacement`, and declared for the same reason.
-
-    Read by :mod:`app.services.analyze_spin`, which reports every scatter that
-    landed and where. Some of them are drawn with a number on the tile (a
-    prize orb); that is not declared, because it is a property of the *tile that
-    landed* and not of the code -- the analyse step OCRs each scatter crop and
-    reports a value for the ones that turn out to carry digits."""
+    """Symbol codes counted anywhere on the grid rather than along a line -- the
+    complement of :attr:`wild_card_replacement`, declared for the same reason.
+    Read by :mod:`app.services.analyze_spin`; a tile's prize number, if any, is
+    not declared here since it's a property of the tile, not the code -- OCR
+    reads it."""
 
     roi: Mapping[str, Any]
     """Named screen regions, as fractions of the game's content box (not the
@@ -101,53 +83,37 @@ class GameConfig:
     against :attr:`reel_bounds`. Shape enforced by :func:`app.utils.paylines.read_set`."""
 
     ocr: Mapping[str, Mapping[str, Any]]
-    """Per-region OCR option overrides, keyed by region name in :attr:`roi`.
-    Validated by :func:`app.utils.ocr.parse_overrides`."""
+    """Per-region OCR option overrides, keyed by region name in :attr:`roi`
+    (and ``symbol_tile`` for the orb reader, which isn't in :attr:`roi`).
+    Validated by :func:`app.utils.paddle_ocr.parse_overrides`."""
 
     button_targets: Mapping[str, Any]
     """Named in-game click targets, as fractions of the window client area --
     the same space :attr:`roi` is measured in."""
 
     gaf: Mapping[str, Any]
-    """Optional GAF automation block: where this game hosts its automation
-    service and which object-query dictionary names its controls.
-
-    Per-game because every value in it is a property of the game, not of this
-    machine -- ``host``/``port`` (the Thrift endpoint the game itself listens
-    on), ``game_type`` and ``gdk_version`` (which client wrapper drives its
-    theme), and ``object_query_root`` plus the two query-file lists (the
-    dictionary that turns a control name into a Unity GameObject). Empty when
-    the game declares none, which means it cannot be driven this way.
-
-    Like :attr:`game_config_dir`, ``object_query_root`` points *out* of this
-    repo -- into an AGTF Perforce workspace -- and is deliberately not checked
-    at load time. Shape is validated by :func:`app.config.gaf.resolve_target`;
-    existence becomes an error in :mod:`app.services.gaf`, which is what reads
-    the files."""
+    """Optional GAF automation block: the Thrift endpoint, client wrapper and
+    object-query dictionary that let :mod:`app.services.gaf` drive this game.
+    Per-game because every value is a property of the game, not this machine;
+    ``object_query_root`` points outside the repo like :attr:`game_config_dir` and,
+    like it, is validated for shape only by :func:`app.config.gaf.resolve_target` --
+    existence is checked later, when the files are actually read. Empty means the
+    game can't be driven this way."""
 
     letterbox: Mapping[str, Any]
-    """Optional per-game letterbox overrides, keyed exactly as the three
-    ``FRAME_LETTERBOX_*`` settings they replace: ``trim`` (bool),
-    ``threshold`` (0-255) and ``min_fraction`` (0-1). Absent keys keep the
-    environment's value, and an absent block changes nothing.
-
-    Per-game because whether trimming finds the same box twice is a property of
-    what the game *draws*, not of the capture: a game whose art reaches the
-    window edge only sometimes -- a drifting cloud, a fading border -- moves its
-    own content box between frames, and regions measured against one box are
-    aimed at the wrong thing against the next. Turning trimming off for that
-    game leaves the games that really are letterboxed alone. Resolved against
-    the environment by :func:`app.services.roi.letterbox_options`."""
+    """Optional per-game overrides for the three ``FRAME_LETTERBOX_*`` settings
+    (``trim``, ``threshold``, ``min_fraction``); absent keys keep the environment's
+    value. Per-game because content-box stability is a property of what the game
+    *draws* -- a drifting cloud or fading border moves the box between frames, so
+    trimming is turned off for that game alone. Resolved by
+    :func:`app.services.roi.letterbox_options`."""
 
     meter: Mapping[str, Any]
-    """Optional cash-meter overrides: ``band`` is ``[top, bottom]`` fraction of
-    strip height, ``windows`` maps a field to its ``[low, high]`` width span, and
-    ``ordinal`` (bool) files cash/win/bet by left-to-right position instead of by
-    window -- for a skin whose title text (and therefore its window) cannot be
-    trusted, e.g. one occasionally drawn over by another object. Cash is always
-    first and always has a value, bet is always last and always has a value, win
-    sits between them and may be empty. See :func:`app.utils.meter.assign_fields`.
-    Defaults come from :mod:`app.services.meter` / :data:`app.utils.meter.DEFAULT_WINDOWS`."""
+    """Optional cash-meter overrides: ``band`` ([top, bottom] fraction of strip
+    height), ``windows`` (per-field [low, high] width span), and ``ordinal`` (bool,
+    files cash/win/bet by left-to-right position for a skin whose window title
+    can't be trusted). Cash is always first, bet always last, win between and
+    optional -- see :func:`app.utils.meter.assign_fields`."""
 
     event_rules: Sequence[EventRule]
     """Extra log-event rules this game declares, combined ahead of the shipped

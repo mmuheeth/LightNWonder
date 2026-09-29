@@ -182,7 +182,7 @@ class FakeCheckpoint:
         classes: list[str],
         *,
         version: int = 1,
-        architecture: str = "efficientnet_b0",
+        architecture: str = "resnet34",
     ) -> None:
         self.classes = classes
         self.image_size = 64
@@ -198,7 +198,7 @@ class FakeCheckpoint:
     def label(self) -> str:
         import app.utils.symbol_model as symbol_model
 
-        return symbol_model.architecture_label(self.architecture)
+        return symbol_model.ARCHITECTURE_LABEL
 
     @property
     def stale(self) -> bool:
@@ -229,8 +229,9 @@ def stub_model(monkeypatch: pytest.MonkeyPatch):
 
     def fake_load(path):
         # Derive the architecture from the filename, so the stub behaves like the
-        # real loader: asking for one engine's model must not hand back another's.
-        name = Path(path).stem.removeprefix("model-") or "efficientnet_b0"
+        # real loader: reading the checkpoint must not silently hand back a
+        # different architecture's weights.
+        name = Path(path).stem.removeprefix("model-") or "resnet34"
         return FakeCheckpoint(
             list(state["classes"]), version=state["version"], architecture=name
         )
@@ -255,7 +256,7 @@ def stub_model(monkeypatch: pytest.MonkeyPatch):
 def trained(model_dir: Path, stub_model) -> Path:
     """A checkpoint file that exists, so the service believes a model is there."""
     model_dir.mkdir(parents=True, exist_ok=True)
-    path = model_dir / f"model-{settings.CLASSIFIER_ARCHITECTURE}.pt"
+    path = model_dir / "model-resnet34.pt"
     path.write_bytes(b"not really a model; symbol_model.load is stubbed")
     classifier_service.reset()
     return path

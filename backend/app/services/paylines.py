@@ -200,9 +200,8 @@ class _Comparer:
         if key not in self._cache:
             self._cache[key] = self._decide(key[0], key[1])
         found = self._cache[key]
-        # The cache is keyed on the unordered pair, so a step whose tiles arrived
-        # the other way round has to be reported the way it was asked -- else a
-        # line's steps would carry the codes of its two tiles transposed.
+        # Cache key is the unordered pair, so a step asked the other way round
+        # must be flipped back or its two codes report transposed.
         return found if key[0] == left else found.flipped()
 
     def _decide(self, left: str, right: str) -> _Comparison:
@@ -231,9 +230,8 @@ class _SimilarityComparer(_Comparer):
     def __init__(self, split: grid_service.SplitOnDisk, threshold: float) -> None:
         super().__init__()
         self._vectors = _vectors(split)
-        # Kept twice on purpose: `threshold` is the reported cut, typed nullable
-        # on the base because a symbol comparison has none, and `_cut` is the
-        # float this one actually compares against.
+        # Duplicated on purpose: `threshold` is the reported (nullable) cut,
+        # `_cut` the float actually compared against.
         self._cut = threshold
         self.threshold = threshold
 
@@ -266,9 +264,9 @@ class _SymbolComparer(_Comparer):
         wilds: payline_config.WildRule = payline_config.NO_WILDS,
     ) -> None:
         super().__init__()
-        # Lower-cased because a split's tiles are keyed by their file stem while a
-        # line's positions come from `reel_grid.position_name`. The two agree
-        # today, and this is the one place that would notice if they stopped.
+        # Lower-cased: tile keys come from the file stem, line positions from
+        # `reel_grid.position_name` -- they agree today, but this is the one
+        # place that would notice if they stopped.
         self._symbols = {name.lower(): code for name, code in symbols.items()}
         self._wilds = wilds
 
@@ -284,9 +282,8 @@ class _SymbolComparer(_Comparer):
         run = payline_config.read_run(codes, self._wilds)
         steps: list[PaylineStep] = []
         for index, (left, right) in enumerate(pairwise(positions)):
-            # Compared even past the break: the cache this fills is what the
-            # run's distinct-pair figures are counted off, and it is the only
-            # thing an uncounted step can be said to have decided.
+            # Compared even past the break: it fills the cache the run's stats
+            # are counted off, and is the only thing an uncounted step decided.
             pair = self.compare(left, right)
             counted = index < run.covered
             steps.append(
@@ -297,9 +294,8 @@ class _SymbolComparer(_Comparer):
                     left_symbol=codes[index],
                     right_symbol=codes[index + 1],
                     line_symbol=run.line_symbols[index] if counted else None,
-                    # For a counted step this is "the run continued here", which
-                    # the line as a whole settles; for one past the break it is
-                    # the pairwise question, the only one still meaningful.
+                    # Counted: "did the run continue here" (line-level). Past the
+                    # break there's no run left, so it falls back to pairwise.
                     matched=(index + 1) < run.covered if counted else pair.matched,
                     counted=counted,
                 )
@@ -334,11 +330,9 @@ class _SymbolComparer(_Comparer):
 
 
 _ComparerFor = Callable[[grid_service.SplitOnDisk, GameConfig], _Comparer]
-"""Builds the comparer for one split. A factory rather than a comparer because
-the split is read inside :func:`_evaluate_set`, which is also where its shape is
-checked -- one built before that would be built against an unvetted split. It is
-handed the active game's config too, since the wild's substitution list lives
-there and :func:`check_symbols` is called from a caller that has not loaded it."""
+"""Builds the comparer for one split -- a factory, not an instance, because the
+split is only vetted inside :func:`_evaluate_set`. Takes the game config too,
+since the wild list lives there and some callers haven't loaded it."""
 
 
 def _by_similarity(threshold: float | None) -> _ComparerFor:
@@ -604,11 +598,9 @@ def _evaluate_set(
                 symbols=[comparer.symbol(name) for name in names]
                 if comparer.method is PaylineMethod.SYMBOL
                 else [],
-                # What the run pays as, which is not `symbols[0]` once a wild is
-                # in play -- a line landing a wild on reel 1 is not a line of
-                # wilds. Only set for a run that pays: a line that got nowhere
-                # has nothing to price, and `symbols` already says what its
-                # first tile was.
+                # What the run pays as -- not `symbols[0]`, since a wild landing
+                # on reel 1 is not a line of wilds. Only set when paying; a run
+                # that got nowhere has nothing to price.
                 symbol=read.symbol if paying else None,
                 leading_wilds=read.leading_wilds,
                 color=payline_overlay.colour(index),
@@ -749,9 +741,8 @@ def _redraw(
 
     wanted = set(names)
     drawings = [
-        # `index` has to be the line's place in the *whole* set, not in the
-        # subset being drawn, or a filtered overlay would recolour the lines it
-        # kept and stop matching the swatches beside them.
+        # `index` is the line's place in the *whole* set, not the drawn subset,
+        # or a filtered overlay would recolour lines and mismatch their swatches.
         _line_drawing(index, line.positions, line.pays, None, tiles)
         for index, line in enumerate(result.lines)
         if line.name in wanted

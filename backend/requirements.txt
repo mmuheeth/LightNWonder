@@ -9,7 +9,6 @@ fastapi~=0.141.1
 uvicorn[standard]~=0.52.3
 pydantic~=2.13.4
 pydantic-settings~=2.15.0
-asyncpg~=0.31.0
 
 # OBS Studio control (obs-websocket v5)
 simpleobsws~=1.4.3
@@ -29,42 +28,20 @@ opencv-python~=5.0.0.93
 # pinned here. On Windows the PyPI wheels are CPU-only builds, which is what is
 # wanted -- there is no NVIDIA GPU on the cabinet.
 #
-# Optional at runtime like Tesseract: the imports are lazy, so a venv without
-# these still starts the service and GET /api/image-classifier/status reports
+# Optional at runtime: the imports are lazy, so a venv without these still
+# starts the service and GET /api/image-classifier/status reports
 # `not_installed` rather than the app failing to boot.
 torch~=2.13.0
 torchvision~=0.28.0
 
-# Agentic workflows --------------------------------------------------------
-# LangChain v1 provides the provider-neutral agent API; LangGraph supplies
-# durable, stateful workflow execution underneath it.
-langchain~=1.3.15
-langgraph~=1.2.11
-
-# Provider adapters. Add another `langchain-<provider>` package when a model
-# provider not listed here is selected in AGENT_MODEL.
-langchain-openai~=1.5.2
-langchain-anthropic~=1.5.6
-
-# Optional production checkpoint persistence. The application defaults to the
-# in-memory saver, so local development does not require a database migration.
-langgraph-checkpoint-postgres~=3.1.2
-psycopg[binary,pool]~=3.3.4
-
-# OCR (app/utils/ocr.py) needs the Tesseract *program*, which is not a Python
-# package and so cannot be pinned here:
-# winget install --id UB-Mannheim.TesseractOCR
-# The backend finds it without PATH; see the OCR section of README.md. Reading is
-# optional -- an install without it starts and runs, and only OCR requests fail.
-
-# Orb/prize-figure OCR (app/utils/paddle_ocr.py) -- the engine that reads the
-# number on a scatter, where Tesseract measurably cannot (see that module's
-# docstring). Windows wheels come from Paddle's own index, not PyPI:
+# OCR (app/utils/paddle_ocr.py) -- meters, named regions, orb/prize figures and
+# cyclic-message captions all read through this one engine. Windows wheels
+# come from Paddle's own index, not PyPI:
 # pip install paddlepaddle -f https://www.paddlepaddle.org.cn/whl/windows.html
 # pip install paddleocr
 # Needs Python 3.13 or lower -- paddlepaddle publishes no wheels for 3.14.
-# Optional at runtime like Tesseract: the import is lazy, so a venv without it
-# still boots and only orb/meter Paddle reads fail (`app.utils.paddle_ocr.available()`
+# Optional at runtime like torch above: the import is lazy, so a venv without
+# it still boots and only OCR requests fail (`app.utils.paddle_ocr.available()`
 # reports False). enable_mkldnn=False in `_build()` is tied to this exact
 # paddlepaddle release -- see that function's docstring before bumping it.
 paddlepaddle~=3.3.1

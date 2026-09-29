@@ -1,25 +1,10 @@
-"""The AGTF object-query files: a dictionary from friendly control names to
-Unity GameObject paths.
-
-A foreign format living outside this repo, in a Perforce workspace that can
-change under us. This module reads and merges them and knows nothing about
-what they are for; :mod:`app.services.gaf` is what hands the merged result to
-the game client.
-
-Three properties of the format are load-bearing:
-
-* **They carry a UTF-8 BOM.** Plain ``utf-8`` raises on the first byte, so
-  every read is ``utf-8-sig``.
-* **The merge order is the meaning.** Later files overwrite earlier keys, and
-  the game-specific pair goes last: the common files supply the bulk of the
-  dictionary and the game-specific ones override a subset. Neither half is
-  optional -- initialising with only the game-specific files fails with "the
-  given key was not present in the dictionary", which names nothing useful.
-* **They come in two groups.** The *general* set is passed to
-  ``InitializeGameClient`` and the *generic* set to
-  ``InitializeGenericGameClient``; they are separate dictionaries that never
-  merge into each other.
-"""
+"""The AGTF object-query files: friendly control name -> Unity GameObject path, read
+from a Perforce workspace outside this repo and merged here, ignorant of what they are
+for (:mod:`app.services.gaf` hands the merged result to the game client). They carry a
+UTF-8 BOM (``utf-8-sig`` or the first byte raises); later files win the merge and the
+game-specific pair must go last, since the common files supply the bulk and the
+game-specific ones override a subset. The *general* and *generic* groups feed separate
+client calls and never merge into each other."""
 
 from __future__ import annotations
 
@@ -48,12 +33,9 @@ class ObjectQueryError(Exception):
 
 
 class ObjectQueryMissing(ObjectQueryError):
-    """One or more object-query files are not where the config says they are.
-
-    Its own class because the fix is different: a missing file means the
-    Perforce workspace is not synced or the configured root is wrong, whereas
-    an unreadable one means the file itself is broken.
-    """
+    """One or more object-query files are not where the config says they are -- its own
+    class because the fix differs: missing means the Perforce workspace isn't synced or
+    the configured root is wrong, unreadable means the file itself is broken."""
 
     def __init__(self, missing: Sequence[Path]) -> None:
         self.missing = tuple(missing)
@@ -96,12 +78,9 @@ class QuerySet:
 
 
 def resolve(root: Path | None, entries: Iterable[str | Path]) -> tuple[Path, ...]:
-    """Turn configured file references into absolute paths.
-
-    A relative entry is taken against ``root`` -- the workspace's own root,
-    which is what a config declares -- and an absolute one is left alone, so a
-    single file can be pointed somewhere else without moving the rest.
-    """
+    """Turn configured file references into absolute paths. A relative entry resolves
+    against ``root`` (the workspace root a config declares); an absolute one is left
+    alone, so a single file can be pointed elsewhere without moving the rest."""
     resolved: list[Path] = []
     for entry in entries:
         path = Path(entry)
@@ -117,11 +96,8 @@ def resolve(root: Path | None, entries: Iterable[str | Path]) -> tuple[Path, ...
 
 
 def missing_files(paths: Iterable[Path]) -> tuple[Path, ...]:
-    """Which of ``paths`` are not readable files, in the order given.
-
-    Split out from :func:`load_query_set` because a status poll wants the
-    answer without paying to parse a megabyte of JSON.
-    """
+    """Which of ``paths`` are not readable files, in order given -- split out from
+    :func:`load_query_set` so a status poll gets the answer without parsing JSON."""
     return tuple(path for path in paths if not path.is_file())
 
 
@@ -156,13 +132,9 @@ def _merge(
 
 
 def load_query_set(general: Sequence[Path], generic: Sequence[Path]) -> QuerySet:
-    """Read and merge both groups.
-
-    Every file must exist: the game client resolves controls by name against
-    the merged dictionary, and a half-merged one fails much later with a
-    dictionary-key error that names nothing. So the missing ones are collected
-    and reported together rather than one per attempt.
-    """
+    """Read and merge both groups. Every file must exist first -- a half-merged
+    dictionary fails much later with a dictionary-key error naming nothing -- so
+    missing files are collected and reported together rather than one per attempt."""
     absent = missing_files([*general, *generic])
     if absent:
         raise ObjectQueryMissing(absent)

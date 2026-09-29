@@ -1,15 +1,11 @@
 """Cyclic Messages runtime settings.
 
-Sibling of :mod:`app.config.event_capture`, and deliberately its own mixin
-rather than a reuse of those values: this feature screenshots a strip that
-changes every ~8s and records a video of each win presentation alongside, so
-its cap and its debounce answer a different question than event capture's do.
+Sibling of :mod:`app.config.event_capture` but its own mixin, not a reuse: this
+strip changes every ~8s and records a video of each win presentation, so its
+cap and debounce answer a different question than event capture's do.
 """
 
 from __future__ import annotations
-
-import os
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -425,21 +421,6 @@ class CyclicMessagesSettings(BaseSettings):
     # `cyclic_text._group`, never by this.
     CYCLIC_MESSAGES_TEXT_INTERVAL_SECONDS: float = 1.0
 
-    # Which engine reads a caption. The same bargain the orb reader makes
-    # (OCR_ORB_PADDLE_ENABLED above): Tesseract wants a crop flattened to
-    # greyscale, autocontrasted and upscaled 3x before it will read it, which
-    # on a caption drawn over the game's artwork throws away the colour that
-    # separates the two; Paddle's recogniser was trained on colour photographs
-    # of text and is given the crop as it is.
-    #
-    # "tesseract" is kept rather than deleted, for a host without Paddle
-    # installed (it needs Python 3.13 or lower) and for comparing the two on
-    # one clip -- the reading says which engine produced it, so two runs of the
-    # same clip are comparable. Unlike the orb reader there is no *fallback*:
-    # an engine that cannot start fails the request, because 90 frames read by
-    # nothing come back as a strip that showed nothing.
-    CYCLIC_MESSAGES_TEXT_ENGINE: Literal["paddle", "tesseract"] = "paddle"
-
     # Paddle's recognition model. A caption is read recognise-only -- the crop
     # already *is* the line, so there is nothing to detect -- and this is where
     # the time goes.
@@ -566,20 +547,3 @@ class CyclicMessagesSettings(BaseSettings):
     # loses only its `repaired` -- so it is visible in the record as something
     # read and rejected, and nothing downstream counts it as a message.
     CYCLIC_MESSAGES_TEXT_MIN_CHARACTERS: int = Field(default=3, ge=0, le=40)
-
-    # Tesseract calls to run at once, and **Tesseract only** -- a Paddle read
-    # is in-process against one shared model, so `cyclic_text` reads those one
-    # at a time and this does not apply. Each Tesseract call is a subprocess
-    # and ``subprocess.run`` releases the GIL while it waits, so threads
-    # genuinely overlap there -- the same bargain ``utils/meter.py`` makes. 0
-    # resolves to half the machine, like CLASSIFIER_TORCH_THREADS and for the
-    # same reason: this process also drives OBS, the i-deck and the game clicks.
-    CYCLIC_MESSAGES_TEXT_WORKERS: int = Field(default=0, ge=0, le=64)
-
-    @property
-    def cyclic_messages_text_workers(self) -> int:
-        """Concurrent Tesseract calls, resolving 0 to half the machine."""
-        configured = self.CYCLIC_MESSAGES_TEXT_WORKERS
-        if configured > 0:
-            return configured
-        return max(2, (os.cpu_count() or 4) // 2)

@@ -1,11 +1,9 @@
-"""``GafSettings`` (the environment's defaults) and :func:`resolve_target`, which
-folds one game's ``gaf`` block over them into an immutable, ready-to-dial target.
+"""``GafSettings`` (environment defaults) and :func:`resolve_target`, which folds a
+game's ``gaf`` block over them into an immutable, ready-to-dial target.
 
-Nothing here talks to the network or the filesystem: :func:`resolve_target` only
-validates shape and resolves the object-query paths, exactly as
-:mod:`app.utils.click_target` and :mod:`app.utils.reel_grid` validate their own
-config blocks. Whether a resolved path actually exists is
-:mod:`app.services.gaf`'s question, asked once the files are about to be read.
+Nothing here touches the network or filesystem -- it only validates shape and
+resolves object-query paths, like :mod:`app.utils.click_target`/``reel_grid`` do
+for their own blocks; whether a path exists is :mod:`app.services.gaf`'s question.
 """
 
 from __future__ import annotations
@@ -75,9 +73,9 @@ class GafTargetError(ValueError):
 class GafSettings(BaseSettings):
     """Cabinet- and environment-level defaults for driving a game through GAF.
 
-    Every one of these is overridable per game -- see :func:`resolve_target` --
-    because none is a property of this machine: two games on one host can
-    listen on two different ports.
+    Every value is overridable per game (see :func:`resolve_target`) since none is
+    a property of this machine -- two games on one host can listen on different
+    ports.
     """
 
     # Where NRobot.Server.exe listens. Cabinet-level, unlike the game's own
@@ -121,10 +119,9 @@ class GafSettings(BaseSettings):
 
 @dataclass(frozen=True, slots=True)
 class GafTarget:
-    """One game's fully-resolved GAF endpoint, object dictionary and button.
-
-    Everything a session needs to open and drive, with every path already
-    made absolute -- :mod:`app.services.gaf` never re-derives any of it.
+    """One game's fully-resolved GAF endpoint, object dictionary and button --
+    everything a session needs, with every path already absolute so
+    :mod:`app.services.gaf` never re-derives any of it.
     """
 
     game: str
@@ -208,13 +205,10 @@ def _query_list(
 def resolve_target(
     game: str, block: Mapping[str, Any], settings: GafSettings
 ) -> GafTarget:
-    """Fold a game's ``gaf`` block over the environment's defaults.
-
-    Every value but ``object_query_root`` falls back to a ``GafSettings``
-    field; ``object_query_root`` has no sensible default because it names a
-    Perforce workspace. Unknown keys are refused by name -- a misspelled
-    ``prot`` would otherwise silently keep the default port and fail much
-    later with no hint which key was wrong.
+    """Fold a game's ``gaf`` block over the environment's defaults; only
+    ``object_query_root`` has none, since it names a Perforce workspace. Unknown
+    keys are refused by name so a misspelled ``prot`` fails immediately rather
+    than silently keeping the default port.
     """
     unknown = sorted(set(block) - _KNOWN_KEYS)
     if unknown:

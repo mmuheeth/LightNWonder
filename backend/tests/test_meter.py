@@ -1,18 +1,17 @@
 """Reading the five values off a cash-meter strip.
 
-Most of this runs without Tesseract installed. ``FakeEngine`` replaces the one
-function in :mod:`app.utils.ocr` that touches a subprocess and answers with real
-TSV, keyed by how wide the crop it was handed is -- which is enough to exercise
-the parts that are actually this project's: locating the numbers, fitting the row
-band, filing each number under a field, and refusing to guess when one belongs to
-none.
+Most of this runs without PaddleOCR installed. ``FakePaddle`` replaces the built
+engine (the same seam :mod:`test_paddle_ocr` uses), keyed by how wide the crop it
+was handed is -- which is enough to exercise the parts that are actually this
+project's: locating the numbers, fitting the row band, filing each number under
+a field, and refusing to guess when one belongs to none.
 
 The geometry tests use no engine at all. Where a number *is* on a strip is a
 question about pixels, and answering it with a fake reader would prove only that
 the fake was consulted.
 
 One group of tests uses the real engine over the project's own saved frames, and
-skips when there is neither. Those are the only ones that can catch the thing a
+skips when there is none. Those are the only ones that can catch the thing a
 fake cannot: that the values are *right*. They crop the frame themselves rather
 than reading a saved crop, so the region and the content box it resolves against
 are under test too -- a strip handed in finished hides both.
@@ -21,90 +20,57 @@ are under test too -- a strip handed in finished hides both.
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image, ImageDraw
 
 from app.config.game_config import GameConfigError, load_game_config
-from app.config.ocr import EXECUTABLE_NAME, discover_executable
 from app.config.runtime import settings
 from app.schemas.meter import MeterMode, MeterValues
 from app.services import meter as meter_service
 from app.services import roi as roi_service
-from app.utils import image_roi, meter, ocr
-
-TSV_HEADER = (
-    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\t"
-    "left\ttop\twidth\theight\tconf\ttext"
-)
+from app.utils import image_roi, meter, meter_paddle, paddle_ocr
 
 
-def tsv(*words: tuple[str, float]) -> bytes:
-    """The TSV Tesseract writes for one line of words."""
-    rows = [
-        TSV_HEADER,
-        "1\t1\t0\t0\t0\t0\t0\t0\t600\t90\t-1\t",
-        "2\t1\t1\t0\t0\t0\t30\t12\t540\t30\t-1\t",
-        "3\t1\t1\t1\t0\t0\t30\t12\t540\t30\t-1\t",
-        "4\t1\t1\t1\t1\t0\t30\t12\t540\t30\t-1\t",
+def page(*words: tuple[str, float]) -> list[dict[str, list[Any]]]:
+    """One Paddle 3.x result page: parallel text and score lists, 0-1 scale."""
+    return [
+        {
+            "rec_texts": [text for text, _ in words],
+            "rec_scores": [score for _, score in words],
+        }
     ]
-    for index, (text, confidence) in enumerate(words, start=1):
-        rows.append(f"5\t1\t1\t1\t1\t{index}\t30\t12\t60\t30\t{confidence}\t{text}")
-    return ("\n".join(rows) + "\n").encode("utf-8")
 
 
-VERSION_STDOUT = b"tesseract v5.5.3.20260724\n leptonica-1.87.0\n"
-
-
-class FakeEngine:
+class FakePaddle:
     """Answers every read from a table, so a test can say what each cell says.
 
-    Keyed by the *width* of the PNG it is handed, because that is the one thing a
-    caller can control from the outside: a strip is built with its cells at known
-    widths and each one then answers for itself. Unknown widths read as nothing,
-    which is how an empty WIN cell is expressed.
+    Keyed by the *width* of the array Paddle is handed, because that is the one
+    thing a caller can control from the outside: a strip is built with its cells
+    at known widths and each one then answers for itself. Unknown widths read as
+    nothing, which is how an empty WIN cell is expressed.
     """
 
     def __init__(self) -> None:
-        self.by_width: dict[int, bytes] = {}
-        self.default: bytes = tsv()
+        self.by_width: dict[int, Any] = {}
+        self.default: Any = []
         self.reads = 0
         self.widths: list[int] = []
-        self.calls: list[list[str]] = []
-        self.timeouts: list[float] = []
 
-    def __call__(
-        self,
-        executable: Path | str,
-        args: Sequence[str],
-        *,
-        payload: bytes | None = None,
-        timeout: float,
-    ) -> subprocess.CompletedProcess[bytes]:
-        self.calls.append([str(executable), *args])
-        self.timeouts.append(timeout)
-        if "--version" in args:
-            return self._done(VERSION_STDOUT)
-        if "--list-langs" in args:
-            return self._done(b"List of available languages (1):\neng\n")
+    def predict(self, array: Any) -> Any:
         self.reads += 1
-        width = 0
-        if payload is not None:
-            import io
-
-            with Image.open(io.BytesIO(payload)) as handed:
-                width = handed.width
+        width = array.shape[1]
         self.widths.append(width)
-        return self._done(self.by_width.get(width, self.default))
+        return self.by_width.get(width, self.default)
 
-    @staticmethod
-    def _done(stdout: bytes) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(
-            args=["tesseract"], returncode=0, stdout=stdout, stderr=b""
-        )
+
+def install(monkeypatch: pytest.MonkeyPatch, fake: FakePaddle) -> FakePaddle:
+    """Put ``fake`` in place of the engine that would otherwise be built."""
+    monkeypatch.setattr(paddle_ocr, "_engine", fake, raising=False)
+    return fake
 
 
 def strip(
@@ -139,20 +105,13 @@ BET_CELL = (0.68, 0.735)
 
 
 @pytest.fixture
-def engine_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Pin the engine to a file that exists but is never run."""
-    executable = tmp_path / EXECUTABLE_NAME
-    executable.write_bytes(b"")
-    monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", executable)
-    return executable
-
-
-@pytest.fixture
-def fake_engine(
-    engine_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[FakeEngine]:
-    fake = FakeEngine()
-    monkeypatch.setattr(ocr, "_run", fake)
+def fake_engine(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakePaddle]:
+    # `services.meter.read` checks `paddle_ocr.available()` (a real import
+    # check) before ever touching the engine, so a faked engine object alone
+    # is not enough on a machine where paddleocr is not actually installed.
+    monkeypatch.setattr(paddle_ocr, "available", lambda: True)
+    fake = FakePaddle()
+    install(monkeypatch, fake)
     yield fake
 
 
@@ -204,7 +163,7 @@ def test_grey_rejects_a_strip_with_no_area() -> None:
 
 
 def test_each_value_is_filed_under_the_field_whose_window_it_falls_in(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     image = strip(cells=[CASH_CELL, WIN_CELL, BET_CELL])
     widths = {
@@ -217,14 +176,13 @@ def test_each_value_is_filed_under_the_field_whose_window_it_falls_in(
         round((end - start) * image.width) + 2 * meter.CLUSTER_PAD
         for start, end in (CASH_CELL, WIN_CELL, BET_CELL)
     )
-    scale = 8
     fake_engine.by_width = {
-        cash_w * scale: tsv(("$12.34", 96.0)),
-        win_w * scale: tsv(("$1.00", 95.0)),
-        bet_w * scale: tsv(("$0.50", 94.0)),
+        cash_w: page(("$12.34", 0.96)),
+        win_w: page(("$1.00", 0.95)),
+        bet_w: page(("$0.50", 0.94)),
     }
 
-    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    scan = meter_paddle.extract(image, options=paddle_ocr.PaddleOptions(), band=(4, 16))
     assert str(scan.fields["cash"].value) == "12.34"
     assert str(scan.fields["win"].value) == "1.00"
     assert str(scan.fields["bet"].value) == "0.50"
@@ -232,7 +190,7 @@ def test_each_value_is_filed_under_the_field_whose_window_it_falls_in(
 
 
 def test_a_value_in_no_window_is_reported_unmapped_not_nudged_into_a_field(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     """The failure this design exists to make visible.
 
@@ -241,9 +199,9 @@ def test_a_value_in_no_window_is_reported_unmapped_not_nudged_into_a_field(
     """
     stray = (0.78, 0.85)
     image = strip(cells=[stray])
-    fake_engine.default = tsv(("777", 96.0))
+    fake_engine.default = page(("777", 0.96))
 
-    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    scan = meter_paddle.extract(image, options=paddle_ocr.PaddleOptions(), band=(4, 16))
     assert all(field.value is None for field in scan.fields.values())
     assert len(scan.unmapped) == 1
     assert str(scan.unmapped[0].value) == "777"
@@ -251,7 +209,7 @@ def test_a_value_in_no_window_is_reported_unmapped_not_nudged_into_a_field(
 
 
 def test_an_empty_win_cell_leaves_win_null_without_shifting_bet(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     """Eleven of the twenty saved strips look like this.
 
@@ -259,14 +217,14 @@ def test_an_empty_win_cell_leaves_win_null_without_shifting_bet(
     that, so it is worth a test of its own.
     """
     image = strip(cells=[CASH_CELL, BET_CELL])
-    cash_w = (round((CASH_CELL[1] - CASH_CELL[0]) * image.width) + 4) * 8
-    bet_w = (round((BET_CELL[1] - BET_CELL[0]) * image.width) + 4) * 8
+    cash_w = round((CASH_CELL[1] - CASH_CELL[0]) * image.width) + 4
+    bet_w = round((BET_CELL[1] - BET_CELL[0]) * image.width) + 4
     fake_engine.by_width = {
-        cash_w: tsv(("$50.00", 96.0)),
-        bet_w: tsv(("$2.00", 96.0)),
+        cash_w: page(("$50.00", 0.96)),
+        bet_w: page(("$2.00", 0.96)),
     }
 
-    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    scan = meter_paddle.extract(image, options=paddle_ocr.PaddleOptions(), band=(4, 16))
     assert str(scan.fields["cash"].value) == "50.00"
     assert scan.fields["win"].value is None
     assert str(scan.fields["bet"].value) == "2.00"
@@ -274,76 +232,14 @@ def test_an_empty_win_cell_leaves_win_null_without_shifting_bet(
 
 
 def test_a_reading_below_the_floor_is_discarded_rather_than_reported(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
+    """`meter_paddle.FLOOR` (50.0, on the rescaled 0-100 range): below it a
+    recognised string is artwork noise rather than a value."""
     image = strip(cells=[CASH_CELL])
-    fake_engine.default = tsv(("$9.99", meter.FLOOR - 1))
-    scan = meter.extract(image, executable=engine_path, band=(4, 16))
+    fake_engine.default = page(("$9.99", (meter_paddle.FLOOR - 1) / 100.0))
+    scan = meter_paddle.extract(image, options=paddle_ocr.PaddleOptions(), band=(4, 16))
     assert scan.fields["cash"].value is None
-
-
-def test_reading_escalates_only_while_it_is_unconvincing(
-    fake_engine: FakeEngine, engine_path: Path
-) -> None:
-    """A confident first answer must not cost eight more engine calls."""
-    image = strip(cells=[CASH_CELL])
-    fake_engine.default = tsv(("$12.34", 99.0))
-    meter.extract(image, executable=engine_path, band=(4, 16))
-    assert fake_engine.reads == 1
-
-    fake_engine.reads = 0
-    fake_engine.default = tsv(("$12.34", meter.CONFIDENT - 20))
-    meter.extract(image, executable=engine_path, band=(4, 16))
-    assert fake_engine.reads == sum(len(rung) for rung in meter.LADDER)
-
-
-def test_a_reading_the_engine_declined_to_score_is_kept_not_discarded(
-    fake_engine: FakeEngine, engine_path: Path
-) -> None:
-    """Tesseract scores a whitelisted word 0 however well it read it.
-
-    The regression this pins: ranking on confidence alone starts at 0 and `0 > 0`
-    is false, so the only transcription there was got thrown away and the field
-    came back empty. On the real strips it was the *balance* that hit this --
-    `$2,959.44`, verbatim, from six of the seven rungs, every one scored 0.
-    """
-    image = strip(cells=[CASH_CELL])
-    fake_engine.default = tsv(("$2,959.44", meter.UNMEASURED))
-
-    scan = meter.extract(image, executable=engine_path, band=(4, 16))
-    assert str(scan.fields["cash"].value) == "2959.44"
-    assert not scan.fields["cash"].measured
-
-
-def test_a_scored_reading_outranks_an_unscored_one_for_the_same_cell(
-    fake_engine: FakeEngine, engine_path: Path
-) -> None:
-    """Unscored is a fallback, never a preference: the ladder's later rungs must
-    still be able to overrule a rung that read something the engine would not
-    vouch for."""
-    cash_width = round((CASH_CELL[1] - CASH_CELL[0]) * 600) + 2 * meter.CLUSTER_PAD
-    fake_engine.by_width = {
-        cash_width * 8: tsv(("$11.11", meter.UNMEASURED)),
-        cash_width * 6: tsv(("$22.22", 80.0)),
-    }
-    fake_engine.default = tsv()
-
-    scan = meter.extract(strip(cells=[CASH_CELL]), executable=engine_path, band=(4, 16))
-    assert str(scan.fields["cash"].value) == "22.22"
-
-
-def test_an_unscored_stray_is_not_reported_as_an_unmapped_value(
-    fake_engine: FakeEngine, engine_path: Path
-) -> None:
-    """The exemption is for a reading with a field behind it. Both shipped skins
-    carry digits on the strip that are not meter values -- the "CREDIT GAME
-    ACTIVE" line and the change-denom button -- and reporting every unscored one
-    would warn on every read."""
-    image = strip(cells=[(0.78, 0.85)])
-    fake_engine.default = tsv(("$7.00", meter.UNMEASURED))
-
-    scan = meter.extract(image, executable=engine_path, band=(4, 16))
-    assert scan.unmapped == ()
 
 
 def _striped(columns: tuple[int, int], rows: tuple[int, int]) -> Image.Image:
@@ -412,21 +308,21 @@ def test_the_glyph_margin_scales_with_the_band_not_the_pixel() -> None:
 
 def test_the_longest_token_wins_so_a_cell_border_does_not_become_a_digit() -> None:
     """The engine welds a border onto a value as a leading 1 or comma."""
-    assert str(meter._token("1$1,001.40")[0]) == "1001.40"
-    assert meter._token("1$1,001.40")[1] == "$"
-    assert str(meter._token(",$999.12")[0]) == "999.12"
-    assert meter._token("")[0] is None
+    assert str(meter_paddle._token("1$1,001.40")[0]) == "1001.40"
+    assert meter_paddle._token("1$1,001.40")[1] == "$"
+    assert str(meter_paddle._token(",$999.12")[0]) == "999.12"
+    assert meter_paddle._token("")[0] is None
 
 
 # --- the service ------------------------------------------------------------
 
 
 def test_mode_is_credits_for_a_bare_integer_and_cash_for_an_amount(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     image = strip(cells=[CASH_CELL])
 
-    fake_engine.default = tsv(("49883", 96.0))
+    fake_engine.default = page(("49883", 0.96))
     credits = meter_service.read(image, game="Fake")
     assert credits.mode is MeterMode.CREDITS
     assert credits.credits == 49883
@@ -434,7 +330,7 @@ def test_mode_is_credits_for_a_bare_integer_and_cash_for_an_amount(
     assert credits.currency is None
 
     meter_service.reset()
-    fake_engine.default = tsv(("$999.64", 96.0))
+    fake_engine.default = page(("$999.64", 0.96))
     cash = meter_service.read(image, game="Fake")
     assert cash.mode is MeterMode.CASH
     assert cash.cash == 999.64
@@ -443,7 +339,7 @@ def test_mode_is_credits_for_a_bare_integer_and_cash_for_an_amount(
 
 
 def test_an_amount_with_an_unreadable_symbol_reports_the_currency_as_unknown(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     """The yen glyph these games draw reads as nothing at every mode and scale.
 
@@ -451,7 +347,7 @@ def test_an_amount_with_an_unreadable_symbol_reports_the_currency_as_unknown(
     currency" would be a different and wrong claim.
     """
     image = strip(cells=[CASH_CELL])
-    fake_engine.default = tsv(("999.19", 96.0))
+    fake_engine.default = page(("999.19", 0.96))
     values = meter_service.read(image, game="Fake")
     assert values.mode is MeterMode.CASH
     assert values.currency == "?"
@@ -516,11 +412,11 @@ def test_nothing_readable_leaves_the_units_unknown_rather_than_guessed() -> None
 
 
 def test_the_fitted_band_is_cached_per_game_and_size(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     """Fitting costs extra scans, so it must happen once per skin, not per frame."""
     image = strip(cells=[CASH_CELL])
-    fake_engine.default = tsv(("$5.00", 96.0))
+    fake_engine.default = page(("$5.00", 0.96))
 
     meter_service.read(image, game="Fake")
     first = fake_engine.reads
@@ -534,9 +430,9 @@ def test_the_fitted_band_is_cached_per_game_and_size(
     assert fake_engine.reads > 0
 
 
-def test_reset_drops_the_cached_bands(fake_engine: FakeEngine) -> None:
+def test_reset_drops_the_cached_bands(fake_engine: FakePaddle) -> None:
     image = strip(cells=[CASH_CELL])
-    fake_engine.default = tsv(("$5.00", 96.0))
+    fake_engine.default = page(("$5.00", 0.96))
     meter_service.read(image, game="Fake")
     assert meter_service._bands
     meter_service.reset()
@@ -544,15 +440,13 @@ def test_reset_drops_the_cached_bands(fake_engine: FakeEngine) -> None:
 
 
 def test_a_missing_engine_is_reported_on_the_reading_not_raised(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A host with no Tesseract still gets its crop out of the ROI panel."""
-    monkeypatch.setattr(
-        settings, "OCR_TESSERACT_CMD", tmp_path / "nowhere" / EXECUTABLE_NAME
-    )
+    """A host with no PaddleOCR still gets its crop out of the ROI panel."""
+    monkeypatch.setattr(paddle_ocr, "available", lambda: False)
     values = meter_service.read(strip(cells=[CASH_CELL]), game="Fake")
     assert values.error is not None
-    assert "Tesseract" in values.error
+    assert "PaddleOCR" in values.error
     assert values.mode is MeterMode.UNKNOWN
     assert values.cash is None
 
@@ -565,7 +459,7 @@ def test_ocr_disabled_is_reported_the_same_way(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_a_strip_with_no_area_is_reported_not_raised(
-    fake_engine: FakeEngine,
+    fake_engine: FakePaddle,
 ) -> None:
     values = meter_service.read(Image.new("RGB", (0, 0)), game="Fake")
     assert values.error is not None
@@ -584,7 +478,7 @@ def _frame(name: str) -> Path:
 
 
 real_engine = pytest.mark.skipif(
-    discover_executable() is None, reason="no Tesseract installed"
+    not paddle_ocr.available(), reason="PaddleOCR is not installed"
 )
 
 # Verified by eye, both skins, both modes, and a WIN cell that is empty as well as
@@ -601,6 +495,15 @@ real_engine = pytest.mark.skipif(
 # measured in pixels around those fractions no longer matched the pixels, and
 # that a band overshooting into the labels by 3 rows went from illegible to
 # legible. One resolution is not a measurement -- keep both.
+#
+# These cases were originally chosen to pin specific Tesseract misreads (a
+# glyph welded to a leading digit, a whitelisted word scored 0 and nearly
+# discarded, and so on); those mechanisms don't apply to PaddleOCR, which reads
+# this project's own tiles by a different route entirely. The *expected
+# values* are ground truth about what each strip actually shows and still
+# apply regardless of engine -- but this suite has not been re-run against a
+# real PaddleOCR install in this environment (none is available here), so
+# treat it as unverified against the new engine until it has been.
 REAL_STRIPS = [
     # 1080x1920 canvas: the game's own resolution, what the cabinet runs now.
     (
@@ -612,7 +515,6 @@ REAL_STRIPS = [
         None,
         100.00,
     ),
-    # $1,250.00 read as `$4.7250.00` while its glyphs sat flush against the band.
     (
         "spin-2026-08-31_13-59-15-2-outcome.png",
         "FortuneOx",
@@ -631,8 +533,6 @@ REAL_STRIPS = [
         4.00,
         20.00,
     ),
-    # CASH here is the case the engine transcribes perfectly and scores 0; WIN is
-    # one the padding fixed. Both fail without the other's fix.
     (
         "spin-2026-08-31_14-33-33-2-outcome.png",
         "FortuneOx",
@@ -642,7 +542,6 @@ REAL_STRIPS = [
         20.00,
         20.00,
     ),
-    # `105` read as `4105`, and a six-figure balance the whitelist scores 0.
     (
         "spin-2026-08-31_14-52-17-2-outcome.png",
         "FortuneOx",
@@ -691,7 +590,6 @@ def test_real_strips_read_the_values_that_are_on_them(
     balance: float,
     win: float | None,
     bet: float | None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The only tests that can catch a wrong number rather than a wrong shape.
 
@@ -708,7 +606,6 @@ def test_real_strips_read_the_values_that_are_on_them(
     path = _frame(name)
     if not path.is_file():
         pytest.skip(f"{path} is not present")
-    monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", None)
 
     # Through the declared band, which is what the ROI service uses. Fitting one
     # from the frame in hand is the fallback for a game nobody has measured, and
@@ -741,7 +638,7 @@ def test_real_strips_read_the_values_that_are_on_them(
 # is scale-free and the game's own layout is proportionally identical at every
 # size (measured: the value rows sit at 0.276-0.533 of the strip on a 421-wide
 # capture and 0.280-0.533 on a 1080-wide one). What limits the range is the
-# constants that are still pixels, and how much detail Tesseract is given.
+# constants that are still pixels, and how much detail the engine is given.
 #
 # 0.35x is the floor because MIN_GAP stops being able to tell a gap inside a
 # value from the gap between two cells; below it the CASH and WIN cells weld and
@@ -752,9 +649,7 @@ CANVAS_SCALES = (0.35, 0.5, 0.8, 1.0, 1.5, 2.0)
 
 @pytest.mark.parametrize("scale", CANVAS_SCALES)
 @real_engine
-def test_the_meter_reads_across_canvas_sizes(
-    scale: float, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_meter_reads_across_canvas_sizes(scale: float) -> None:
     """The regression that started all of this was a canvas change, so the fix
     is only a fix if it survives another one.
 
@@ -767,7 +662,6 @@ def test_the_meter_reads_across_canvas_sizes(
     path = _frame(name)
     if not path.is_file():
         pytest.skip(f"{path} is not present")
-    monkeypatch.setattr(settings, "OCR_TESSERACT_CMD", None)
 
     config = load_game_config(GAME_CONFIGS / "FortuneOx.json")
     with Image.open(path) as frame:
@@ -801,23 +695,25 @@ ORDINAL_BET_CELL = (0.85, 0.90)
 
 
 def test_ordinal_files_by_position_not_by_window(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     """A skin whose windows don't match its layout -- e.g. because the title text
     that would locate one is sometimes drawn over by another object -- still
     reads correctly, because order doesn't depend on a label at all."""
     image = strip(cells=[ORDINAL_CASH_CELL, ORDINAL_WIN_CELL, ORDINAL_BET_CELL])
     cash_w, win_w, bet_w = (
-        (round((end - start) * image.width) + 2 * meter.CLUSTER_PAD) * 8
+        round((end - start) * image.width) + 2 * meter.CLUSTER_PAD
         for start, end in (ORDINAL_CASH_CELL, ORDINAL_WIN_CELL, ORDINAL_BET_CELL)
     )
     fake_engine.by_width = {
-        cash_w: tsv(("$12.34", 96.0)),
-        win_w: tsv(("$1.00", 95.0)),
-        bet_w: tsv(("$0.50", 94.0)),
+        cash_w: page(("$12.34", 0.96)),
+        win_w: page(("$1.00", 0.95)),
+        bet_w: page(("$0.50", 0.94)),
     }
 
-    scan = meter.extract(image, executable=engine_path, band=(4, 16), ordinal=True)
+    scan = meter_paddle.extract(
+        image, options=paddle_ocr.PaddleOptions(), band=(4, 16), ordinal=True
+    )
     assert str(scan.fields["cash"].value) == "12.34"
     assert str(scan.fields["win"].value) == "1.00"
     assert str(scan.fields["bet"].value) == "0.50"
@@ -825,21 +721,21 @@ def test_ordinal_files_by_position_not_by_window(
 
 
 def test_ordinal_leaves_win_empty_when_only_two_groups_read(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     """Win is the one field allowed to be missing; cash and bet never shift into
     its place."""
     image = strip(cells=[ORDINAL_CASH_CELL, ORDINAL_BET_CELL])
-    cash_w = (
-        round((ORDINAL_CASH_CELL[1] - ORDINAL_CASH_CELL[0]) * image.width) + 4
-    ) * 8
-    bet_w = (round((ORDINAL_BET_CELL[1] - ORDINAL_BET_CELL[0]) * image.width) + 4) * 8
+    cash_w = round((ORDINAL_CASH_CELL[1] - ORDINAL_CASH_CELL[0]) * image.width) + 4
+    bet_w = round((ORDINAL_BET_CELL[1] - ORDINAL_BET_CELL[0]) * image.width) + 4
     fake_engine.by_width = {
-        cash_w: tsv(("$50.00", 96.0)),
-        bet_w: tsv(("$2.00", 96.0)),
+        cash_w: page(("$50.00", 0.96)),
+        bet_w: page(("$2.00", 0.96)),
     }
 
-    scan = meter.extract(image, executable=engine_path, band=(4, 16), ordinal=True)
+    scan = meter_paddle.extract(
+        image, options=paddle_ocr.PaddleOptions(), band=(4, 16), ordinal=True
+    )
     assert str(scan.fields["cash"].value) == "50.00"
     assert scan.fields["win"].value is None
     assert str(scan.fields["bet"].value) == "2.00"
@@ -847,27 +743,27 @@ def test_ordinal_leaves_win_empty_when_only_two_groups_read(
 
 
 def test_ordinal_reads_a_lone_group_as_cash_not_bet(
-    fake_engine: FakeEngine, engine_path: Path
+    fake_engine: FakePaddle,
 ) -> None:
     image = strip(cells=[ORDINAL_CASH_CELL])
-    fake_engine.default = tsv(("$9.00", 96.0))
+    fake_engine.default = page(("$9.00", 0.96))
 
-    scan = meter.extract(image, executable=engine_path, band=(4, 16), ordinal=True)
+    scan = meter_paddle.extract(
+        image, options=paddle_ocr.PaddleOptions(), band=(4, 16), ordinal=True
+    )
     assert str(scan.fields["cash"].value) == "9.00"
     assert scan.fields["bet"].value is None
 
 
-def test_ordinal_profile_flag_reaches_the_service(fake_engine: FakeEngine) -> None:
+def test_ordinal_profile_flag_reaches_the_service(fake_engine: FakePaddle) -> None:
     """The escape hatch for a skin whose BET title -- and therefore its window --
     cannot be trusted: order, not position, decides the field."""
     image = strip(cells=[ORDINAL_CASH_CELL, ORDINAL_BET_CELL])
-    cash_w = (
-        round((ORDINAL_CASH_CELL[1] - ORDINAL_CASH_CELL[0]) * image.width) + 4
-    ) * 8
-    bet_w = (round((ORDINAL_BET_CELL[1] - ORDINAL_BET_CELL[0]) * image.width) + 4) * 8
+    cash_w = round((ORDINAL_CASH_CELL[1] - ORDINAL_CASH_CELL[0]) * image.width) + 4
+    bet_w = round((ORDINAL_BET_CELL[1] - ORDINAL_BET_CELL[0]) * image.width) + 4
     fake_engine.by_width = {
-        cash_w: tsv(("$50.00", 96.0)),
-        bet_w: tsv(("$2.00", 96.0)),
+        cash_w: page(("$50.00", 0.96)),
+        bet_w: page(("$2.00", 0.96)),
     }
 
     # Neither position sits inside a declared window, so without ordinal both
@@ -888,11 +784,11 @@ def test_ordinal_profile_flag_reaches_the_service(fake_engine: FakeEngine) -> No
 
 
 def test_a_declared_band_is_used_instead_of_fitting_one(
-    fake_engine: FakeEngine,
+    fake_engine: FakePaddle,
 ) -> None:
     """A declared band must skip the fit entirely, not merely outrank it."""
     image = strip(height=20, cells=[CASH_CELL])
-    fake_engine.default = tsv(("$5.00", 96.0))
+    fake_engine.default = page(("$5.00", 0.96))
 
     values = meter_service.read(image, game="Fake", profile={"band": (0.2, 0.8)})
     assert values.band == [4, 16]
@@ -900,11 +796,11 @@ def test_a_declared_band_is_used_instead_of_fitting_one(
 
 
 def test_declared_windows_move_which_field_a_value_lands_in(
-    fake_engine: FakeEngine,
+    fake_engine: FakePaddle,
 ) -> None:
     """The escape hatch for a skin that orders its cells differently."""
     image = strip(cells=[(0.78, 0.85)])
-    fake_engine.default = tsv(("$7.00", 96.0))
+    fake_engine.default = page(("$7.00", 0.96))
 
     # With the defaults that value belongs to no field at all.
     astray = meter_service.read(image, game="Fake", profile={"band": (0.2, 0.8)})

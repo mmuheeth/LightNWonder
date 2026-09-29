@@ -1,10 +1,6 @@
-"""GAF automation endpoints, thin wrappers over :mod:`app.services.gaf`.
-
-Which game, where its automation service listens and what its controls are
-called all come from the active game's config, not from the request -- so a
-spin is a request with no required body at all, and the same call drives any
-game that declares a ``gaf`` block.
-"""
+"""GAF automation endpoints, thin wrappers over :mod:`app.services.gaf`. Game,
+automation port and control names all come from the active game's config, not
+the request, so a spin needs no body and the same call drives any ``gaf`` game."""
 
 from __future__ import annotations
 
@@ -84,13 +80,10 @@ async def disconnect() -> ApiResponse[GafStatus]:
     responses=ACTION_ERRORS,
 )
 async def spin(payload: SpinRequest | None = None) -> ApiResponse[SpinResult]:
-    """Press the mechanical spin button and wait for the spin to finish.
-
-    Opens a session if there isn't one. A win holds the game in play, so
-    ``outcome`` of ``win_offered`` is a finished spin with money on the
-    table, not a failure -- collect it with ``/take-win``. A game that is
-    *already* held that way answers 409 rather than spinning on top of it.
-    """
+    """Press the mechanical spin button and wait for it to finish, opening a
+    session if there isn't one. A win holds the game in play -- ``win_offered``
+    is a finished spin with money still up, collected via ``/take-win`` -- so a
+    game already held that way answers 409 rather than spinning on top of it."""
     request = payload or SpinRequest()
     result = await gaf_service.spin(
         settle=request.settle,
@@ -109,10 +102,8 @@ async def spin(payload: SpinRequest | None = None) -> ApiResponse[SpinResult]:
 )
 async def take_win(payload: TakeWinRequest | None = None) -> ApiResponse[TakeWinResult]:
     """Press the take-win button and wait for the game to return to idle.
-
     Nothing to collect answers 200 with ``pressed: false`` -- a real state,
-    and a different fact from a press that failed.
-    """
+    distinct from a press that failed."""
     request = payload or TakeWinRequest()
     result = await gaf_service.take_win(
         force=request.force,

@@ -1,45 +1,20 @@
-"""Driving the running game through GAF.
+"""Driving the running game through GAF: calls the game's own methods over
+XML-RPC via a local ``NRobot.Server.exe``, unlike game_input/ideck which
+click or post messages -- no coordinates, no cursor, no integrity-level
+bargain. This module owns the session and press ordering (protocol in
+:mod:`app.utils.nrobot`, object dictionary in :mod:`app.utils.gaf_objects`).
 
-Where :mod:`app.services.game_input` aims a synthetic click at a measured
-point and :mod:`app.services.ideck` posts a mouse message at the button panel,
-this calls the game's own methods: the simulator hosts an automation service,
-a local ``NRobot.Server.exe`` translates Robot Framework keywords into it, and
-the game answers as if a finger had touched the glass. No coordinates to
-re-measure, no cursor to steal, and no integrity-level bargain -- the calls
-are XML-RPC over loopback, not injected input.
-
-What the module owns is the **order** and the **session**. The protocol lives
-in :mod:`app.utils.nrobot` and the object dictionary in
-:mod:`app.utils.gaf_objects`; neither knows this is a slot machine.
-
-Six things it exists to get right:
-
-* **A win holds the game in play.** A losing spin leaves ``statePlaying`` on
-  its own; a winning one stays there until the win is collected. A settle
-  loop waiting only for idle therefore times out on exactly the spins worth
-  having, and looks like a hang. :func:`spin` waits for *either*.
-* **Nothing is spun on top of a spin that has not finished.** The same hold
-  that makes a win readable makes the *next* press dangerous: its result
-  belongs to the spin still running. Measured -- a free-spin bonus outlasted
-  the settle timeout and the spin after it landed mid-bonus. The pre-press
-  state read is what catches it, so the check is free.
-* **A spin does not start the instant the button is pressed.** The game is
-  still idle for a beat afterwards, so a settle loop that starts by asking
-  "are we idle?" answers yes and reports a spin that never happened.
-  :func:`_await_departure` waits for the game to leave the state it was in
-  before the press, and only then does the settle loop run.
-* **Nothing is retried after the press.** The session is checked for life
-  *before* anything is pressed -- one cheap state read, which doubles as the
-  pre-press state the departure check needs -- so a dead session is found and
-  replaced while that is still free. Past the press there is no automatic
-  retry, because a retried spin is a second spin.
-* **A failed keyword is not an exception on the wire.** It is a reply whose
-  status says FAIL, and several keywords answer a plain ``"False"`` on a
-  PASS. Both are checked; see :mod:`app.utils.nrobot`.
-* **Two processes here are not ours.** ``NRobot.Server.exe`` is started by
-  its own batch file and the object-query dictionary lives in a Perforce
-  workspace outside this repo. :func:`status` says plainly when either is
-  absent, the same bargain ``/api/obs/status`` and ``/api/ocr/status`` make.
+Four invariants:
+- A win holds ``statePlaying`` until collected; :func:`spin` waits for either
+  idle or a win offered, not idle alone.
+- Nothing is spun on top of an unfinished spin -- checked before the press,
+  since a bonus can outlast the settle timeout and a retried spin is a second
+  spin, never automatic.
+- The press is bracketed: a pre-press state read supplies the before-picture,
+  then :func:`_await_departure` waits for the game to actually move before
+  the settle loop starts (it stays idle for a beat after the press).
+- A FAIL is a reply, not a fault, and a PASS can still answer ``"False"`` --
+  both are checked (see :mod:`app.utils.nrobot`).
 """
 
 from __future__ import annotations
@@ -165,11 +140,9 @@ def _resolve() -> GafTarget:
 
 
 def _load_queries(target: GafTarget) -> gaf_objects.QuerySet:
-    """The merged object dictionary, cached until the game changes.
-
-    Read on the calling thread: it is a few hundred kilobytes of JSON off a
-    local disk, and it happens once per game rather than once per call.
-    """
+    """The merged object dictionary, cached until the game changes. Read on
+    the calling thread -- a few hundred KB of local JSON, once per game
+    rather than once per call."""
     global _queries
     if _queries is None:
         try:
@@ -209,11 +182,9 @@ def _unreachable(exc: RemoteError) -> GafUnavailableError:
 
 
 async def _try(library: str, keyword: str, *args: Any) -> KeywordReply:
-    """Run a keyword, returning its reply whether it passed or failed.
-
-    Blocking XML-RPC, so it goes on a worker thread. Only the transport
-    failure is translated here; a FAIL is the caller's to interpret.
-    """
+    """Run a keyword, returning its reply whether it passed or failed. Blocking
+    XML-RPC, so it runs on a worker thread; only the transport failure is
+    translated here -- a FAIL is the caller's to interpret."""
     remote = _library(library)
     try:
         return await asyncio.to_thread(remote.try_run, keyword, *args)
@@ -230,12 +201,9 @@ async def _run(library: str, keyword: str, *args: Any) -> KeywordReply:
 
 
 async def _run_true(library: str, keyword: str, *args: Any) -> KeywordReply:
-    """Run a keyword that must pass *and* answer yes.
-
-    Several of these answer ``"False"`` on a PASS -- the keyword ran fine and
-    the game declined. Treating that as success is the subtlest way to report
-    a press that never happened.
-    """
+    """Run a keyword that must pass *and* answer yes -- a PASS can still say
+    ``"False"`` (the game declined), and treating that as success is the
+    subtlest way to report a press that never happened."""
     reply = await _run(library, keyword, *args)
     if not reply.truthy:
         raise GafKeywordError(
@@ -257,11 +225,9 @@ async def _state(machine: str) -> str | None:
 
 
 async def _teardown() -> None:
-    """Close the session on the game's side. Never raises.
-
-    Best effort on purpose: it runs on the failure path and at shutdown, and
-    a teardown that throws would mask whatever it was cleaning up after.
-    """
+    """Close the session on the game's side. Never raises -- it runs on the
+    failure path and at shutdown, and a teardown that throws would mask
+    whatever it was cleaning up after."""
     for keyword in ("DESTROYGAMECLIENT", "DISCONNECTGAMECLIENTFROMSERVER"):
         try:
             reply = await _try(CONNECT, keyword)
@@ -272,13 +238,9 @@ async def _teardown() -> None:
 
 
 async def _open(target: GafTarget) -> _Session:
-    """Open a session against one game, retrying a cold start.
-
-    The four steps are order-sensitive: ``INIT`` seeds the host and port and
-    without it the connect raises "no session has been initialized"; the two
-    initialise calls take the two object dictionaries, which are separate and
-    both required.
-    """
+    """Open a session against one game, retrying a cold start. The four steps
+    are order-sensitive: ``INIT`` must seed host/port before connect, and the
+    two initialise calls take separate, both-required object dictionaries."""
     queries = _load_queries(target)
     attempts = max(1, settings.GAF_CONNECT_ATTEMPTS)
     last = ""
@@ -339,14 +301,10 @@ async def _open(target: GafTarget) -> _Session:
 
 
 async def _ensure_session() -> tuple[_Session, str | None]:
-    """Return a live session and the game's current idle state.
-
-    The state read is not incidental: it is the liveness check *and* the
-    before-picture the departure wait needs, so reusing a session costs one
-    keyword rather than two. A session that fails it is torn down and
-    reopened -- which is safe here precisely because nothing has been pressed
-    yet.
-    """
+    """Return a live session and the game's current idle state -- the read
+    doubles as the liveness check and the departure wait's before-picture, so
+    reusing a session costs one keyword, not two. A session that fails it is
+    torn down and reopened, safe since nothing has been pressed yet."""
     global _session, _stale
 
     target = _resolve()
@@ -372,12 +330,10 @@ async def _ensure_session() -> tuple[_Session, str | None]:
 
 
 async def _win_offered(target: GafTarget) -> bool:
-    """Whether a win is sitting there waiting to be collected.
-
-    Asked two ways because either can answer first: the gamble machine moves
-    to its offer state, and the take-win button becomes interactable. A win
-    that is offered but whose button has not lit yet is still a win.
-    """
+    """Whether a win is waiting to be collected. Asked two ways because either
+    can answer first -- the gamble machine's offer state, or the take-win
+    button becoming interactable -- and one lighting up before the other is
+    still a win."""
     if await _state(GAMBLE_MACHINE) == OFFER:
         return True
     reply = await _try(IDECK, "ISNONWAGERBUTTONINTERACTABLE", target.take_win_button)
@@ -385,13 +341,10 @@ async def _win_offered(target: GafTarget) -> bool:
 
 
 async def _await_departure(before: str | None, target: GafTarget) -> bool:
-    """Wait for the game to actually start playing after a press.
-
-    The press is acknowledged before the game has moved, so without this the
-    settle loop's first question -- "are we idle?" -- is answered yes by the
-    state the game was *already* in, and a spin still turning is reported as
-    finished. Returns whether the game was seen to move.
-    """
+    """Wait for the game to actually start playing after a press: the press is
+    acknowledged before the game moves, so without this the settle loop's
+    first "are we idle?" would answer yes on the pre-press state. Returns
+    whether the game was seen to move."""
     poll = settings.GAF_SETTLE_POLL_SECONDS
     deadline = time.monotonic() + settings.GAF_SPIN_START_SECONDS
     while time.monotonic() < deadline:
@@ -439,12 +392,9 @@ async def _await_idle(timeout: float) -> str | None:
 
 
 async def _meters() -> GafMeters | None:
-    """Read all three meters, or ``None`` if none of them could be read.
-
-    Never raises: a meter reading is a bonus on top of an action that has
-    already happened, and losing it must not turn a completed spin into a
-    failure.
-    """
+    """Read all three meters, or ``None`` if none could be read. Never raises
+    -- a meter reading is a bonus on an action that already happened, and
+    losing it must not turn a completed spin into a failure."""
     values: dict[str, str | None] = {}
     for field, meter in (
         ("credit", "CreditMeter"),
@@ -471,12 +421,9 @@ async def _maybe_meters(requested: bool | None) -> GafMeters | None:
 
 
 async def status() -> GafStatus:
-    """Report what the service can see of the chain.
-
-    Never raises and never opens a session -- a dashboard polls this, and a
-    status read that connected to the game as a side effect would be a
-    surprising thing for a status read to do.
-    """
+    """Report what the service can see of the chain. Never raises and never
+    opens a session -- a dashboard polls this, and connecting as a side
+    effect would be a surprising thing for a status read to do."""
     base: dict[str, Any] = {
         "game": "",
         "server_url": settings.GAF_SERVER_URL,
@@ -579,12 +526,9 @@ async def connect() -> GafStatus:
 
 
 async def disconnect() -> GafStatus:
-    """Close the session, leaving the game alone.
-
-    Worth having its own door: a session left open blocks the next client,
-    so a run that is finished with the game should say so rather than hold it
-    until this process exits.
-    """
+    """Close the session, leaving the game alone. Worth its own door: a
+    session left open blocks the next client, so a finished run should say
+    so rather than hold it until this process exits."""
     global _session
     async with _get_lock():
         if _session is not None:
@@ -600,14 +544,10 @@ async def spin(
     timeout_seconds: float | None = None,
     read_meters: bool | None = None,
 ) -> SpinResult:
-    """Spin the reels, and wait for the spin to finish.
-
-    Everything the caller needs is done here: a session is opened if there
-    isn't one, the game is checked to be idle, the mechanical spin button is
-    pressed, and the wait allows for the two ways a spin can end -- back to
-    idle, or held in play with a win to collect. ``settle=False`` returns at
-    the press, which is a press and not a result.
-    """
+    """Spin the reels and wait for it to finish: opens a session if needed,
+    checks idle, presses, then waits for either idle or a win held in play
+    to collect. ``settle=False`` returns at the press -- a press, not a
+    result."""
     started = time.monotonic()
     timeout = timeout_seconds or settings.GAF_SETTLE_TIMEOUT_SECONDS
 
@@ -656,14 +596,10 @@ async def spin(
 
 
 def _still_playing(target: GafTarget) -> GafNotIdleError:
-    """Refuse to spin on top of a game that has not finished.
-
-    Measured, not theoretical: a free-spin bonus holds ``statePlaying`` well
-    past the settle timeout, and the spin after the one that timed out landed
-    while the bonus was still running. An uncollected win holds it the same
-    way. Pressing into either is a press whose result belongs to the previous
-    spin, so it is refused with the two things that release the game.
-    """
+    """Refuse to spin on top of a game that has not finished. Measured, not
+    theoretical: a free-spin bonus held ``statePlaying`` past the settle
+    timeout and the next spin landed mid-bonus -- pressing into that or an
+    uncollected win presses into the previous spin's result."""
     return GafNotIdleError(
         f"{target.game} is still in {PLAYING}, so spinning now would press "
         "into a spin that has not finished. Either a win is waiting to be "
@@ -706,13 +642,10 @@ async def take_win(
     timeout_seconds: float | None = None,
     read_meters: bool | None = None,
 ) -> TakeWinResult:
-    """Collect a win that is waiting to be taken.
-
-    Nothing to collect is a *result*, not an error: the button is reported as
-    not interactable and nothing is pressed, which is a different fact from a
-    press that failed. ``force`` presses anyway, for a theme whose button
-    does not advertise itself.
-    """
+    """Collect a win that is waiting to be taken. Nothing to collect is a
+    *result*, not an error -- the button reports not interactable and nothing
+    is pressed. ``force`` presses anyway, for a theme whose button does not
+    advertise itself."""
     started = time.monotonic()
     timeout = timeout_seconds or settings.GAF_SETTLE_TIMEOUT_SECONDS
 
@@ -771,11 +704,9 @@ async def take_win(
 
 
 def reset() -> None:
-    """Drop every cache and the lock, without touching the network.
-
-    Called autouse by the test suite, so it must stay offline. The live
-    session is dropped, not closed -- :func:`shutdown` is what closes one.
-    """
+    """Drop every cache and the lock, without touching the network -- called
+    autouse by tests, so it must stay offline. The live session is dropped,
+    not closed; :func:`shutdown` closes one."""
     global _session, _target, _queries, _lock, _stale
     if _session is not None:
         logger.warning("Dropping a live GAF session without closing it")
@@ -787,12 +718,9 @@ def reset() -> None:
 
 
 def reset_game_config() -> None:
-    """Forget the per-game target after a runtime game switch.
-
-    A held session is bound to the *old* game's endpoint, so it is marked
-    stale rather than dropped: closing it needs the network and the caller
-    (``games.select``) is synchronous, so the next action does it.
-    """
+    """Forget the per-game target after a runtime game switch. A held session
+    is bound to the old endpoint, so it is marked stale rather than dropped --
+    closing needs the network and the caller (``games.select``) is sync."""
     global _target, _queries, _stale
     _target = None
     _queries = None
@@ -800,12 +728,9 @@ def reset_game_config() -> None:
 
 
 async def shutdown() -> None:
-    """Close a live session on the way out. Never raises.
-
-    Worth doing at shutdown rather than leaving to the garbage collector: a
-    session left open on the game's side blocks the next client, so a backend
-    restart would otherwise cost a game restart too.
-    """
+    """Close a live session on the way out. Never raises -- a session left
+    open blocks the next client, so a backend restart would otherwise cost a
+    game restart too."""
     global _session
     if _session is not None:
         logger.info("Closing the GAF session for %s", _session.target.game)

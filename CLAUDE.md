@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Windows-hosted control surface for slot-game simulators. The FastAPI backend
 (`backend/`, port 8001) drives six local integrations — OBS Studio over
 obs-websocket v5, a Virtual OLED button deck served by `OledPanelSvc.exe`, a
-log-following screenshot recorder, Tesseract OCR over the frames OBS wrote,
+log-following screenshot recorder, PaddleOCR over the frames OBS wrote,
 posted mouse clicks into the game's own Unity window, and GAF, which drives the
 game by calling its own methods through a local `NRobot.Server.exe` — and the
 React dashboard
@@ -16,7 +16,7 @@ they talk to processes, windows and log files on the developer's own PC, not to 
 network service.
 
 The one thing that is *not* host-specific is `image-classifier`: it trains
-EfficientNet-B0 on symbol artwork and reads back the tiles the reel grid already
+ResNet34 on symbol artwork and reads back the tiles the reel grid already
 wrote, so it needs no running game, no OBS and no elevation. torch is a real
 dependency but a lazily imported one, so a machine without it still boots.
 
@@ -139,9 +139,9 @@ caches and an async `abort()` for the training task, and `conftest.py` awaits th
 latter.
 
 **Settings are composed by inheritance.** `Settings` in `app/config/runtime.py`
-inherits `AgentSettings`, `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
-`GameInputSettings`, `GafSettings`, `OcrSettings`, `FrameSettings`,
-`PaylineSettings`, `PaytableSettings`, `AnalyzeSpinSettings` and
+inherits `ObsSettings`, `IDeckSettings`, `EventCaptureSettings`,
+`CyclicMessagesSettings`, `GameInputSettings`, `GafSettings`, `OcrSettings`,
+`FrameSettings`, `PaylineSettings`, `PaytableSettings`, `AnalyzeSpinSettings` and
 `ImageClassifierSettings`
 (each in its own `app/config/*.py`) while env var names stay flat — a new
 integration is a new mixin, not a new settings object. `get_settings()` is `lru_cache`d and a
@@ -200,7 +200,9 @@ separate — `SpecificMaxBets` and `AllowedBetsTbl` both carry only the product)
 `win_geometry.py` (`winGeometry.xml`, plus the conversion between its
 0-indexed reel-first lines and a config's 1-indexed `[row, column]` ones),
 `win32.py` (the only ctypes),
-`ocr.py` (runs the Tesseract program and reads its TSV back),
+`paddle_ocr.py` (runs PaddleOCR and reads its answer back -- the only OCR engine
+this project uses, for meters, named regions, orb/prize figures and cyclic-message
+captions alike),
 `image_roi.py` (crops a named region out of a frame),
 `letterbox.py` (finds the part of a frame the game fills),
 `reel_grid.py` (reads the `reel_bounds` block into positioned tiles),
@@ -213,7 +215,7 @@ whatever the run pays as; `WildRule`/`WILD_SYMBOL` live here),
 no longer what `analyze_spin` reads a spin by),
 `symbol_dataset.py` (a folder of symbol artwork read back as training pictures,
 with the reel background the cut-outs ship without put back — torch-free on
-purpose), `symbol_model.py` (the only module that imports torch: EfficientNet-B0,
+purpose), `symbol_model.py` (the only module that imports torch: ResNet34,
 its transforms, the training loop and a checkpoint),
 `tile_video.py` (one of the two modules that import cv2 — the writing one:
 buffers tile crops and writes one short video per reel position, probing its
@@ -286,7 +288,7 @@ would leave no tile is rejected rather than clamped.
 **`services/roi.py`, `services/ocr.py` and `services/grid.py` are the same
 joinery, one step apart each.** All three resolve the active game's `roi` block
 against the content box of a frame; ROI returns the crop, OCR hands it to
-Tesseract, and grid divides it by `reel_bounds`. Keep them apart — checking that a region is aimed
+PaddleOCR, and grid divides it by `reel_bounds`. Keep them apart — checking that a region is aimed
 correctly must not require an engine install. ROI reads the newest file in
 `settings.obs_dashboard_screenshot_dir` and never asks OBS for a frame, so the
 same crop extracted twice is the same picture, and **`roi.py` owns that question
@@ -464,17 +466,17 @@ a tile from the picture — a network in
 transforms, the confidence floor — moves a spin's verdict too. Five things it
 exists to get right:
 
-- **Two engines, both kept at once.** `CLASSIFIER_ARCHITECTURE` picks ResNet34
-  (the default -- it names all fifteen tiles of the reference split correctly) or
-  EfficientNet-B0; both share every transform, so only the backbone
-  differs and a third is one entry in `_ARCHITECTURES` rather than a second code
-  path. Each has its **own** `model-<arch>.pt` and `metrics-<arch>.json`, so
-  training one leaves the other answering, and `/train` and `/classify` both take
-  an optional `architecture`. That is the point — two independently-fitted
-  networks agreeing about a tile is worth more than one being confident, and a
-  disagreement says something about the tile. The architecture rides *on* the
-  checkpoint because `load` would otherwise build the default backbone and the
-  state dict would not fit: a shape error instead of "this is a ResNet".
+- **One engine.** ResNet34 -- it names all fifteen tiles of the reference split
+  correctly, which is what decided it over EfficientNet-B0, since tried and
+  measured. There is no `CLASSIFIER_ARCHITECTURE` setting and no per-request
+  `architecture` field left to choose between them: `app/utils/symbol_model.py`
+  hardcodes the one backbone it builds, and `resolve_architecture()` and
+  `ArchitectureOption` are gone along with it. The checkpoint is still
+  `model-resnet34.pt` beside `metrics-resnet34.json` -- that naming survived the
+  cut so an already-trained checkpoint is not orphaned -- and the architecture
+  still rides *on* the payload `load` reads back, so a file trained under a
+  since-removed backbone fails with a clear message instead of a shape-mismatch
+  error while rebuilding the wrong network around its weights.
 - **The artwork is not what it sees, and putting the background back *is* the
   feature.** Of the classes shipped so far exactly one (`AA`) carries the game's
   field and frame — a framed portrait, 0.994 opaque inside its alpha box. Every
@@ -524,8 +526,8 @@ exists to get right:
   all, and the payload names them.
 
 Two smaller conventions: **torch is imported lazily**, so the app boots without it
-and `GET /api/image-classifier/status` reports `not_installed` — the OCR/Tesseract
-bargain, verified by `torch` being absent from `sys.modules` after `create_app()`.
+and `GET /api/image-classifier/status` reports `not_installed` — the same bargain
+PaddleOCR makes, verified by `torch` being absent from `sys.modules` after `create_app()`.
 And **there is no second WebSocket**: epoch ticks are ~20s apart, so the slice
 polls `/status` with `useCaptureStatus`'s functional `refetchInterval`.
 `CLASSIFIER_TORCH_THREADS` (half the cores) is load-bearing — torch takes every
@@ -559,43 +561,30 @@ not be read at all.
 `ocr.read_tile_options()` layers them over the environment's defaults, and a game
 overrides them under an `ocr.symbol_tile` key. That key is not an `roi` region,
 so it stays out of `ocr.regions()` and the region catalogue while sharing the
-block's shape. `ocr.read_crop()` / `ocr.engine_for_reading()` exist so a caller
-holding its own crop has a door in that does not re-derive either —
-`analyze_spin` still owns no image handling.
+block's shape. `ocr.read_tile()` never falls back to a second engine — PaddleOCR
+is the only OCR engine this project has, so a broken or missing install fails the
+read outright rather than being masked by a fallback reader.
 
-**`psm 8` is what reads a prize tile, and `psm 11` is the trap.** A figure on an
-orb is one run of large gold digits, so "treat the crop as a single word" reads
-it: measured against the written FortuneOx tiles, 8 reads 600/300/240/150/100/50
-with **no thresholding at all** and holds across every upscale. `psm` 11 ("sparse
-text"), the intuitive choice for digits floating over artwork, reads most of those
-same tiles as the empty string — which is what the first cut of this shipped and
-what "no text" in the UI meant. Don't change it back. There is no `threshold`
-either: gold on a light orb has no grey level that separates them, and 8 does not
-need one.
-
-**Because `psm 8` is told the crop is a word, it always answers with one** — so a
-tile carrying no figure comes back as a stray digit off the artwork, and a
-misclassified Ox reads as a one-digit prize. `ocr.TILE_MIN_DIGITS` (2) is the cut,
-and **it is a digit count, not a confidence floor — a floor cannot work here.**
-Measured over every written split: all 16 misreads are a *single* digit
-(`1`,`7`,`3`,`0`,`4`) and all 21 genuine figures are two or three (50 … 600),
-while the two groups' confidences **overlap outright** — a stray `1` scores 40.0
-against a true `150` at 17.8 and a true `100` at 19.1. So any threshold both
-rejects real prizes and admits noise, whereas digit count separates that sample
-perfectly. This was shipped as a confidence floor first and it silently dropped
-the `100` off a three-orb spin; don't reintroduce one. A bare prize is never one
-digit — **the one exception is a currency mark**. The filigree does not draw a
-`$`, so a reading that carries one is evidence of an amount rather than of noise,
-and `utils/paddle_ocr._AMOUNT_MARKS` admits `$5` at a single digit while a bare
-`5` is still refused. Currency marks only: a figure drawn with a decimal point
+**A prize tile is read by digit count, not by a confidence floor — a floor
+cannot do this job.** A figure-less orb's stray reading is, empty-orb after
+empty-orb, a bare single digit off the artwork rather than nothing at all, so
+`PaddleOptions.min_digits` (`ocr.TILE_MIN_DIGITS`, 2) rejects anything shorter —
+digit *count* separates a real prize from artwork noise where a confidence
+threshold cannot, because both populations' confidences can overlap. This was
+shipped as a confidence floor first and it silently dropped a real prize off a
+multi-orb spin; don't reintroduce one. A bare prize is never one digit — **the
+one exception is a currency mark**. The filigree does not draw a `$`, so a
+reading that carries one is evidence of an amount rather than of noise, and
+`utils/paddle_ocr._AMOUNT_MARKS` admits `$5` at a single digit while a bare `5`
+is still refused. Currency marks only: a figure drawn with a decimal point
 already clears the count on its own digits, so admitting `.` would buy nothing
 and would promote a digit sitting beside a speck of filigree.
 
 A rejected reading keeps its raw `text` and `ocr_confidence` on the payload rather
 than vanishing, because a dropped number should be visible as something read and
-refused — that pair is what the card's "What OCR read" panel exists to show, and
-it is how the dropped `100` was caught. `ocr_confidence` is reported but
-**deliberately not used as a gate**, per the overlap above.
+refused — that pair is what the card's "What OCR read" panel exists to show.
+`ocr_confidence` is reported but **deliberately not used as a gate**, for the
+same reason digit count is: a genuine figure and a stray one can score similarly.
 
 **`services/gaf.py` drives the game by calling its methods, and it is the one
 integration that needs no coordinates at all.** The simulator hosts an
@@ -647,9 +636,9 @@ things it exists to get right:
   orchestrations. `ideck` is the i-deck key plus a posted click; `gaf` is the
   game's own methods, so no key layout and no coordinates take part. Resolved by
   the now-public `resolve_control()` in `start()` **before the game config is
-  read**, exactly as the architecture is, so an unknown name is a 400 rather
-  than a failed step four steps in — and recorded on the run, because one
-  service holds every run and both tabs watch the same stream. Four things the
+  read**, so an unknown name is a 400 rather than a failed step four steps in —
+  and recorded on the run, because one service holds every run and both tabs
+  watch the same stream. Four things the
   GAF side does deliberately: it presses with `settle=False` (GAF's own settle
   would hold the run inside one XML-RPC call for the length of the spin, where
   every wait here is sliced so a cancel lands within 100ms — and the *log*, not
@@ -801,16 +790,14 @@ This is the invariant to preserve if anything here is refactored:
   the classifier page's own 0.90, because that page shows what it rejected and
   this one grades a spin. Blank (not absent) opts back into
   `CLASSIFIER_MIN_CONFIDENCE`.
-- **Which network grades a spin is a per-run choice**, exactly as `record` is:
-  `start(architecture=...)` — then `ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE`, then
-  `CLASSIFIER_ARCHITECTURE`. Resolved in `start()` via the now-public
-  `image_classifier.resolve_architecture()` **before the game config is read**, so
-  an unknown name is a 400 on the request rather than a failed step twelve steps
-  in, and `_ActiveRun.architecture` records which one was asked for. The two are
-  offered as a dropdown beside the spin button because running the same spin
-  through each and comparing is worth more than either alone; the option list is
-  hardcoded in `features/analyze-spin/spin-control-card.jsx` rather than fetched,
-  so that slice still deletes in one directory.
+- **Every spin is graded by ResNet34.** There is no `architecture` request field
+  or `ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE` setting left to choose otherwise --
+  the classifier has one trained model, so `_read_reels` classifies without
+  naming one and `_ActiveRun` carries no `architecture` field of its own.
+  `SpinReelReading.architecture`/`.label` still report which network answered
+  (from the classify result, the same as Evaluate Screen and Scatter Value
+  Validation), since that is a fact about the reading rather than a choice a
+  caller makes.
 - **The paytable decides whether it pays.** `paying` (two or more alike) is
   *evidence*; `awarded` is the win. A run of two of a symbol paying from three is
   cancelled — `awarded: false`, a `note` naming `min_pay_length`, no credits,
@@ -907,37 +894,6 @@ a probe with `@register_probe` in the lifespan for anything the service cannot
 work without — OBS is deliberately *not* one, since a closed screen recorder
 should not mark the service unavailable.
 
-**Database.** `app/services/database.py` opens an asyncpg pool in the lifespan
-and does nothing else — no schema, tables or migrations. An empty or missing
-`DATABASE_URL` disables it silently so local dev and tests run without a
-database; when configured, a failed connection aborts startup.
-
-**`app/agents/` is wired to nothing yet.** LangChain v1 + LangGraph v1 building
-blocks — `build_chat_model`, `build_agent`, `new_workflow`/`compile_workflow`,
-and sync/async `checkpoint_context` — imported by no service and no endpoint.
-Treat it as the sanctioned shape for the first real agent, not as dead code.
-Three rules it exists to enforce:
-
-- **Nothing is constructed at import time.** No model, no database connection.
-  The caller composes an agent in its service layer and owns invocation, thread
-  ids and the checkpointer's lifetime, which keeps request lifecycles and
-  background workflows independently testable.
-- **`AGENT_ENABLED` is `false` by default** and `build_agent` raises
-  `AgentDisabledError` until it is set. `.env.example` ships dummy credentials,
-  so `is_placeholder_secret()` in `app/config/agents.py` screens values like
-  `dummy-replace-with-real-key` and refuses to forward them to a provider or to
-  LangSmith. Add a marker there rather than working around it.
-- **Provider-neutral.** `AGENT_MODEL` uses LangChain's `provider:model`
-  notation (`openai:gpt-4o-mini`, `anthropic:claude-sonnet-4-6`); only
-  `langchain-openai` and `langchain-anthropic` are installed. A new provider is
-  a new `langchain-<provider>` package, plus `AGENT_API_KEY_PARAM` if its
-  constructor does not take `api_key`.
-
-`AGENT_CHECKPOINT_BACKEND` is `memory` locally; `postgres` imports the Postgres
-saver lazily inside the context manager and falls back to `DATABASE_URL` when
-`AGENT_CHECKPOINT_URL` is empty. `recursion_limit` is invocation config, not a
-`compile()` argument — it comes from `default_run_config()`.
-
 ## Test conventions that bite
 
 - `pytest.ini` sets `filterwarnings = error`. A task cancelled but not awaited
@@ -1024,9 +980,11 @@ one directory. Shared plumbing is in `src/lib/`.
   blank screenshot much later.
 - **OBS state settles asynchronously.** Recording start/stop polls for the real
   state before answering rather than reading it immediately.
-- **Tesseract is not on `PATH`.** Its Windows installer does not add it, so
-  `app/config/ocr.py` discovers the binary where the installers put it and
-  `OCR_TESSERACT_CMD` overrides that. OCR is optional like OBS: no engine means
+- **PaddleOCR and torch both bundle `libiomp5md.dll`, and paddle's copy is too
+  old for torch.** `app/utils/paddle_ocr.py` imports torch first (a no-op if it
+  is absent) before importing `paddleocr`, specifically to dodge a `shm.dll`
+  load failure that otherwise breaks the symbol classifier -- fixed import
+  order, not incidental. OCR is optional like OBS: no engine means
   `GET /api/ocr/status` says `not_installed` and only reads fail.
 - `obs-captured-files/` (screenshots, recordings, `event-capture/<run>/`) is
   gitignored output, not source.

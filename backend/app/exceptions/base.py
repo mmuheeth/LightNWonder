@@ -278,7 +278,7 @@ class CyclicMessagesRunNotFoundError(AppException):
 
 
 # --- OCR ------------------------------------------------------------------
-# 409: no Tesseract install (a Retry button would be a lie). 404: region not
+# 409: no PaddleOCR install (a Retry button would be a lie). 404: region not
 # declared by the active game (a typo, not an unreadable meter). 502: no frame
 # to give the engine.
 
@@ -286,7 +286,7 @@ class CyclicMessagesRunNotFoundError(AppException):
 class OcrEngineUnavailableError(AppException):
     status_code = HTTPStatus.CONFLICT
     error_code = "OCR_ENGINE_UNAVAILABLE"
-    message = "No usable Tesseract OCR engine is available"
+    message = "No usable PaddleOCR engine is available"
 
 
 class OcrRegionNotFoundError(AppException):
@@ -410,7 +410,7 @@ class SpinClipNotFoundError(AppException):
 # assumed, 404 when the training images are not where they were said to be, and
 # 502 when torch itself would not finish. A missing torch is deliberately *not*
 # an error at all on the status endpoint -- it is a state, exactly as a missing
-# Tesseract is for OCR -- and only training and classifying raise for it.
+# PaddleOCR is for OCR -- and only training and classifying raise for it.
 
 
 class ClassifierUnavailableError(AppException):
@@ -491,6 +491,8 @@ class GafNotIdleError(AppException):
     status_code = HTTPStatus.CONFLICT
     error_code = "GAF_NOT_IDLE"
     message = "The game is still playing, so it cannot be spun"
+
+
 # --- Evaluate screen ------------------------------------------------------
 # Holds no run, so there is nothing to be in the wrong state about: the only
 # failure of its own is being unable to get a frame to read at all. Everything

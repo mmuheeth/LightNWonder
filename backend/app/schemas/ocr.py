@@ -11,13 +11,13 @@ class OcrEngineState(StrEnum):
     """Whether text can be read right now."""
 
     DISABLED = "disabled"
-    """``OCR_ENABLED`` is false; no engine is looked for."""
+    """``OCR_ENABLED`` is false; PaddleOCR is never imported."""
 
     NOT_INSTALLED = "not_installed"
-    """No Tesseract executable was found, configured or discovered."""
+    """PaddleOCR is not importable in this environment."""
 
     ERROR = "error"
-    """An executable is there but would not report its version."""
+    """PaddleOCR is installed but would not build its model."""
 
     READY = "ready"
 
@@ -33,24 +33,18 @@ class OcrSource(StrEnum):
 
 
 class OcrOptions(BaseModel):
-    """A fully resolved set of engine and preprocessing options: environment
-    defaults, with the config's and then the request's overrides applied."""
+    """A fully resolved set of engine options: environment defaults, with the
+    config's and then the request's overrides applied."""
 
-    language: str = Field(description="Traineddata name(s), e.g. 'eng'.")
-    psm: int = Field(ge=0, le=13, description="Page segmentation mode.")
-    oem: int = Field(ge=0, le=3, description="OCR engine mode.")
-    char_whitelist: str = Field(
-        description="Characters the engine was restricted to; empty means all."
-    )
+    language: str = Field(description="PaddleOCR language pack, e.g. 'en'.")
     upscale: float = Field(gt=0, le=10, description="Factor the crop was enlarged by.")
-    grayscale: bool = Field(description="Whether colour was dropped first.")
-    autocontrast: bool = Field(description="Whether the crop's range was stretched.")
-    invert: bool = Field(description="Whether light-on-dark was flipped.")
-    threshold: int | None = Field(
-        default=None, ge=0, le=255, description="Binarization level; null for none."
-    )
-    dpi: int | None = Field(
-        default=None, ge=70, le=2400, description="Resolution reported to the engine."
+    min_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Below this, a recognised word is treated as noise: it still "
+            "appears in 'words', but does not contribute to 'text'/'value'."
+        ),
     )
 
 
@@ -60,36 +54,24 @@ class OcrOptionOverrides(BaseModel):
 
     model_config = ConfigDict(
         extra="forbid",
-        json_schema_extra={
-            "examples": [{"psm": 11, "char_whitelist": "0123456789.,$"}]
-        },
+        json_schema_extra={"examples": [{"min_confidence": 0.8}]},
     )
 
     language: str | None = Field(default=None, min_length=1)
-    psm: int | None = Field(default=None, ge=0, le=13)
-    oem: int | None = Field(default=None, ge=0, le=3)
-    char_whitelist: str | None = None
     upscale: float | None = Field(default=None, gt=0, le=10)
-    grayscale: bool | None = None
-    autocontrast: bool | None = None
-    invert: bool | None = None
-    threshold: int | None = Field(default=None, ge=0, le=255)
-    dpi: int | None = Field(default=None, ge=70, le=2400)
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class OcrStatus(BaseModel):
     """What the dashboard card polls; always returned, engine or no engine."""
 
     state: OcrEngineState = Field(description="Whether text can be read right now.")
-    executable: str | None = Field(
-        default=None, description="Engine that was found; null when none was."
-    )
     version: str | None = Field(
-        default=None, description="Version line the engine reported, if it ran."
+        default=None, description="PaddleOCR's version string, if it built."
     )
     languages: list[str] = Field(
         default_factory=list,
-        description="Traineddata the engine can see, e.g. ['eng', 'osd'].",
+        description="Language pack(s) configured to read with, e.g. ['en'].",
     )
     detail: str | None = Field(
         default=None,
@@ -132,11 +114,12 @@ class OcrRegionCatalog(BaseModel):
 
 
 class OcrWordBox(BaseModel):
-    """One recognised word; coordinates are pixels inside the crop, not the
-    frame, so an overlay drawn on the region image lines up unscaled."""
+    """One recognised word (Paddle detects a *line*, so this is one line);
+    coordinates are pixels inside the crop, not the frame, so an overlay drawn
+    on the region image lines up unscaled."""
 
     text: str = Field(description="The word as recognised.")
-    confidence: float = Field(description="0-100, as the engine reports it.")
+    confidence: float = Field(description="0-100, Paddle's 0-1 rescaled.")
     left: int = Field(description="Left edge, in crop pixels.")
     top: int = Field(description="Top edge, in crop pixels.")
     width: int = Field(description="Width, in crop pixels.")
@@ -147,7 +130,10 @@ class OcrReading(BaseModel):
     """The text read out of one region."""
 
     region: str = Field(description="Region that was read.")
-    text: str = Field(default="", description="Recognised text; empty if none was.")
+    text: str = Field(
+        default="",
+        description="Text from words that cleared min_confidence; empty if none did.",
+    )
     value: float | None = Field(
         default=None,
         description="First number in the text, if it has one -- what a meter is for.",
@@ -161,10 +147,11 @@ class OcrReading(BaseModel):
     )
     confidence: float | None = Field(
         default=None,
-        description="Mean word confidence, 0-100; null when nothing was read.",
+        description="Mean confidence of the words behind 'text', 0-100; null when none cleared the floor.",
     )
     words: list[OcrWordBox] = Field(
-        default_factory=list, description="Per-word detail, in reading order."
+        default_factory=list,
+        description="Every word the detector found, in reading order -- rejected ones too.",
     )
     crop: list[int] = Field(
         default_factory=list,
@@ -173,9 +160,9 @@ class OcrReading(BaseModel):
     crop_image: str | None = Field(
         default=None,
         description=(
-            "Base64 data URI of the preprocessed crop, when the request asked "
-            "for it. This is what the engine saw, which is the thing to look at "
-            "when a reading is wrong."
+            "Base64 data URI of the crop, when the request asked for it. This "
+            "is what the engine saw, which is the thing to look at when a "
+            "reading is wrong."
         ),
     )
     options: OcrOptions | None = Field(
@@ -201,7 +188,7 @@ class OcrReadRequest(BaseModel):
                     "run_id": "2026-08-19_04-01-02",
                     "file_name": "041_spin-result-received_04-01-24.png",
                     "regions": ["cash_meter"],
-                    "options": {"psm": 11},
+                    "options": {"min_confidence": 0.8},
                     "include_crop": True,
                 },
             ]
@@ -228,7 +215,7 @@ class OcrReadRequest(BaseModel):
     )
     include_crop: bool = Field(
         default=False,
-        description="Return the preprocessed crop as a data URI beside each reading.",
+        description="Return the crop as a data URI beside each reading.",
     )
 
 

@@ -60,19 +60,18 @@ class SpinStepState(StrEnum):
 class SpinControl(StrEnum):
     """Which channel drove the spin and collected the win.
 
-    The rest of the sequence is identical either way -- the same screenshots,
-    the same log-following, the same three readings at the end. Only the two
-    presses differ, so this is one field on the run rather than a second
-    orchestration.
+    The rest of the sequence is identical either way -- same screenshots,
+    same log-following, same three closing readings. Only the two presses
+    differ, so this is one field rather than a second orchestration.
     """
 
     IDECK = "ideck"
     """The i-deck key for the spin, and a posted click into the game's own
-    window for the win. Take-win is not one of the panel's fourteen keys."""
+    window for the win -- take-win is not one of the panel's fourteen keys."""
 
     GAF = "gaf"
-    """The game's own methods, over GAF. No coordinates and no key layout
-    take part: both presses are calls the game makes to itself."""
+    """The game's own methods, over GAF -- no coordinates and no key layout,
+    both presses are calls the game makes to itself."""
 
 
 class SpinRunState(StrEnum):
@@ -104,9 +103,9 @@ class SpinVerdict(StrEnum):
     FAILED = "failed"
 
     INDETERMINATE = "indeterminate"
-    """One of the two numbers could not be read, so there was no comparison to
-    make. Never folded into ``failed``: an unreadable meter and a wrong balance
-    are different problems with different fixes."""
+    """One of the two numbers could not be read, so no comparison was made.
+    Never folded into 'failed': an unreadable meter and a wrong balance are
+    different problems with different fixes."""
 
 
 # --- the run's own pieces -------------------------------------------------
@@ -139,8 +138,8 @@ class SpinStep(BaseModel):
         default=None,
         description=(
             "Error code of the underlying failure, e.g. "
-            "'IDECK_PRESS_NOT_CONFIRMED' -- the same code the equivalent direct "
-            "request would have returned."
+            "'IDECK_PRESS_NOT_CONFIRMED' -- the same code the equivalent "
+            "direct request would return."
         ),
     )
 
@@ -170,10 +169,10 @@ class SpinFrame(BaseModel):
     blank: bool = Field(
         default=False,
         description=(
-            "Whether the frame came back with nothing in it. A black capture is "
-            "not an error anywhere -- OBS renders nothing for a moment after its "
-            "window source is re-pointed -- so it is retried and then reported, "
-            "because every reading taken off it is meaningless rather than dark."
+            "Whether the frame came back empty. Not an error -- OBS renders "
+            "nothing for a moment after its window source is re-pointed -- so "
+            "it is retried and reported, since every reading off it would be "
+            "meaningless."
         ),
     )
     attempts: int = Field(
@@ -223,10 +222,9 @@ class SpinMeterReading(BaseModel):
     balance: float | None = Field(
         default=None,
         description=(
-            "The balance exactly as drawn, in whichever of cash and credits the "
-            "meter was showing -- see the validation's `mode`. Null when it could "
-            "not be read. This is the reading; `credits` and `cash` are the "
-            "interpretation."
+            "Balance exactly as drawn, in whichever unit the meter showed -- "
+            "see the validation's `mode`. Null when unreadable; this is the "
+            "raw reading, `credits`/`cash` are the interpretation."
         ),
     )
     win: float | None = Field(
@@ -237,8 +235,8 @@ class SpinMeterReading(BaseModel):
     credits: SpinMeterFigures = Field(
         default_factory=SpinMeterFigures,
         description=(
-            "The same three numbers in credits -- what the paytable is denominated "
-            "in, so what an award is compared against."
+            "Same three numbers in credits -- what the paytable is "
+            "denominated in, so what an award is compared against."
         ),
     )
     cash: SpinMeterFigures = Field(
@@ -248,9 +246,8 @@ class SpinMeterReading(BaseModel):
     values: MeterValues | None = Field(
         default=None,
         description=(
-            "The whole reading, with per-field confidence and the raw text. "
-            "Carried because a failed check is usually a misread digit, and this "
-            "is where that shows."
+            "The whole reading, with per-field confidence and raw text -- "
+            "where a failed check's misread digit shows up."
         ),
     )
     error: str | None = Field(
@@ -259,8 +256,8 @@ class SpinMeterReading(BaseModel):
     crop_image: str | None = Field(
         default=None,
         description=(
-            "Base64 data URI of the meter strip that was read. Null unless the "
-            "request asked for images."
+            "Base64 data URI of the meter strip that was read. Null unless "
+            "the request asked for images."
         ),
     )
 
@@ -270,16 +267,15 @@ class SpinMeterCheck(BaseModel):
 
     key: str = Field(
         description=(
-            "Stable identifier, e.g. 'bet-deducted-credits'. Unit-suffixed for the "
-            "relations that are checked in both."
+            "Stable identifier, e.g. 'bet-deducted-credits' -- unit-suffixed "
+            "for relations checked in both."
         )
     )
     unit: SpinMeterUnit | None = Field(
         default=None,
         description=(
-            "Which quantity the figures below are in. Null for a relation that is "
-            "not about an amount at all -- whether the WIN cell showed anything is "
-            "the same question in either unit."
+            "Which quantity the figures below are in. Null for a relation "
+            "that is not about an amount, e.g. whether WIN showed anything."
         ),
     )
     label: str = Field(description="The relation in words.")
@@ -300,31 +296,28 @@ class SpinMeterValidation(BaseModel):
     mode: MeterMode = Field(
         default=MeterMode.UNKNOWN,
         description=(
-            "Whether the meter was counting money or credits, across every frame "
-            "read. 'cash' wins a disagreement: money is read *positively* (a "
-            "currency symbol, or an amount with a fractional part) while credits "
-            "is inferred from the absence of both, so one frame whose digits "
-            "happened to be whole and whose symbol did not OCR is not evidence "
-            "of a credit meter. 'unknown' means nothing was readable."
+            "Whether the meter counted money or credits, across every frame. "
+            "'cash' wins a disagreement -- money is read positively (a symbol "
+            "or fractional amount), credits is inferred from the absence of "
+            "both -- and 'unknown' means nothing was readable."
         ),
     )
     currency: str | None = Field(
         default=None,
         description=(
-            "The symbol drawn on the values in cash mode, e.g. '$'. '?' means "
-            "money was read but no symbol Tesseract will name -- the yen glyph "
-            "these games draw reads as nothing at every mode and scale. Null in "
-            "credits mode and when nothing was read."
+            "Symbol drawn on the values in cash mode, e.g. '$'. '?' means "
+            "money was read but no symbol OCR'd -- the yen glyph never reads "
+            "at any scale. Null in credits mode or when nothing was read."
         ),
     )
     denomination: DenominationInfo | None = Field(
         default=None,
         description=(
-            "What one credit is worth, which is the third unit these numbers are "
-            "in: it converts between the two the mode chooses between. Comes from "
-            "the game's log by way of the paytable, not off the strip -- the "
-            "denomination badge the games draw is unlabelled and its unit glyph "
-            "does not OCR. Null when the paytable could not be read."
+            "What one credit is worth -- converts between the two units "
+            "`mode` chooses between. Comes from the game's log via the "
+            "paytable, not the strip, since the denomination badge is "
+            "unlabelled and does not OCR. Null when the paytable could not "
+            "be read."
         ),
     )
     readings: list[SpinMeterReading] = Field(
@@ -339,17 +332,17 @@ class SpinMeterValidation(BaseModel):
         default=0.0,
         ge=0,
         description=(
-            "How far two money amounts may differ and still be called equal -- "
-            "absorbing the OCR of the last decimal, not a real discrepancy."
+            "How far two money amounts may differ and still count equal -- "
+            "absorbs the OCR of the last decimal, not a real discrepancy."
         ),
     )
     credit_tolerance: float = Field(
         default=0.0,
         ge=0,
         description=(
-            "The same, for the checks made in credits. Separate because a credit "
-            "is a whole number: this absorbs a converted figure's rounding and "
-            "nothing else, so it is far tighter than the money one in proportion."
+            "The same, for checks made in credits -- tighter in proportion "
+            "since a credit is a whole number and this only absorbs a "
+            "converted figure's rounding."
         ),
     )
     verdict: SpinVerdict = Field(
@@ -361,8 +354,8 @@ class SpinMeterValidation(BaseModel):
     error: str | None = Field(
         default=None,
         description=(
-            "Why no meter could be read at all -- no 'cash_meter' region, or no "
-            "OCR engine. Null when readings were taken."
+            "Why no meter could be read at all -- no 'cash_meter' region, or "
+            "no OCR engine. Null when readings were taken."
         ),
     )
 
@@ -379,18 +372,19 @@ class SpinSymbolReading(BaseModel):
     symbol: str | None = Field(
         default=None,
         description=(
-            "The symbol code, or null when nothing cleared the confidence floor. "
-            "Null is an answer: the game declares more symbol codes than there is "
-            "artwork to train on, so the model is regularly shown a picture it has "
-            "no class for, and a softmax can only spread rather than abstain."
+            "The symbol code, or null when nothing cleared the confidence "
+            "floor. Null is an answer: the game declares more codes than "
+            "there is artwork to train on, so a softmax is sometimes shown a "
+            "class it has none for."
         ),
     )
     label: str = Field(description="Display name from the game config, or 'unknown'.")
     leading: str | None = Field(
         default=None,
         description=(
-            "Code of the leading candidate whether or not it cleared the floor -- "
-            "so a rejected tile still says what the model leaned towards."
+            "Code of the leading candidate whether or not it cleared the "
+            "floor -- so a rejected tile still says what the model leaned "
+            "towards."
         ),
     )
     confidence: float = Field(
@@ -402,14 +396,10 @@ class SpinSymbolReading(BaseModel):
 class SpinScatterReading(BaseModel):
     """One scatter that landed, and what is printed on it.
 
-    An orb carries either a prize figure (`value`) or a jackpot tier name
-    (`prize_label`), and both are real readings; a feature scatter carries
-    neither.
-
-    Its own model rather than fields on :class:`SpinSymbolReading`, because a
-    scatter is answered by a second reader: the classifier names the artwork, and
-    OCR reads the prize printed over it. A tile with no scatter code has neither
-    question asked of it.
+    An orb carries either a prize figure or a jackpot tier name, never both;
+    a feature scatter carries neither. Its own model rather than fields on
+    :class:`SpinSymbolReading` because a scatter is answered by a second
+    reader: the classifier names the artwork, OCR reads the prize.
     """
 
     name: str = Field(description="Grid position, e.g. 'r2c3'.")
@@ -425,27 +415,26 @@ class SpinScatterReading(BaseModel):
     value: float | None = Field(
         default=None,
         description=(
-            "The number printed on the tile, or null when it carries none. An "
-            "orb printed with a jackpot tier instead reports that in "
-            "`prize_label`, and a feature scatter has neither -- a free-games "
-            "tile is drawn without a figure, so nothing was there to read."
+            "The number printed on the tile, or null when it carries none. "
+            "An orb printed with a jackpot tier instead reports it in "
+            "`prize_label`; a feature scatter (e.g. free-games) has neither."
         ),
     )
     prize_label: str | None = Field(
         default=None,
         description=(
-            "The jackpot tier printed on the orb where it carries a word instead "
-            "of a figure -- 'MAJOR', 'MINI', whatever the game draws. Null when "
-            "the orb carries a number (then `value` holds it) or nothing at all. "
-            "Not matched against a list of known tiers: whichever word the orb "
-            "is printed with is reported as read."
+            "Jackpot tier printed on the orb where it carries a word instead "
+            "of a figure -- 'MAJOR', 'MINI', whatever the game draws. Null "
+            "when the orb carries a number or nothing. Not matched against a "
+            "known list -- reported as read."
         ),
     )
     text: str | None = Field(
         default=None,
         description=(
-            "Everything OCR read off the crop, kept beside `value` so a misread "
-            "is diagnosable rather than only wrong. Null when OCR did not run."
+            "Everything OCR read off the crop, kept beside `value` so a "
+            "misread is diagnosable rather than only wrong. Null when OCR "
+            "did not run."
         ),
     )
     ocr_confidence: float | None = Field(
@@ -455,8 +444,9 @@ class SpinScatterReading(BaseModel):
     error: str | None = Field(
         default=None,
         description=(
-            "Why this tile could not be read at all -- no engine installed, or "
-            "the crop was missing. Different from a tile that read as no digits."
+            "Why this tile could not be read at all -- no engine installed, "
+            "or the crop was missing. Different from a tile that read as no "
+            "digits."
         ),
     )
 
@@ -474,10 +464,10 @@ class SpinReelReading(BaseModel):
         ge=0.0,
         le=1.0,
         description=(
-            "Floor a tile's leading probability had to clear to be named. Set "
-            "above where the classes separate on purpose, so a tile the model is "
-            "only fairly sure of comes back unnamed -- and a line through it stops "
-            "there rather than being credited with a run nothing measured."
+            "Floor a tile's leading probability had to clear to be named -- "
+            "set above where the classes separate, so a line through an "
+            "unnamed tile stops there rather than being credited with a run "
+            "nothing measured."
         ),
     )
     rows: int = Field(ge=1)
@@ -485,9 +475,9 @@ class SpinReelReading(BaseModel):
     symbol_grid: list[list[str | None]] = Field(
         default_factory=list,
         description=(
-            "The codes on screen, row-major, null where a tile was not named. "
-            "Deliberately the same field name and shape as the image classifier's "
-            "own `symbol_grid`, which is where it comes from."
+            "The codes on screen, row-major, null where unnamed. Deliberately "
+            "the same field name and shape as the image classifier's own "
+            "`symbol_grid`, which is where it comes from."
         ),
     )
     label_grid: list[list[str | None]] = Field(
@@ -503,16 +493,17 @@ class SpinReelReading(BaseModel):
     scatters: list[SpinScatterReading] = Field(
         default_factory=list,
         description=(
-            "Every scatter on the grid, in reading order -- the codes the game "
-            "config's `scatter_symbols` names. Empty both when none landed and "
-            "when the game declares none, which the summary tells apart."
+            "Every scatter on the grid, in reading order -- the codes the "
+            "game config's `scatter_symbols` names. Empty both when none "
+            "landed and when the game declares none, which `scatter_summary` "
+            "tells apart."
         ),
     )
     scatter_summary: str = Field(
         default="",
         description=(
-            "The scatters in one line, e.g. 'SC x2 (12, 50), FG x1'. Empty when "
-            "the game declares no scatter codes."
+            "The scatters in one line, e.g. 'SC x2 (12, 50), FG x1'. Empty "
+            "when the game declares no scatter codes."
         ),
     )
     output_dir: str | None = Field(
@@ -521,11 +512,10 @@ class SpinReelReading(BaseModel):
     overlay_file: str | None = Field(
         default=None,
         description=(
-            "What that picture was written as. The picture itself is deliberately "
-            "*not* carried: the codes and their confidences say everything the "
-            "rings do, and a data URI of the reels on every report is weight for "
-            "something the dashboard does not draw. It is still on disk beside "
-            "the tiles it was computed from."
+            "What the ringed-reels picture was written as. The picture "
+            "itself is deliberately not carried -- the codes and confidences "
+            "already say what the rings show -- but it is still on disk "
+            "beside the tiles it was computed from."
         ),
     )
 
@@ -544,45 +534,45 @@ class SpinLineAward(BaseModel):
     elements: list[list[int]] = Field(
         default_factory=list,
         description=(
-            "The line as winGeometry.xml writes it: [reel, position] pairs, both "
-            "0-indexed. Carried beside 'positions' so the conversion between the "
-            "two forms can be checked."
+            "The line as winGeometry.xml writes it: [reel, position] pairs, "
+            "both 0-indexed -- kept beside `positions` so the conversion "
+            "between the two can be checked."
         ),
     )
     pays: int = Field(
         ge=0,
         description=(
-            "Length of the leading run of like symbols: 0 when the first two "
-            "reels differ, otherwise 2 or more. A tile the classifier could not "
-            "name breaks the run there -- 'I could not tell' twice is not a match."
+            "Length of the leading run of like symbols: 0 when reels 1 and 2 "
+            "differ, otherwise 2 or more. A tile the classifier could not "
+            "name breaks the run there -- 'I could not tell' twice is not a "
+            "match."
         ),
     )
     paying: bool = Field(
         description=(
             "Whether the reels landed a run of two or more. Evidence, not a "
-            "win -- 'awarded' is whether the paytable pays for it, and the two "
-            "differ whenever a symbol's shortest paying run is longer than what "
-            "landed."
+            "win -- 'awarded' is whether the paytable pays for it, and the "
+            "two differ whenever a symbol's shortest paying run is longer "
+            "than what landed."
         )
     )
     awarded: bool = Field(
         default=False,
         description=(
-            "Whether this line actually earns anything: the paytable pays this "
-            "symbol at this run length. False with 'paying' true is a run the "
-            "reels landed and the maths does not pay -- cancelled, with 'note' "
-            "saying why."
+            "Whether this line actually earns anything: the paytable pays "
+            "this symbol at this run length. False with 'paying' true is a "
+            "run the reels landed and the maths does not pay -- cancelled, "
+            "with 'note' saying why."
         ),
     )
     steps: list[PaylineStep] = Field(
         default_factory=list,
         description=(
-            "Every adjacent pair on the line, left to right, with the code read "
-            "off each tile. 'matched' is whether the run continued across the "
-            "pair -- judged against 'line_symbol', so a wild counts as whatever "
-            "the run pays as; 'counted' whether the left-to-right run got that "
-            "far. 'similarity' is null -- these tiles were compared by name, not "
-            "by how alike their pixels are."
+            "Every adjacent pair on the line, left to right. 'matched' is "
+            "judged against 'line_symbol' -- a wild counts as whatever the "
+            "run pays as; 'counted' is whether the run got that far. "
+            "'similarity' is null -- these tiles were compared by name, not "
+            "by pixel likeness."
         ),
     )
     color: str = Field(description="Hex colour the line is drawn in.")
@@ -600,10 +590,9 @@ class SpinLineAward(BaseModel):
     symbol: str | None = Field(
         default=None,
         description=(
-            "The code this line is priced as. The symbol the run resolved to -- "
-            "which is what its wilds stood in for, not necessarily what sits on "
-            "reel 1 -- or the wild's own code when the wild's shorter combo was "
-            "the better of the two. Present whenever there is a run."
+            "The code this line is priced as -- what its wilds stood in for, "
+            "not necessarily the tile on reel 1, or the wild's own code when "
+            "that combo paid more. Present whenever there is a run."
         ),
     )
     symbol_name: str | None = Field(
@@ -613,9 +602,9 @@ class SpinLineAward(BaseModel):
         default=0,
         ge=0,
         description=(
-            "How many of the run's leading positions were the wild itself. Above "
-            "one it is a combo in its own right, which is why this line was "
-            "priced twice -- see 'combo_pays'."
+            "How many of the run's leading positions were the wild itself. "
+            "Above one it is a combo in its own right, which is why this "
+            "line was priced twice -- see 'combo_pays'."
         ),
     )
     combo_id: int | None = Field(
@@ -631,51 +620,50 @@ class SpinLineAward(BaseModel):
         ge=0,
         description=(
             "How many positions the combo that paid covers. Equal to 'pays', "
-            "except on a wild-led line whose own wild combo paid more than the "
-            "substituted reading, where it is 'leading_wilds' instead. Null when "
-            "nothing was awarded."
+            "except on a wild-led line whose own combo paid more than the "
+            "substituted reading, where it is 'leading_wilds' instead. Null "
+            "when nothing was awarded."
         ),
     )
     combo_value: float | None = Field(
         default=None,
         description=(
-            "The paytable row's own number, before the bet unit multiplies it -- "
-            "what the Game Config page shows for this symbol at this length. Null "
-            "when the maths pays nothing for that pair, which is also when "
-            "'awarded' is false and 'note' says so."
+            "The paytable row's own number, before the bet unit multiplies "
+            "it -- what the Game Config page shows for this symbol at this "
+            "length. Null when the maths pays nothing, which is also when "
+            "'awarded' is false."
         ),
     )
     credits: float | None = Field(
         default=None,
         description=(
-            "What this line actually awards: combo_value x bet_per_unit, since a "
-            "paytable value is a rate per bet unit rather than a flat amount. "
-            "Equal to combo_value only at one credit a unit. Null when the maths "
-            "pays nothing, and also when no bet per unit was given -- an award "
-            "that cannot be priced is not the same as one worth nothing, so "
-            "combo_value is still there to read."
+            "What this line actually awards: combo_value x bet_per_unit, "
+            "since a paytable value is a rate per bet unit. Equal to "
+            "combo_value only at one credit a unit. Null when the maths pays "
+            "nothing, and also when no bet per unit was given."
         ),
     )
     min_pay_length: int | None = Field(
         default=None,
         description=(
-            "Shortest run this symbol pays at -- what a cancelled run is measured "
-            "against."
+            "Shortest run this symbol pays at -- what a cancelled run is "
+            "measured against."
         ),
     )
     note: str | None = Field(
         default=None,
         description=(
             "Why this line was priced the way it was: most often that the "
-            "symbol's shortest paying run is longer than what landed, or that a "
-            "run of wilds was worth more than the symbol they stood in for."
+            "symbol's shortest paying run is longer than what landed, or "
+            "that a run of wilds was worth more than the symbol they stood "
+            "in for."
         ),
     )
     image_data: str | None = Field(
         default=None,
         description=(
-            "Base64 data URI of this line drawn over the reels. Populated for "
-            "awarded lines only, and only when images were asked for."
+            "Base64 data URI of this line drawn over the reels. Populated "
+            "for awarded lines only, and only when images were asked for."
         ),
     )
 
@@ -688,18 +676,17 @@ class SpinExpectedAward(BaseModel):
     credits: float = Field(
         default=0.0,
         description=(
-            "Total award in credits: the awarded lines' own priced figures added "
-            "up, each already multiplied by bet_per_unit. 0 when no bet per unit "
-            "was given, in which case the verdict is indeterminate and the "
-            "unpriced figures are on the lines themselves."
+            "Total award in credits: awarded lines' own priced figures added "
+            "up, each already multiplied by bet_per_unit. 0 when no bet per "
+            "unit was given, in which case the verdict is indeterminate."
         ),
     )
     bet_per_unit: int | None = Field(
         default=None,
         description=(
-            "Credits staked on each bet unit, as the run was asked to grade at. "
-            "The multiplier behind every line's award. Null when none was given, "
-            "which is what leaves the verdict indeterminate."
+            "Credits staked on each bet unit, as the run was asked to grade "
+            "at -- the multiplier behind every line's award. Null leaves the "
+            "verdict indeterminate."
         ),
     )
     line_count: int | None = Field(
@@ -708,62 +695,57 @@ class SpinExpectedAward(BaseModel):
     denomination_label: str | None = Field(
         default=None,
         description=(
-            "The denomination as an operator says it, e.g. '2c'. For reading, not "
-            "for arithmetic -- the number the conversion runs through is "
-            "`money_per_credit`, and they differ by a factor of a hundred."
+            "The denomination as an operator says it, e.g. '2c' -- for "
+            "reading only; the arithmetic runs through `money_per_credit`, "
+            "which differs by a factor of a hundred."
         ),
     )
     money_per_credit: float | None = Field(
         default=None,
         description=(
-            "One credit in money -- 0.02 on a 2c game. Null when the denomination "
-            "was reported but its unit could not be resolved, which leaves the "
-            "verdict indeterminate rather than priced by a guess."
+            "One credit in money -- 0.02 on a 2c game. Null when the "
+            "denomination was reported but its unit could not be resolved, "
+            "leaving the verdict indeterminate rather than priced by a guess."
         ),
     )
     total_bet: float | None = Field(
         default=None,
         description=(
-            "Total bet as the meter drew it, in whichever of money and credits it "
-            "was showing -- see the meter validation's own `mode`."
+            "Total bet as the meter drew it, in whichever of money and "
+            "credits it was showing -- see the meter validation's own `mode`."
         ),
     )
     bet_credits: float | None = Field(
         default=None,
         description=(
-            "The bet in credits: total_bet divided by money_per_credit on a cash "
-            "meter, and total_bet itself on a credit meter, which is already "
-            "counting them. Context, not a step -- it prices nothing below. What "
-            "it is carried for is the comparison against `unit_cost x "
-            "bet_per_unit`, which is what says the rung this run was graded at is "
-            "the rung the cabinet was actually on."
+            "The bet in credits: total_bet / money_per_credit on a cash "
+            "meter, or total_bet itself on a credit meter. Prices nothing "
+            "directly -- it is compared against `unit_cost x bet_per_unit` "
+            "to confirm the graded rung matches the cabinet's."
         ),
     )
     credits_per_line: float | None = Field(
         default=None,
         description=(
-            "bet_credits divided by line_count -- the stake on each line. Takes no "
-            "part in the award and is not the bet unit: FortuneOx spreads 88 "
-            "credits over 40 lines, which is 2.2 a line and not a rung of any "
-            "ladder. Reported because a per-line figure is what a player reads off "
-            "the glass."
+            "bet_credits divided by line_count -- the stake on each line. "
+            "Not the bet unit: FortuneOx spreads 88 credits over 40 lines, "
+            "2.2 a line and not a rung of any ladder. Reported because it is "
+            "what a player reads off the glass."
         ),
     )
     cash: float | None = Field(
         default=None,
         description=(
             "credits x money_per_credit -- the award in money. Null when "
-            "money_per_credit could not be resolved; it needs neither the bet nor "
-            "the line count, but it does need bet_per_unit, since `credits` is "
-            "already priced by it."
+            "money_per_credit or bet_per_unit could not be resolved."
         ),
     )
     unit: SpinMeterUnit = Field(
         default=SpinMeterUnit.CASH,
         description=(
-            "Which of the pairs above the verdict was reached on: the unit the "
-            "meter was actually drawing, since the other side of every pair is "
-            "derived from that one and only this one's tolerance means anything."
+            "Which of the pairs above the verdict was reached on -- the unit "
+            "the meter actually drew; the other side is derived from it and "
+            "only this one's tolerance means anything."
         ),
     )
     observed_win: float | None = Field(
@@ -783,8 +765,8 @@ class SpinExpectedAward(BaseModel):
     )
     verdict: SpinVerdict = Field(
         description=(
-            "Whether the WIN cell matches the award in `unit`. 'indeterminate' "
-            "whenever an input to that is missing."
+            "Whether the WIN cell matches the award in `unit`. "
+            "'indeterminate' whenever an input to that is missing."
         )
     )
     detail: str = Field(description="The comparison in one line.")
@@ -817,28 +799,26 @@ class SpinPaylineValidation(BaseModel):
     min_confidence: float | None = Field(
         default=None,
         description=(
-            "The confidence floor the tiles were named at -- the one tunable this "
-            "reading has, in place of the similarity threshold it replaced. Null "
-            "when the reels were never read."
+            "The confidence floor the tiles were named at -- the one tunable "
+            "this reading has, in place of the similarity threshold it "
+            "replaced. Null when the reels were never read."
         ),
     )
     wild_symbol: str | None = Field(
         default=None,
         description=(
-            "The code that was read as whatever the run it landed on was paying "
-            "as, so a reader can tell a substituted tile from a matched one. Null "
-            "when the game's config declares no 'wild_card_replacement', which is "
-            "when nothing was substituted."
+            "The code that was read as whatever the run it landed on was "
+            "paying as, so a substituted tile can be told from a matched "
+            "one. Null when the game's config declares no "
+            "'wild_card_replacement'."
         ),
     )
     summary: str = Field(
         default="",
         description=(
-            "What was awarded, in one sentence -- written from the awards rather "
-            "than taken from the payline check, because the check knows what runs "
-            "it found and only the paytable knows which of them pay. 'Pays' is "
-            "credits here, never the run length: they are different numbers, and "
-            "one word for both is how a run of five gets read as five credits."
+            "What was awarded, in one sentence -- written from the awards "
+            "rather than the payline check, since only the paytable knows "
+            "which runs pay. 'Pays' is credits here, never the run length."
         ),
     )
     runs_found: int = Field(
@@ -850,16 +830,17 @@ class SpinPaylineValidation(BaseModel):
         default=0,
         ge=0,
         description=(
-            "How many of those the paytable pays for. Fewer than 'runs_found' "
-            "means some runs were cancelled; see each line's 'note'."
+            "How many of those the paytable pays for. Fewer than "
+            "'runs_found' means some runs were cancelled; see each line's "
+            "'note'."
         ),
     )
     unnamed_positions: list[str] = Field(
         default_factory=list,
         description=(
-            "Tiles no code was read off, so every line through one stops there. "
-            "The first thing to check when a spin that plainly paid reports no "
-            "run: the floor may simply be above what the model managed."
+            "Tiles no code was read off, so every line through one stops "
+            "there. The first thing to check when a spin that plainly paid "
+            "reports no run."
         ),
     )
     pay_lengths: list[int] = Field(
@@ -873,8 +854,8 @@ class SpinPaylineValidation(BaseModel):
     stats: PaylineStats | None = Field(
         default=None,
         description=(
-            "The comparison run as a whole. Its four score figures are null: "
-            "codes were compared, and there is no distribution to separate."
+            "The comparison run as a whole. Its four score figures are null "
+            "-- codes were compared by name, not by a distribution."
         ),
     )
     expected: SpinExpectedAward | None = Field(
@@ -912,8 +893,8 @@ class SpinRun(BaseModel):
         default=SpinControl.IDECK,
         description=(
             "Which channel drove this spin and collected its win. Reported "
-            "because one service holds both -- a page showing the last run may "
-            "be showing one another page started."
+            "because one service holds both -- a page showing the last run "
+            "may be showing one another page started."
         ),
     )
     state: SpinRunState = Field(
@@ -938,8 +919,8 @@ class SpinRun(BaseModel):
     events: list[SpinLogEvent] = Field(
         default_factory=list,
         description=(
-            "Recognised game-log lines seen while the run waited, newest last. "
-            "Capped by ANALYZE_SPIN_MAX_EVENTS."
+            "Recognised game-log lines seen while the run waited, newest "
+            "last. Capped by ANALYZE_SPIN_MAX_EVENTS."
         ),
     )
     recording: SpinRecording | None = Field(
@@ -948,11 +929,10 @@ class SpinRun(BaseModel):
     tile_clips: TileClipSet | None = Field(
         default=None,
         description=(
-            "One short video per reel position, filmed while the win "
-            "presentation played. Only on a run that was recording, and only "
-            "on a spin that won -- so null is the ordinary case. Not a step of "
-            "the sequence: nothing is graded by it, and a failure to film shows "
-            "on `errors` rather than as a failed stage."
+            "One short video per reel position, filmed during a win "
+            "presentation. Only present on a recording, winning spin -- null "
+            "is the ordinary case. Not a step of the sequence: a filming "
+            "failure shows on `errors`, not as a failed stage."
         ),
     )
     meter: SpinMeterValidation | None = Field(
@@ -961,10 +941,10 @@ class SpinRun(BaseModel):
     reels: SpinReelReading | None = Field(
         default=None,
         description=(
-            "The symbols the classifier read off the result screenshot. Null "
-            "until that step has run. Its own block rather than part of the "
-            "payline validation because it is one reading of one picture, and it "
-            "is worth having even when the lines could not be checked."
+            "The symbols the classifier read off the result screenshot. "
+            "Null until that step has run. Its own block rather than part "
+            "of the payline validation, since it is worth having even when "
+            "the lines could not be checked."
         ),
     )
     paylines: SpinPaylineValidation | None = Field(

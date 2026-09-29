@@ -9,12 +9,8 @@ from pydantic import BaseModel, Field
 
 
 class GafState(StrEnum):
-    """What the service can see of the automation chain right now.
-
-    Ordered by how far along the chain the problem is, which is also the
-    order they are checked in: nothing to drive, nothing to drive it with,
-    nothing to name its controls, then simply not connected yet.
-    """
+    """What the service can see of the automation chain right now, ordered
+    (and checked) by how far along the chain the problem is."""
 
     NOT_CONFIGURED = "not_configured"
     """The active game declares no ``gaf`` block, so it cannot be driven."""
@@ -45,12 +41,9 @@ class GafQueryFile(BaseModel):
 
 
 class GafStatus(BaseModel):
-    """What the service can see of the chain, and how it is configured.
-
-    Always answered with 200 -- check ``state``, not the status code. Reading
-    it never opens a session, so a dashboard can poll it without connecting
-    to the game as a side effect.
-    """
+    """What the service can see of the chain, and how it is configured. Always
+    answered with 200 -- check ``state``, not the status code -- and reading it
+    never opens a session, so a dashboard can poll without connecting as a side effect."""
 
     state: GafState = Field(description="Whether the game can be driven.")
     game: str = Field(description="Game currently selected for this backend.")
@@ -76,13 +69,9 @@ class GafStatus(BaseModel):
 
 
 class GafMeters(BaseModel):
-    """The three meters, exactly as the game reports them.
-
-    Strings, not numbers, and deliberately: the game answers ``"$995.80"`` or
-    ``"1,250"`` depending on whether the strip is drawn in cash or credits,
-    and parsing that here would throw away the one thing this reading has
-    over OCR -- that it is the game's own text.
-    """
+    """The three meters, exactly as the game reports them: strings, not
+    numbers, since parsing ``"$995.80"``/``"1,250"`` here would throw away the
+    one thing this reading has over OCR -- that it is the game's own text."""
 
     credit: str | None = Field(default=None, description="CreditMeter value.")
     bet: str | None = Field(default=None, description="BetMeter value.")
@@ -102,11 +91,9 @@ class SpinOutcome(StrEnum):
     """The game returned to an idle state on its own: no win to collect."""
 
     WIN_OFFERED = "win_offered"
-    """The game is holding in play with a win waiting to be taken.
-
-    A win *holds* the machine in ``statePlaying`` until it is collected, so
-    waiting only for idle would time out on exactly the spins worth having.
-    """
+    """The game is holding in play with a win waiting to be taken -- it holds
+    ``statePlaying`` until collected, so waiting only for idle would time out
+    on exactly the spins worth having."""
 
     TIMEOUT = "timeout"
     """Neither happened within the settle timeout. Reported rather than

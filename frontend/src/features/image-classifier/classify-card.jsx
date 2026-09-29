@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { SymbolGrid } from "@/features/image-classifier/symbol-grid";
-import { percent } from "@/features/image-classifier/percent";
 import { TileStats } from "@/features/image-classifier/tile-stats";
 import { cn } from "@/lib/utils";
 
@@ -21,21 +20,17 @@ import { cn } from "@/lib/utils";
 export function ClassifyCard({ status, splits, classify }) {
   const [split, setSplit] = useState("");
   const [floor, setFloor] = useState("");
-  const [engine, setEngine] = useState("");
 
-  const engines = status?.architectures ?? [];
-  // Only a trained engine can answer, so an untrained one is listed but not
-  // offered -- the Training card above is where it gets fitted.
-  const usable = engines.filter((option) => option.trained);
+  // Only a trained model can answer -- the Training card above is where it
+  // gets fitted.
   const available = splits.data?.splits ?? [];
   const result = classify.data ?? null;
-  const ready = usable.length > 0;
+  const ready = Boolean(status?.model);
   const defaultFloor = status?.min_confidence ?? 0.9;
 
   function run() {
     classify.mutate({
       ...(split ? { split } : {}),
-      ...(engine ? { architecture: engine } : {}),
       // Typed as a percentage because that is how it is read back; the API speaks
       // probabilities, so this is the one place the two units meet.
       ...(floor === "" ? {} : { min_confidence: Number(floor) / 100 }),
@@ -90,30 +85,6 @@ export function ClassifyCard({ status, splits, classify }) {
               {available.map((entry) => (
                 <option key={entry.name} value={entry.name}>
                   {entry.name} · {entry.rows}×{entry.columns}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="w-44 space-y-1.5">
-            <Label htmlFor="classifier-engine" className="text-xs">
-              Engine
-            </Label>
-            <select
-              id="classifier-engine"
-              value={engine}
-              onChange={(event) => setEngine(event.target.value)}
-              className="border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-            >
-              <option value="">
-                Default ({engines.find((option) => option.is_default)?.label ?? "none"})
-              </option>
-              {usable.map((option) => (
-                <option key={option.name} value={option.name}>
-                  {option.label}
-                  {option.holdout_accuracy != null
-                    ? ` · ${percent(option.holdout_accuracy)}`
-                    : ""}
                 </option>
               ))}
             </select>

@@ -9,8 +9,6 @@ import {
   Square,
 } from "lucide-react";
 
-import { useState } from "react";
-
 import { ApiErrorAlert } from "@/components/api-error-alert";
 import { Figure, FigureGrid } from "@/components/figure";
 import { Badge } from "@/components/ui/badge";
@@ -23,8 +21,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { percent as asPercent } from "@/features/image-classifier/percent";
 import { cn } from "@/lib/utils";
 
 // The same five looks the spin timeline uses, so a stage list reads the same
@@ -107,8 +103,6 @@ function StageRow({ stage }) {
 
 /** Train the model, and watch it happen. */
 export function TrainCard({ status, isFetching, refetch, train, cancel }) {
-  const [engine, setEngine] = useState("");
-  const engines = status?.architectures ?? [];
   const run = status?.training ?? null;
   const active = Boolean(status?.active);
   const canTrain =
@@ -128,10 +122,9 @@ export function TrainCard({ status, isFetching, refetch, train, cancel }) {
           Training
         </CardTitle>
         <CardDescription>
-          Fits a network to the symbol artwork. A few minutes on this machine — it runs
+          Fits ResNet34 to the symbol artwork. A few minutes on this machine — it runs
           on the CPU, on half the cores, so the rest of the dashboard keeps working
-          while it does. Each engine keeps its own model, so training one leaves the
-          other alone and the two can be compared on the same split.
+          while it does.
         </CardDescription>
         <CardAction className="flex items-center gap-2">
           {/* One badge, not two: while a run is going the state *is* "training",
@@ -160,39 +153,10 @@ export function TrainCard({ status, isFetching, refetch, train, cancel }) {
 
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="w-56 space-y-1.5">
-            <Label htmlFor="train-engine" className="text-xs">
-              Engine
-            </Label>
-            {/* A styled native select, as this app does elsewhere rather than
-                pulling in another primitive. */}
-            <select
-              id="train-engine"
-              value={engine}
-              onChange={(event) => setEngine(event.target.value)}
-              disabled={active}
-              className="border-input bg-background ring-offset-background focus-visible:ring-ring h-9 w-full rounded-md border px-3 py-1 text-sm disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-            >
-              <option value="">
-                Default ({engines.find((o) => o.is_default)?.label ?? "none"})
-              </option>
-              {engines.map((option) => (
-                <option key={option.name} value={option.name}>
-                  {option.label}
-                  {option.trained
-                    ? option.holdout_accuracy != null
-                      ? ` · trained, ${asPercent(option.holdout_accuracy)}`
-                      : " · trained"
-                    : " · not trained"}
-                </option>
-              ))}
-            </select>
-          </div>
-
           <Button
             variant="outline"
             size="sm"
-            onClick={() => train.mutate(engine ? { architecture: engine } : {})}
+            onClick={() => train.mutate({})}
             disabled={!canTrain || busy}
           >
             <Dumbbell />

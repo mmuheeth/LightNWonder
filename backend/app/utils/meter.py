@@ -1,18 +1,17 @@
-"""Reads the numbers off a game's meter strip (``roi.cash_meter``: balance, last win,
-current bet)."""
+"""Geometry shared by both readers of a game's meter strip (``roi.cash_meter``:
+balance, last win, current bet) -- row/column detection, cell cropping and
+field assignment are properties of how the game draws the strip, not of the
+engine reading it. :mod:`app.utils.meter_paddle` is the only reader; this
+module used to hold a Tesseract one too, replaced when PaddleOCR became the
+project's sole OCR engine."""
 
 from __future__ import annotations
 
-import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
-from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
-
-from app.utils import ocr
 
 __all__ = [
     "DEFAULT_WINDOWS",
@@ -23,8 +22,6 @@ __all__ = [
     "Unmapped",
     "assign_fields",
     "cell_crop",
-    "extract",
-    "fit_band",
     "reportable_span",
     "row_bands",
 ]
@@ -33,10 +30,6 @@ __all__ = [
 class MeterError(ValueError):
     """The strip is unusable -- no area, or nothing bright enough to read."""
 
-
-# Digits, separators and currency symbols these games draw -- a hint to the LSTM
-# engine, keeping a cell border from arriving as a letter.
-WHITELIST = "0123456789.,$¥"
 
 # Brightness (as a fraction of the strip's own max) for a column to count as a
 # glyph. Swept over saved strips: 0.62 swallows cell borders into the group; 0.82
@@ -47,33 +40,29 @@ INK_LEVEL = 0.82
 # few enough to keep the cell border out.
 CLUSTER_PAD = 2
 
-# Clear background a glyph needs above and below it, as a share of the band's own
-# height. Not cosmetic: Tesseract reads a glyph flush against the edge of its image
-# as one with an extra stroke (`105` came back `4105`). A *share*, not a pixel
-# count, which is what holds it from a 0.35x canvas to 2x -- every pixel-measured
-# constant in this module has to be read that way. Taken from the strip where the
-# rows are really there (:func:`_grown`) and synthesised only for what is left
-# (:func:`_padded`), and topped up rather than always added, since a fitted band
-# already pads its cores and padding one that has room costs a digit.
+# Clear background a glyph needs above/below, as a share of band height -- not
+# cosmetic: a glyph flush against its crop's edge reads as one with an extra
+# stroke (`105` came back `4105`). A share, not pixels, so it holds from a
+# 0.35x canvas to 2x. Topped up rather than always added, since a band that
+# already has room shouldn't be padded further.
 GLYPH_MARGIN_SHARE = 0.18
 
 # Never fewer than this, however small the band: two rows is the least that reads
 # as background rather than as a border touching the glyph.
 MIN_GLYPH_MARGIN = 2
 
-# Brightness for a row to count as holding part of a glyph, as a share of the crop's
-# own range above its background. Deliberately far looser than :data:`INK_LEVEL`,
-# and for the opposite reason: that one wants glyph *cores*, to keep a cell border
-# out of a column group, while this one wants a glyph's dimmest extremity, since a
-# stroke Tesseract can see is a stroke that needs clearance.
+# Brightness for a row to hold part of a glyph, as a share of the crop's range
+# above background. Deliberately looser than :data:`INK_LEVEL`, for the
+# opposite reason: that one wants glyph *cores* (keeping a border out of a
+# column group), this one wants the glyph's dimmest extremity, since any
+# stroke the engine can see needs clearance.
 GLYPH_EDGE = 0.15
 
-# Share of a row's width that has to be lit for it to be the cell's own border
-# rather than a line of text, which is where growth stops: a drawn rule lights
-# nearly every column, a row of glyphs only its strokes. Growth is what lets one
-# declared fraction hold across capture resolutions -- the same band is 29 rows of a
-# 1080x75 strip and 11 of a 421x29 one, and a clipped glyph cannot be repaired by
-# padding, only by going back to the strip for the rows left out.
+# Share of a row's width lit for it to count as the cell's border (not text) --
+# where growth stops: a drawn rule lights nearly every column, glyphs only
+# their strokes. Growth lets one fraction hold across resolutions (the same
+# band is 29 rows of a 1080x75 strip and 11 of a 421x29 one); a clipped glyph
+# can only be fixed by going back to the strip, not by padding.
 BORDER_SHARE = 0.8
 
 # Gap (as a share of band height) that splits two lit runs into different numbers.
@@ -82,12 +71,11 @@ BORDER_SHARE = 0.8
 # keep ~19px cell separations apart.
 GAP_SHARE = 0.55
 
-# Floor under that gap, in pixels. It only ever binds on a small capture: a 1080x75
-# strip computes 16 from the share alone, a 459x29 one needs 9 or it splits `$1.76`
-# into `$1.` and `76`, a 405x28 one needs 5 or it welds CASH to WIN. The one
-# constant here that a share could not rescue -- the gap inside a value and the gap
-# between two cells converge as the strip shrinks (9 and 17 at 1080x75, no daylight
-# by 405x28). Sized for the cabinet's canvas; unreliable below about a third of it.
+# Floor under that gap, in pixels. Only binds on a small capture: a 459x29
+# strip needs 9 or it splits `$1.76` into `$1.` and `76`; a 405x28 one needs 5
+# or it welds CASH to WIN. The one constant a share can't rescue -- the gap
+# inside a value and between two cells converge as the strip shrinks (9 and 17
+# at 1080x75, no daylight by 405x28). Unreliable below about a third of canvas.
 MIN_GAP = 9
 
 # Narrower than this and it's a cell corner or artwork speck, not a value.
@@ -100,39 +88,32 @@ MIN_CORE_ROWS = 3
 # 0.35 reproduces the hand-tuned bands measured on both known skins.
 BAND_PAD_SHARE = 0.35
 
-# Caps the thread pool -- never a reason to run more engines than there are cells.
-MAX_WORKERS = 4
-
 # Fields a candidate band must read before its confidence can end the search. A
 # strip has three cells and the middle (WIN) is often empty between spins.
 ENOUGH_FIELDS = 2
 
-# Stop escalating once a field reads this well; ignore a reading below the floor.
-# Every value verified correct on saved strips scored 79 or better.
-CONFIDENT = 90.0
+# Ignore a reading below this. 40.0 was measured against Tesseract's 0-100
+# confidence scale (every value verified correct on saved strips scored 79 or
+# better); PaddleOCR's own confidence is rescaled onto the same 0-100 range at
+# the point of reading (`meter_paddle.read_group`), so the two are at least
+# dimensionally comparable, but this floor has not been independently
+# re-measured against a Paddle-only split -- re-tune from real readings before
+# trusting it as more than a starting point.
 FLOOR = 40.0
 
-# Tesseract 5 reports confidence exactly 0 -- not a low score -- for a word produced
-# under `tessedit_char_whitelist`, which it filters on but does not score, and it is
-# the *correct* readings that hit it most. Ranked below any measured reading and
-# exempt from :data:`FLOOR` rather than discarded. The whitelist stays: without it a
-# cell border welds onto the value, `$2` arrives as `s2`, and a digit is lost.
+# A field with no reading at all -- an engine that ran and found nothing, or
+# one that could not run -- defaults to this rather than a genuinely low
+# score, so :attr:`MeterField.measured` can tell "read as zero confidence"
+# apart from "never answered". Ranked below any measured reading and exempt
+# from :data:`FLOOR` rather than discarded, since a field with a reading is
+# still worth carrying even when nothing scored it.
 UNMEASURED = 0.0
 
-# What an unmeasured reading counts as when :func:`fit_band` compares two bands.
-# The floor deliberately: a band that reads values the engine would not score
-# still beats one that reads nothing, and still loses to one that reads
-# convincingly.
+# What an unmeasured reading counts as when a caller compares two bands' scans
+# (see `MeterScan.score`). The floor deliberately: a band that produced a
+# reading nothing scored still beats one that produced nothing at all, and
+# still loses to one that read convincingly.
 UNMEASURED_SCORE = FLOOR
-
-# Read at the first rung, adding rungs only while unconvincing. psm 8 is "one
-# word", 7 is "one text line", 13 is "one raw line" with layout analysis off --
-# the only mode that reads one skin's WIN value.
-LADDER: tuple[tuple[tuple[int, float], ...], ...] = (
-    ((8, 8.0),),
-    ((7, 8.0), (13, 8.0)),
-    ((8, 6.0), (7, 6.0), (8, 10.0), (7, 10.0)),
-)
 
 # Where each field sits, as a fraction of the strip's width -- and the strip is a
 # crop of the content box, not the canvas, so these track the game regardless of
@@ -144,10 +125,6 @@ DEFAULT_WINDOWS: dict[str, tuple[float, float]] = {
     "win": (0.46, 0.57),
     "bet": (0.63, 0.79),
 }
-
-# A value, with the symbol that may be glued to its left.
-_TOKEN = re.compile(r"[$¥]?\d[\d.,]*")
-_SYMBOLS = "$¥"
 
 Band = tuple[int, int]
 """Rows of the strip the values sit in, as ``(top, bottom)`` pixels."""
@@ -162,9 +139,8 @@ class MeterField:
     """Raw text of the winning read, engine junk included."""
 
     confidence: float = UNMEASURED
-    """0-100 as the engine reports it, or :data:`UNMEASURED` for a whitelisted
-    read it declined to score. Read it through :attr:`measured` before comparing
-    it to a threshold."""
+    """0-100 as the engine reports it, or :data:`UNMEASURED` when nothing did.
+    Read it through :attr:`measured` before comparing it to a threshold."""
 
     symbol: str = ""
     """Currency symbol the engine recognised on this value, if any."""
@@ -299,17 +275,6 @@ def ink_groups(image: Image.Image, band: Band) -> tuple[Band, ...]:
     )
 
 
-def _token(text: str) -> tuple[Decimal | None, str]:
-    """The value and its symbol out of raw engine text."""
-    best = ""
-    for match in _TOKEN.finditer(text):
-        if len(match.group()) > len(best):
-            best = match.group()
-    if not best:
-        return None, ""
-    return ocr.parse_number(best), best[0] if best[0] in _SYMBOLS else ""
-
-
 def _margin(rows: int) -> int:
     """Clear rows a value occupying ``rows`` of them needs around it, from
     :data:`GLYPH_MARGIN_SHARE`."""
@@ -387,17 +352,11 @@ def _padded(crop: Image.Image, margin: int | None = None) -> Image.Image:
 
 
 def cell_crop(image: Image.Image, box: Band, band: Band) -> Image.Image:
-    """The picture of one cell, ready to be read: ``box`` widened by
-    :data:`CLUSTER_PAD`, the band grown onto whichever glyph edge runs into it
-    (:func:`_grown`), and any clearance the strip could not supply synthesised
-    (:func:`_padded`).
-
-    Public because **which engine reads a cell is a separate question from where
-    the cell is**: every correction here is for how the game draws a meter, not
-    for how Tesseract reads one, so :mod:`app.utils.meter_paddle` prepares its
-    crops through this rather than repeating the three steps and drifting from
-    them.
-    """
+    """The picture of one cell, ready to read: ``box`` widened by
+    :data:`CLUSTER_PAD`, the band grown onto the glyph edge (:func:`_grown`),
+    then any missing clearance synthesised (:func:`_padded`). Public so
+    :mod:`app.utils.meter_paddle` shares these corrections instead of
+    repeating them and drifting."""
     columns = (max(0, box[0] - CLUSTER_PAD), min(image.width, box[1] + CLUSTER_PAD))
     top, bottom = _grown(image, columns, band)
     return _padded(
@@ -412,18 +371,10 @@ def assign_fields(
     *,
     ordinal: bool = False,
 ) -> tuple[dict[str, MeterField], set[int]]:
-    """Files each reading under a field name.
-
-    By default, the window its centre falls in -- several groups can share a
-    window (e.g. an inline label bracket), and the best-ranked one wins. With
-    ``ordinal`` set, by left-to-right position instead: the first reading is
-    the first field (CASH, always present), the last is the last field (BET,
-    always present), and whatever sits between them is the field in between
-    (WIN, which may be absent). Ordinal exists for a skin whose windows cannot
-    be trusted -- e.g. one whose BET title is sometimes drawn over by another
-    object, which moves nothing about the *value*'s position but can leave the
-    label-derived window wrong. Order does not depend on a label at all.
-    """
+    """Files each reading under a field name: by default, the window its centre
+    falls in (best-ranked wins when several share one). With ``ordinal``, by
+    left-to-right position instead -- first=CASH, last=BET, middle=WIN -- for a
+    skin whose label-derived windows can't be trusted but value order can."""
     names = list(spans)
     fields: dict[str, MeterField] = {name: MeterField() for name in names}
     claimed: set[int] = set()
@@ -463,50 +414,8 @@ def assign_fields(
 def reportable_span(spans: dict[str, tuple[float, float]]) -> tuple[float, float]:
     """The span of the strip a stray value is worth reporting from. Public for the
     same reason as :func:`cell_crop`: it is a property of the declared windows,
-    which both readers file their readings into."""
+    which the reader files its readings into."""
     return _reportable(spans)
-
-
-def read_group(
-    image: Image.Image, box: Band, band: Band, *, executable: Path
-) -> MeterField:
-    """Read one number, escalating only while the reading is unconvincing."""
-    crop = cell_crop(image, box, band)
-    best = MeterField(box=box)
-    calls = 0
-    for rung in LADDER:
-        for psm, upscale in rung:
-            options = ocr.OcrOptions(psm=psm, upscale=upscale, char_whitelist=WHITELIST)
-            try:
-                result = ocr.read_image(crop, executable=executable, options=options)
-            except ocr.OcrError:
-                # A crop the engine choked on is one field, not the whole strip.
-                continue
-            calls += 1
-            text = result.text.strip().replace("\n", " ")
-            value, symbol = _token(text)
-            candidate = MeterField(
-                value=value,
-                text=text,
-                confidence=result.confidence or UNMEASURED,
-                symbol=symbol,
-                box=box,
-            )
-            # Ranked, not compared on confidence alone: an unmeasured reading
-            # scores 0, and `0 > 0` would throw away the only transcription
-            # there is. See :data:`UNMEASURED`.
-            if candidate.rank > best.rank:
-                best = candidate
-        if best.confidence >= CONFIDENT:
-            break
-    return MeterField(
-        value=best.value,
-        text=best.text,
-        confidence=best.confidence,
-        symbol=best.symbol,
-        box=box,
-        calls=calls,
-    )
 
 
 def _reportable(spans: dict[str, tuple[float, float]]) -> tuple[float, float]:
@@ -518,95 +427,3 @@ def _reportable(spans: dict[str, tuple[float, float]]) -> tuple[float, float]:
     highs = [high for _, high in spans.values()]
     slack = max(high - low for low, high in spans.values())
     return max(0.0, min(lows) - slack), min(1.0, max(highs) + slack)
-
-
-def extract(
-    image: Image.Image,
-    *,
-    executable: Path,
-    band: Band,
-    windows: dict[str, tuple[float, float]] | None = None,
-    ordinal: bool = False,
-) -> MeterScan:
-    """Read every number in ``band`` and file each under its field; ``windows`` maps
-    field name to the span of the strip it owns. ``ordinal`` files by left-to-right
-    position instead -- see :func:`assign_fields`."""
-    spans = DEFAULT_WINDOWS if windows is None else windows
-    boxes = ink_groups(image, band)
-    # Concurrent: each read is a ~200ms Tesseract subprocess, and `subprocess.run`
-    # releases the GIL while it waits, so threads fit here.
-    if boxes:
-        with ThreadPoolExecutor(max_workers=min(len(boxes), MAX_WORKERS)) as pool:
-            results = list(
-                pool.map(
-                    lambda box: read_group(image, box, band, executable=executable),
-                    boxes,
-                )
-            )
-    else:
-        results = []
-
-    readings: list[tuple[float, MeterField]] = []
-    calls = sum(reading.calls for reading in results)
-    for box, reading in zip(boxes, results, strict=True):
-        # The floor judges a score, so it cannot judge a reading that has none --
-        # an unmeasured transcription is carried, and earns its place below by
-        # being the best thing in a field's window. See :data:`UNMEASURED`.
-        if reading.value is None or (reading.measured and reading.confidence < FLOOR):
-            continue
-        readings.append(((box[0] + box[1]) / 2 / image.width, reading))
-
-    fields, claimed = assign_fields(spans, readings, ordinal=ordinal)
-
-    # Only a *scored* stray inside the cells' own reach is worth reporting: this
-    # list warns that the windows may not match the skin, and a number out at the
-    # strip's extremes is fixed chrome beside them rather than a cell that moved
-    # (the full-width row also carries "Line 1 Pays 25" and "50 CREDIT GAME
-    # ACTIVE"). The FLOOR exemption above is for a reading with a field behind it.
-    reach = _reportable(spans)
-    unmapped = tuple(
-        Unmapped(
-            value=reading.value,
-            centre=centre,
-            confidence=reading.confidence,
-            text=reading.text,
-        )
-        for index, (centre, reading) in enumerate(readings)
-        if index not in claimed
-        and reading.value is not None
-        and reading.measured
-        and reach[0] <= centre <= reach[1]
-    )
-    return MeterScan(fields=fields, unmapped=unmapped, band=band, calls=calls)
-
-
-def fit_band(
-    image: Image.Image,
-    *,
-    executable: Path,
-    windows: dict[str, tuple[float, float]] | None = None,
-    ordinal: bool = False,
-) -> tuple[Band, MeterScan]:
-    """Choose the row band that reads best, and return it with its scan."""
-    best: tuple[Band, MeterScan] | None = None
-    for candidate in row_bands(image):
-        scan = extract(
-            image,
-            executable=executable,
-            band=candidate,
-            windows=windows,
-            ordinal=ordinal,
-        )
-        # Mean confidence first, then read count as the tiebreaker.
-        if best is None or (scan.score, scan.read_count) > (
-            best[1].score,
-            best[1].read_count,
-        ):
-            best = (candidate, scan)
-        if scan.read_count >= ENOUGH_FIELDS and scan.score >= CONFIDENT:
-            # Several fields read confidently: nothing left to beat, and each
-            # further candidate costs more 200ms engine calls.
-            break
-    if best is None:
-        raise MeterError("the strip has no rows bright enough to read")
-    return best

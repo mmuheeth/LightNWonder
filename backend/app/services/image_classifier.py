@@ -16,7 +16,6 @@ from PIL import Image
 from app.config.game_config import GameConfigError, load_game_config
 from app.config.runtime import settings
 from app.exceptions.base import (
-    BadRequestError,
     ClassifierAlreadyTrainingError,
     ClassifierDatasetNotFoundError,
     ClassifierNotTrainingError,
@@ -26,7 +25,6 @@ from app.exceptions.base import (
     ClassifierUntrainedError,
 )
 from app.schemas.image_classifier import (
-    ArchitectureOption,
     ClassifiedTile,
     ClassifierMetrics,
     ClassifierState,
@@ -95,11 +93,9 @@ _UNKNOWN_LABEL = "unknown"
 # lazily because one made at import time binds to the wrong event loop in tests.
 
 _run: _TrainingRunRecord | None = None
-# Keyed by architecture: both networks can be trained and kept, so both can be
-# loaded, and a request naming one must not evict the other.
-_checkpoints: dict[str, Any] = {}
-_checkpoint_keys: dict[str, tuple[str, int, int]] = {}
-_checkpoint_errors: dict[str, str] = {}
+_checkpoint: Any | None = None
+_checkpoint_key: tuple[str, int, int] | None = None
+_checkpoint_error: str | None = None
 _dataset_cache: tuple[str, DatasetSummary] | None = None
 _lock: asyncio.Lock | None = None
 
@@ -192,11 +188,11 @@ class _TrainingRunRecord:
 
 def reset() -> None:
     """Drop the cached model and any run record. Tests only."""
-    global _run, _dataset_cache, _lock
+    global _run, _checkpoint, _checkpoint_key, _checkpoint_error, _dataset_cache, _lock
     _run = None
-    _checkpoints.clear()
-    _checkpoint_keys.clear()
-    _checkpoint_errors.clear()
+    _checkpoint = None
+    _checkpoint_key = None
+    _checkpoint_error = None
     _dataset_cache = None
     _lock = None
 
@@ -373,43 +369,31 @@ def _checkpoint_stat(path: Path) -> tuple[str, int, int] | None:
     return (str(path), int(stat.st_mtime), int(stat.st_size))
 
 
-def resolve_architecture(requested: str | None) -> str:
-    """The architecture a request meant, defaulting to the configured one."""
-    module = _import_model()
-    known = tuple(module.ARCHITECTURES) if module is not None else ()
-    name = requested or settings.CLASSIFIER_ARCHITECTURE
-    if known and name not in known:
-        raise BadRequestError(
-            f"Unknown architecture {name!r}; expected one of {', '.join(known)}"
-        )
-    return name
-
-
-def _load_checkpoint(architecture: str | None = None) -> Any | None:
-    """One architecture's trained model, cached on the file's mtime and size."""
+def _load_checkpoint() -> Any | None:
+    """The trained model, cached on the file's mtime and size."""
+    global _checkpoint, _checkpoint_key, _checkpoint_error
     module = _import_model()
     if module is None:
         return None
-    name = architecture or settings.CLASSIFIER_ARCHITECTURE
-    path = settings.classifier_checkpoint_for(name)
+    path = settings.classifier_checkpoint_path
     key = _checkpoint_stat(path)
     if key is None:
-        _checkpoints.pop(name, None)
-        _checkpoint_keys.pop(name, None)
-        _checkpoint_errors.pop(name, None)
+        _checkpoint = None
+        _checkpoint_key = None
+        _checkpoint_error = None
         return None
-    if _checkpoint_keys.get(name) == key and name in _checkpoints:
-        return _checkpoints[name]
+    if _checkpoint_key == key and _checkpoint is not None:
+        return _checkpoint
     try:
         loaded = module.load(path)
     except module.ModelError as exc:
-        _checkpoints.pop(name, None)
-        _checkpoint_keys[name] = key
-        _checkpoint_errors[name] = str(exc)
+        _checkpoint = None
+        _checkpoint_key = key
+        _checkpoint_error = str(exc)
         return None
-    _checkpoints[name] = loaded
-    _checkpoint_keys[name] = key
-    _checkpoint_errors.pop(name, None)
+    _checkpoint = loaded
+    _checkpoint_key = key
+    _checkpoint_error = None
     return loaded
 
 
@@ -444,29 +428,6 @@ def _model_summary(loaded: Any, fingerprint: str, expected: int) -> ModelSummary
 # --- status ---------------------------------------------------------------
 
 
-def _architecture_options(module: Any) -> list[ArchitectureOption]:
-    """Every network that can be fitted, and whether one is already trained."""
-    default = settings.CLASSIFIER_ARCHITECTURE
-    options: list[ArchitectureOption] = []
-    for name in module.ARCHITECTURES:
-        loaded = _load_checkpoint(name)
-        metrics = _metrics_payload(loaded.metrics) if loaded is not None else None
-        options.append(
-            ArchitectureOption(
-                name=name,
-                label=module.architecture_label(name),
-                trained=loaded is not None,
-                is_default=name == default,
-                trained_at=loaded.trained_at if loaded is not None else None,
-                holdout_accuracy=(
-                    metrics.frame_holdout_accuracy if metrics is not None else None
-                ),
-                detail=_checkpoint_errors.get(name),
-            )
-        )
-    return options
-
-
 def _status() -> ClassifierStatus:
     _, names = _active_game()
     summary = _dataset(names)
@@ -480,7 +441,7 @@ def _status() -> ClassifierStatus:
             detail="The classifier is disabled; set CLASSIFIER_ENABLED=true.",
             threads=threads,
             min_confidence=floor,
-            architecture=settings.CLASSIFIER_ARCHITECTURE,
+            architecture="resnet34",
             dataset=summary,
             training=_run.as_payload() if _run is not None else None,
             active=False,
@@ -496,7 +457,7 @@ def _status() -> ClassifierStatus:
             ),
             threads=threads,
             min_confidence=floor,
-            architecture=settings.CLASSIFIER_ARCHITECTURE,
+            architecture="resnet34",
             dataset=summary,
             training=_run.as_payload() if _run is not None else None,
             active=False,
@@ -504,7 +465,6 @@ def _status() -> ClassifierStatus:
 
     run = _run.as_payload() if _run is not None else None
     active = _run is not None and _run.state is TrainingRunState.RUNNING
-    options = _architecture_options(module)
     loaded = _load_checkpoint()
     model = (
         _model_summary(loaded, summary.fingerprint, module.TRANSFORM_VERSION)
@@ -515,17 +475,12 @@ def _status() -> ClassifierStatus:
     if active:
         state = ClassifierState.TRAINING
         detail = "A training run is in progress."
-    elif loaded is None and settings.CLASSIFIER_ARCHITECTURE in _checkpoint_errors:
+    elif loaded is None and _checkpoint_error is not None:
         state = ClassifierState.ERROR
-        detail = _checkpoint_errors[settings.CLASSIFIER_ARCHITECTURE]
+        detail = _checkpoint_error
     elif loaded is None:
         state = ClassifierState.UNTRAINED
-        trained = [option.label for option in options if option.trained]
-        detail = (
-            f"{module.architecture_label(settings.CLASSIFIER_ARCHITECTURE)} has not "
-            "been trained yet. Press Train to fit it"
-            + (f", or classify with {' or '.join(trained)}." if trained else ".")
-        )
+        detail = f"{module.ARCHITECTURE_LABEL} has not been trained yet. Press Train."
     elif loaded.stale:
         state = ClassifierState.STALE
         detail = (
@@ -551,8 +506,7 @@ def _status() -> ClassifierStatus:
         torchvision_version=torchvision_version,
         threads=threads,
         min_confidence=floor,
-        architecture=settings.CLASSIFIER_ARCHITECTURE,
-        architectures=options,
+        architecture=module.ARCHITECTURE,
         model=model,
         dataset=summary,
         training=run,
@@ -587,7 +541,6 @@ def _plan(request: TrainRequest) -> dict[str, Any]:
         "background": pick(request.background, settings.CLASSIFIER_BACKGROUND),
         "pretrained": pick(request.pretrained, settings.CLASSIFIER_PRETRAINED),
         "seed": pick(request.seed, settings.CLASSIFIER_SEED),
-        "architecture": resolve_architecture(request.architecture),
     }
 
 
@@ -641,7 +594,7 @@ def _train_blocking(run: _TrainingRunRecord, module: Any, plan: dict[str, Any]) 
 
     return module.train(
         dataset_dir=settings.classifier_dataset_dir,
-        checkpoint_path=settings.classifier_checkpoint_for(plan["architecture"]),
+        checkpoint_path=settings.classifier_checkpoint_path,
         image_size=settings.CLASSIFIER_IMAGE_SIZE,
         lr_head=settings.CLASSIFIER_LR_HEAD,
         lr_finetune=settings.CLASSIFIER_LR_FINETUNE,
@@ -657,7 +610,7 @@ def _train_blocking(run: _TrainingRunRecord, module: Any, plan: dict[str, Any]) 
 
 async def _watch(run: _TrainingRunRecord, module: Any, plan: dict[str, Any]) -> None:
     """Run the fit and record how it ended. Never raises."""
-    architecture = str(plan["architecture"])
+    global _checkpoint, _checkpoint_key
     try:
         result = await asyncio.to_thread(_train_blocking, run, module, plan)
     except module.TrainingCancelled:
@@ -699,11 +652,9 @@ async def _watch(run: _TrainingRunRecord, module: Any, plan: dict[str, Any]) -> 
         run.metrics = _metrics_payload(_as_dict(result.metrics))
         run.message = _outcome_message(run.metrics)
         _finish_stages(run, TrainingStageState.COMPLETED)
-        # Drop only this architecture's cached model, so the very next classify
-        # uses what was just fitted -- and the other network's model, which this run
-        # did not touch, stays loaded.
-        _checkpoints.pop(architecture, None)
-        _checkpoint_keys.pop(architecture, None)
+        # Drop the cached model, so the very next classify uses what was just fitted.
+        _checkpoint = None
+        _checkpoint_key = None
     finally:
         run.finished_at = datetime.now(UTC)
 
@@ -753,7 +704,7 @@ async def train(request: TrainRequest | None = None) -> TrainingRun:
         epochs = int(plan["epochs_head"]) + int(plan["epochs_finetune"])
         run = _TrainingRunRecord(
             run_id=uuid.uuid4().hex[:12],
-            architecture=str(plan["architecture"]),
+            architecture=module.ARCHITECTURE,
             started_at=datetime.now(UTC),
             epoch_total=epochs,
             estimated_seconds=module.estimate_seconds(
@@ -855,11 +806,11 @@ def _position(name: str) -> tuple[int, int]:
 
 def _classify(request: ClassifyRequest, module: Any) -> ClassifyResult:
     game, names = _active_game()
-    architecture = resolve_architecture(request.architecture)
-    loaded = _load_checkpoint(architecture)
+    loaded = _load_checkpoint()
     if loaded is None:
-        detail = _checkpoint_errors.get(architecture) or (
-            f"{module.architecture_label(architecture)} has not been trained yet."
+        detail = (
+            _checkpoint_error
+            or f"{module.ARCHITECTURE_LABEL} has not been trained yet."
         )
         raise ClassifierUntrainedError(f"{detail} Train it before classifying.")
 

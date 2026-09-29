@@ -23,27 +23,7 @@ const STATUS = {
   detail: null,
   threads: 6,
   min_confidence: 0.9,
-  architecture: "efficientnet_b0",
-  architectures: [
-    {
-      name: "efficientnet_b0",
-      label: "EfficientNet-B0",
-      trained: true,
-      is_default: true,
-      trained_at: "2026-08-28T02:10:31",
-      holdout_accuracy: 1,
-      detail: null,
-    },
-    {
-      name: "resnet34",
-      label: "ResNet34",
-      trained: true,
-      is_default: false,
-      trained_at: "2026-08-28T02:32:21",
-      holdout_accuracy: 1,
-      detail: null,
-    },
-  ],
+  architecture: "resnet34",
   model: { classes: ["AA", "BB", "CC"], image_size: 224 },
   dataset: { exists: true, classes: [], warnings: [] },
   training: null,
@@ -65,8 +45,8 @@ const RESULT = {
   model: {
     classes: ["AA", "BB", "CC"],
     image_size: 224,
-    architecture: "efficientnet_b0",
-    label: "EfficientNet-B0",
+    architecture: "resnet34",
+    label: "ResNet34",
     metrics: {},
   },
   symbol_grid: [["AA", null]],
@@ -193,7 +173,6 @@ describe("ClassifyCard", () => {
 
     renderWithProviders(<Harness />);
     await userEvent.selectOptions(screen.getByLabelText("Split"), "shot");
-    await userEvent.selectOptions(screen.getByLabelText("Engine"), "resnet34");
     // Typed as a percentage, because that is how the whole page reads them.
     await userEvent.type(screen.getByLabelText("Floor %"), "85");
     await userEvent.click(screen.getByRole("button", { name: /classify/i }));
@@ -203,24 +182,9 @@ describe("ClassifyCard", () => {
     // percent, and this is the one place the two units meet.
     expect(request.mock.calls[0][0].data).toEqual({
       split: "shot",
-      architecture: "resnet34",
       min_confidence: 0.85,
       include_images: false,
     });
-  });
-
-  it("offers both trained engines and defaults to neither being named", async () => {
-    vi.spyOn(http, "request").mockResolvedValue({ data: envelope(RESULT) });
-
-    renderWithProviders(<Harness />);
-    const options = within(screen.getByLabelText("Engine")).getAllByRole("option");
-
-    expect(options.map((option) => option.value)).toEqual([
-      "",
-      "efficientnet_b0",
-      "resnet34",
-    ]);
-    expect(options[0].textContent).toMatch(/Default \(EfficientNet-B0\)/);
   });
 
   it("never asks for the per-tile pictures, since none are rendered", async () => {

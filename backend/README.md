@@ -65,11 +65,10 @@ backend/
     │   └── logging.py       dictConfig; console or JSON, request id on every line
     ├── config/              runtime settings plus shipped game data/readers
     │   ├── runtime.py       general settings and feature-settings composition
-    │   ├── agents.py        provider-neutral agent/workflow settings
     │   ├── obs.py           OBS runtime settings
     │   ├── ideck.py         i-deck runtime settings and path resolution
     │   ├── event_capture.py Event Based Capture runtime settings
-    │   ├── ocr.py           Tesseract OCR settings, and finding the engine
+    │   ├── ocr.py           PaddleOCR settings for the orb, meter and region readers
     │   ├── paylines.py      match threshold, default line set, overlay size
     │   ├── paytable.py      how far back to read the log for the loaded paytable
     │   ├── analyze_spin.py  which keys drive one spin, and how long each stage may take
@@ -108,13 +107,14 @@ backend/
     │   ├── symbol_dataset.py turns a folder of symbol artwork into training
     │                         pictures, putting back the reel background the
     │                         cut-outs ship without -- no torch, deliberately
-    │   ├── symbol_model.py  the only module that imports torch: EfficientNet-B0,
+    │   ├── symbol_model.py  the only module that imports torch: ResNet34,
     │                         its transforms, the training loop and a checkpoint
     │   ├── symbol_overlay.py rings each cell the classifier named, over the
     │                         reels -- no text; the codes are a table beside it
     │   ├── payline_overlay.py draws evaluated lines over the reels, one colour
     │                         each, and owns the palette they are reported with
-    │   ├── ocr.py           runs Tesseract over an image and reads its answer
+    │   ├── paddle_ocr.py    runs PaddleOCR over an image and reads its answer
+    │   ├── meter_paddle.py  the meter reader's per-cell recognition step
     │   └── paths.py         resolves an untrusted filename inside a directory
     ├── api/
     │   ├── router.py        aggregates endpoint modules  → mounted at /api
@@ -141,7 +141,6 @@ backend/
     │   └── handlers.py      the only place error responses are built
     ├── middleware/
     │   └── request_context.py   request id, timing, access log
-    ├── agents/               LangChain model, agent, workflow, and checkpoint factories
     └── services/            business logic; endpoints stay thin
         ├── games.py          game catalog and active-game switching
         ├── obs.py            the single long-lived obs-websocket session
@@ -338,54 +337,6 @@ All settings come from the environment (or `.env` locally) — see
 
 `ENVIRONMENT=production` automatically hides `/docs`, `/redoc` and
 `/openapi.json`, and disables reload.
-
-## Agentic workflows (LangChain + LangGraph)
-
-The backend includes LangChain v1 and LangGraph v1 as a provider-neutral agent
-runtime. Set `AGENT_MODEL` with LangChain's `provider:model` notation, such as
-`openai:gpt-4o-mini` or `anthropic:claude-sonnet-4-6`. The OpenAI and Anthropic
-adapters are installed; add the corresponding `langchain-<provider>` package
-for another provider. `AGENT_API_KEY` is the generic credential override, and
-`AGENT_API_KEY_PARAM` supports providers whose constructor uses a different
-keyword.
-
-Agent execution is disabled by default. The checked-in `.env.example` contains
-obvious dummy values so the variable names are present without looking like
-usable credentials. Replace the selected provider key and set
-`AGENT_ENABLED=true` before invoking a model. Model construction itself never
-makes a network request.
-
-The reusable factories keep request code small while leaving graph topology in
-your feature/service layer:
-
-```python
-from langchain.tools import tool
-
-from app.agents import build_agent, checkpoint_context, default_run_config
-from app.config.runtime import settings
-
-
-@tool
-def describe_game(game: str) -> str:
-    """Return a short description of a configured game."""
-    return f"Configured game: {game}"
-
-
-with checkpoint_context(settings, database_url=settings.DATABASE_URL) as saver:
-    agent = build_agent(settings, tools=[describe_game], checkpointer=saver)
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": "Describe FortuneOx."}]},
-        default_run_config(settings, thread_id="demo-thread"),
-    )
-```
-
-`AGENT_CHECKPOINT_BACKEND=memory` is the safe local default. Select `postgres`
-to use `AGENT_CHECKPOINT_URL` (or `DATABASE_URL`) with the included Postgres
-checkpointer package; set `AGENT_CHECKPOINT_SETUP=true` for the one-time table
-initialisation. `new_workflow()` and `compile_workflow()` expose the lower-level
-LangGraph `StateGraph` path for routers, human-in-the-loop steps, and
-multi-agent compositions. `LANGCHAIN_TRACING_V2=true` enables optional
-LangSmith tracing after a real `LANGCHAIN_API_KEY` is supplied.
 
 ## OBS Studio
 
@@ -704,7 +655,7 @@ Cuts one configured region out of a screenshot and hands back the picture. This
 is the crop step of OCR, stopping before the engine — worth having on its own,
 because *is this region aimed at the right rectangle* and *does the engine read
 it correctly* fail independently, and only the first is visible in the crop.
-It needs no Tesseract install.
+It needs no PaddleOCR install.
 
 ```
 GET  /api/roi/regions         the active game's regions, and the frame in hand
@@ -1082,8 +1033,10 @@ split merely old — split the frame again.
 
 The payline check answers *do these two tiles match each other*. It never learns
 what either one **is**. This is the reading that does: a network over the tiles
-themselves, and the only one that can disagree with the game. Two are available
--- EfficientNet-B0 and ResNet34 -- and both can be trained and kept at once.
+themselves, and the only one that can disagree with the game. ResNet34 is the
+one network fitted -- it named all fifteen tiles of the reference split
+correctly, which is what decided it over an EfficientNet-B0 that was tried and
+measured against the same split.
 
 It is also no longer only a page of its own. [Analyze Spin](#analyze-spin) reads
 a spin's reels through this, in place of both of the other two: the codes it
@@ -1104,8 +1057,8 @@ curl -X POST localhost:8001/api/image-classifier/train -d '{}'
 curl localhost:8001/api/image-classifier/status
 # stop it; whatever model was already saved is untouched
 curl -X POST localhost:8001/api/image-classifier/train/cancel
-# name the tiles of one split, with the other engine and a floor of your own
-curl -X POST localhost:8001/api/image-classifier/classify   -d '{"architecture": "resnet34", "min_confidence": 0.8}'
+# name the tiles of one split, with a floor of your own
+curl -X POST localhost:8001/api/image-classifier/classify   -d '{"min_confidence": 0.8}'
 ```
 
 Four files, one per concern: `utils/symbol_dataset.py` turns artwork into training
@@ -1115,7 +1068,7 @@ only module that imports torch, `utils/symbol_overlay.py` draws the answer on th
 reels, and `services/image_classifier.py` is the order they go in plus the one
 training run the process may have.
 
-### torch is optional, exactly like Tesseract
+### torch is optional, exactly like PaddleOCR
 
 `requirements.txt` installs torch and torchvision, but every import of them is
 *inside* a function. So a venv without them starts the service normally and
@@ -1200,33 +1153,28 @@ Two more that are not the stock recipe:
   61-128px, so without this the network trains on detail that is simply absent at
   inference.
 
-### Two engines, and why both are kept
+### One engine
 
-`CLASSIFIER_ARCHITECTURE` picks between **ResNet34** (21.8M parameters, the
-default) and **EfficientNet-B0** (5.3M). Both take the same 224px
-ImageNet-normalised input through
-the same transforms, so the sample synthesis, augmentation, schedule, evaluation
-and checkpoint format are all shared -- only the backbone differs, which is why
-adding a third is one entry in `_ARCHITECTURES` rather than a second code path.
+**ResNet34** (21.8M parameters) is the network fitted. There is no
+`CLASSIFIER_ARCHITECTURE` setting and no per-request `architecture` field left
+to pick a different one — `app/utils/symbol_model.py` hardcodes the one
+backbone it builds, so `POST /train` and `POST /classify` take no such option
+and `GET /status` names it as a plain fact rather than a list of choices.
 
-They are not a mode. **Each keeps its own checkpoint** —
-`model-<architecture>.pt` and `metrics-<architecture>.json` — so training one
-leaves the other untouched and both can answer. `POST /train` and
-`POST /classify` each take an optional `architecture`, `GET /status` lists every
-engine with whether it is trained and what it scored, and the dashboard has a
-picker on both cards. The point is comparison: two independently-fitted networks
-agreeing about a tile is worth more than one of them being confident, and when
-they disagree that is a signal about the tile rather than about either model.
-
-On CPU the larger network is not simply the slower one -- ResNet is plain
+An EfficientNet-B0 (5.3M parameters) was tried and measured against the same
+224px ImageNet-normalised input and the same transforms before it was removed.
+On CPU the larger network was not simply the slower one -- ResNet is plain
 convolutions while EfficientNet's depthwise separable ones are poorly served by
-CPU kernels -- but measured here ResNet34 does cost roughly twice as long
-(~8 minutes against ~4.3 for the same schedule). Both reach 1.00 on held-back
-frames, so pick on behaviour against real splits rather than on either number --
-and that is what settled the default: ResNet34 names all fifteen tiles of the
-reference split correctly, so it is what `CLASSIFIER_ARCHITECTURE` ships as and
-what grades a spin unless the request says otherwise. Re-measure before trusting
-that; it is a statement about one split and one set of artwork.
+CPU kernels -- and it cost roughly twice as long to train (~8 minutes against
+~4.3 for the same schedule). Both reached 1.00 on held-back frames, so the
+decision came down to behaviour against a real split rather than either number:
+ResNet34 named all fifteen tiles of the reference split correctly and
+EfficientNet-B0 did not, which is what settled it. Re-measure before trusting
+that; it was a statement about one split and one set of artwork.
+
+The checkpoint is still `model-resnet34.pt` beside `metrics-resnet34.json` --
+that naming survived the cut so an already-trained checkpoint on a deployed
+machine is not orphaned by there being only the one architecture now.
 
 ### The confidence floor
 
@@ -1307,12 +1255,14 @@ installed -- the same property the hand-copied `paylines` block exists to preser
 
 ### Where the output goes
 
-`CLASSIFIER_MODEL_DIR/` holds `model-<architecture>.pt` (weights plus classes,
+`CLASSIFIER_MODEL_DIR/` holds `model-resnet34.pt` (weights plus classes,
 input size, the architecture itself, normalisation, `transform_version` and a
-dataset fingerprint), a matching `metrics-<architecture>.json`, and one shared
-`samples/`. The architecture is on the checkpoint because without it `load` would
-build the default backbone and the state dict simply would not fit -- an obscure
-shape error instead of "this is a ResNet checkpoint". The checkpoint is written beside and moved over, so a run interrupted
+dataset fingerprint), a matching `metrics-resnet34.json`, and one shared
+`samples/`. The architecture is on the checkpoint even though there is only the
+one now, because without it `load` would build that one backbone regardless and
+a checkpoint trained under a since-removed architecture would fail with an
+obscure shape error instead of a clear "this is no longer supported, retrain
+it". The checkpoint is written beside and moved over, so a run interrupted
 mid-write cannot leave a truncated file where a working one was, and it is cached
 on the file's mtime and size the way `services/paytable.py` caches `math.xml`.
 
@@ -1346,7 +1296,7 @@ crop, and every other region leaves it null.
 ```jsonc
 "meter": {
   "mode": "cash",              // or "credits" -- the same cell, different quantity
-  "currency": "$",             // "?" when a symbol is drawn that Tesseract won't name
+  "currency": "$",             // "?" when a symbol is drawn that the engine won't name
   "cash": 995.60,              // null in credits mode
   "credits": null,             // null in cash mode
   "win": 0.75,                 // null is normal: the WIN cell is empty between spins
@@ -1357,12 +1307,13 @@ crop, and every other region leaves it null.
 }
 ```
 
-`app/utils/meter.py` does the image work and knows nothing about game configs;
-`app/services/meter.py` supplies the engine and the per-skin band and field
-windows. Reading never
-fails the crop -- a missing Tesseract or an unreadable strip populates
-`meter.error` and the picture still comes back, because checking that a region is
-aimed correctly must not require anything to be legible inside it.
+`app/utils/meter.py` does the engine-agnostic geometry (row/column detection,
+cell cropping, field assignment) and knows nothing about game configs;
+`app/utils/meter_paddle.py` is the PaddleOCR recognition step built on it, and
+`app/services/meter.py` supplies the per-skin band and field windows. Reading
+never fails the crop -- a missing PaddleOCR install or an unreadable strip
+populates `meter.error` and the picture still comes back, because checking that
+a region is aimed correctly must not require anything to be legible inside it.
 
 ### The values are found, not looked up
 
@@ -1419,30 +1370,27 @@ comes from the game's log
 nothing here needs to change; this section records what was measured, so it does
 not have to be measured again.
 
-Measured on a 689×43 FortuneOx strip, swept over crops, row bands, `psm` modes,
-upscales and both polarities:
+Measured on a 689×43 FortuneOx strip with the Tesseract reader this project used
+before PaddleOCR, swept over crops, row bands, page-segmentation modes, upscales
+and both polarities — the badge's own geometry (a 27px group at centre 0.957,
+outside the declared value band) and the unit glyph's illegibility are properties
+of the strip, not of the engine, so the conclusion still holds:
 
-- the badge is a group at centre **0.957** (cols 646–673, 27 px wide, clear of
-  `MIN_GROUP_WIDTH`);
-- with the band at rows 13–34 the digit reads **correctly**, and `'1'` was the
-  most common answer across ~166 attempts — but it is band-sensitive, and other
-  bands and crops give `4c`, `4`, `7c`, `141`. It would need measuring per skin;
-- the **unit never reads**. `¢` came back as `c`, `d` or nothing. `WHITELIST`
-  carries no `¢`/`c`, and `_TOKEN` and `ocr.parse_number` both stop at the first
-  non-digit, so `1¢` reduces to `1` — indistinguishable from a credit count of 1.
-  **So the badge cannot supply the unit, and the unit is the half that matters**;
-- the glyphs are **dark on a bright pill**, inverted from the rest of the strip,
-  which is what `OcrOptions.invert` is for;
-- **one band cannot serve both cells.** FortuneOx's value band `[0.213333,
-  0.600000]` is rows 9–26 and the badge glyphs sit at rows 15–30, so the declared
-  band clips them. The badge is inside the *strip* but not inside the *band*
-  within it;
-- at 27 px it falls under `MIN_GROUP_WIDTH` below roughly 0.37× canvas, so it
-  could only ever be pinned at ≥ 1.0× while
-  `test_the_meter_reads_across_canvas_sizes` sweeps from 0.35×.
+- the badge sits at centre **0.957** (cols 646–673 on that strip), clear of
+  `MIN_GROUP_WIDTH` as a group but **outside the declared value band**
+  (`[0.213333, 0.600000]`, rows 9–26 against the badge's rows 15–30) — inside the
+  *strip* but not inside the *band* within it;
+- the digit alone is readable with the right band, but band-sensitive (other
+  bands and crops gave `4c`, `4`, `7c`, `141` instead of `1`);
+- the **unit glyph never reads** at any band, scale or polarity tried. Without
+  the unit, a bare digit is indistinguishable from a credit count — **so the
+  badge cannot supply the one thing that matters**;
+- the glyphs are dark on a bright pill, inverted from the rest of the strip.
 
 Worth adding later only as *corroboration* — it would catch a mid-run denomination
-change and a mis-aimed window, and nothing else.
+change and a mis-aimed window, and nothing else. Re-measure against PaddleOCR
+before relying on the specific numbers above; the conclusion (read the
+denomination from the log, not the strip) does not depend on them.
 
 ### The row band is per skin, so declare it
 
@@ -1501,41 +1449,32 @@ game work with no setup, but it can only judge from the frame in front of it --
 measured over the saved crops, fitting from each strip independently reads 15 of
 20 correctly where a declared band reads 19. **Measure it once per game.**
 
-### One reading is usually enough, and the confident one wins
+### One reading per cell, no escalation ladder
 
-`psm 7` reads `49531` as `49331`; `psm 8` gets that right but turns `75` into
-`75.`; and HuffNPuffLink's orange WIN value is read by **`psm 13` alone** -- every
-other mode returns nothing at all for it. So a field is read at `psm 8` first and
-escalated only while it is unconvincing, and the reading the engine was *surest*
-of is taken rather than the most popular one: where those two rules disagreed,
-confident was right and popular was wrong every time (`0.88` over `0.83`, `75`
-over `5`, `99371` over `99374`).
+Unlike the Tesseract reader this project used before, PaddleOCR reads each cell
+once (`app/utils/meter_paddle.read_group`) rather than escalating through a
+ladder of page-segmentation modes and upscales — Paddle's detector does not have
+per-mode variants to escalate through, and a wrong-but-confident first read is
+the trade this project already accepted for the orb reader for the same reason.
+A reading below `meter_paddle.FLOOR` (measured on the rescaled 0-100 range) is
+discarded rather than reported, same as a figure below the orb reader's own
+floor.
 
-Escalating keeps a strip near six engine calls instead of twenty-seven, and the
-reads run concurrently, which matters because each is a subprocess at roughly
-200ms. Expect **3-6s** for a strip.
-
-**Except that the engine does not always give a confidence.** Under
-`tessedit_char_whitelist` — which this module always sets, because without it a
-cell border welds onto the value and `$2` arrives as `s2` — Tesseract 5's LSTM
-reports confidence **exactly 0** for a word it read perfectly. It hits the
-correct readings hardest: `$2,959.44` comes back verbatim from six of the seven
-rungs and every one is scored 0. So 0 means *unmeasured*, never *wrong*:
-`MeterField.rank` puts an unscored reading below any scored one but above nothing
-at all, `FLOOR` only judges a reading that has a score, and `unmapped` still
-requires one — knowing which cell a value came out of is what makes an unscored
-transcription worth trusting, and a stray has no such backing. Ranking on
-confidence alone starts at 0, and `0 > 0` is false, which discarded the only
-transcription there was and returned the field empty.
+Reading is not concurrent either: Paddle is CPU-bound against one shared,
+in-process model, so `meter_paddle.extract` reads a strip's cells one at a time
+(see that module's docstring) rather than pooling them the way the deleted
+Tesseract reader did over several subprocesses.
 
 ### Every value gets a margin, because one band serves three cells
 
 The three cells are not the same height — FortuneOx's WIN digits stand 3 rows
 taller than CASH's and BET's — so a band measured to clear the shorter cells'
-borders leaves the tall one's glyphs touching both edges of their crop. Tesseract
-reads a stroke flush against the edge as one with an extra stroke: `105` came back
-as `4105` at confidence 83, and `$1,250.00` as `$4.7250.00`, both from crops that
-are perfectly legible by eye.
+borders leaves the tall one's glyphs touching both edges of their crop. Measured
+against the Tesseract reader this project used before PaddleOCR, a stroke flush
+against the crop edge read as one with an extra stroke: `105` came back as `4105`
+at confidence 83, and `$1,250.00` as `$4.7250.00`, both from crops that are
+perfectly legible by eye. The fix is geometric (a clipped glyph is bad input to
+any reader), so it stayed when the engine changed.
 
 So each value's crop is grown back over the strip while the rows it gains are not
 the cell's own border (a row lit right across is a rule; a row of glyphs lights
@@ -1560,8 +1499,10 @@ game log carries the real bet and win events, and is the way to make it certain.
 
 ## Reading text (OCR)
 
-Turns a region into the number on it. Tesseract does the recognition; everything
-here is about giving it something it can read and saying how sure it was.
+Turns a region into the number on it. PaddleOCR does the recognition — the one
+OCR engine this project uses, for the cash meter, a symbol orb's prize figure, a
+cyclic-message caption, and any other named region — everything here is about
+giving it something it can read and saying how sure it was.
 
 ```
 GET  /api/ocr/status          engine, version, languages, and the default options
@@ -1578,28 +1519,24 @@ curl -s -X POST localhost:8001/api/ocr/read -H 'content-type: application/json' 
   "run_id": "2026-08-19_04-01-02",
   "file_name": "041_spin-result-received_04-01-24.png",
   "regions": ["cash_meter"],
-  "options": {"psm": 11},
+  "options": {"min_confidence": 0.8},
   "include_crop": true
 }'
 ```
 
 ### Installing the engine
 
-Tesseract is an external program, not a pip package — `requirements.txt` does not
-and cannot carry it. Install it once per machine:
+PaddleOCR is a library, not a program — a pip install, but not from PyPI's default
+index on Windows:
 
 ```powershell
-winget install --id UB-Mannheim.TesseractOCR
-# or the installer from https://github.com/UB-Mannheim/tesseract/wiki
+pip install paddlepaddle -f https://www.paddlepaddle.org.cn/whl/windows.html
+pip install paddleocr
 ```
 
-**The installer does not put it on `PATH`**, so the backend looks where the
-installers actually put it: `%LOCALAPPDATA%\Tesseract-OCR`,
-`%LOCALAPPDATA%\Programs\Tesseract-OCR`, `%PROGRAMFILES%\Tesseract-OCR` and the
-x86 form, after checking `PATH` first. Set `OCR_TESSERACT_CMD` only for an install
-somewhere else; it accepts the folder as well as the `.exe`, because the folder is
-the form the installer shows. `GET /api/ocr/status` reports which one it found, its
-version and its languages — or, when there is none, every path it looked in.
+Needs Python 3.13 or lower — paddlepaddle publishes no wheels for 3.14.
+`GET /api/ocr/status` reports whether it's importable, its version and the
+configured language — or, when it is not installed, how to fix that.
 
 Nothing fails without an engine. OCR is optional in the same way OBS is: the
 service starts, `/health/ready` stays green, `status` answers `not_installed`, and
@@ -1609,40 +1546,35 @@ only a read is refused (409 `OCR_ENGINE_UNAVAILABLE`).
 
 Later wins, and every reading reports what it ended up with:
 
-1. **The environment** (`OCR_*` in `.env`) — the defaults for every region.
-2. **The game config's `ocr` block** — per region, because the right
-   page-segmentation mode is a property of the region, not of the machine.
+1. **The environment** (`OCR_*` in `.env`, `app/config/ocr.py`) — the defaults for
+   every region.
+2. **The game config's `ocr` block** — per region, because how much a region needs
+   enlarged or trusted is a property of the region, not of the machine.
 3. **The request's `options`** — for one read, which is how a region gets tuned.
 
 ```json
 "roi": { "cash_meter": [0.000000, 0.844468, 1.000000, 0.884554] },
-"ocr": { "cash_meter": { "psm": 11, "char_whitelist": "0123456789.,$" } }
+"ocr": { "cash_meter": { "min_confidence": 0.8 } }
 ```
 
-The keys are `language`, `psm`, `oem`, `char_whitelist`, `upscale`, `grayscale`,
-`autocontrast`, `invert`, `threshold` and `dpi`. They are validated when the config
-is read, so a misspelled option or a `psm` Tesseract would refuse is an error at
-load time naming the file and the region — not a silent misread months later.
+The keys are `language`, `upscale` and `min_confidence` — far fewer than
+Tesseract needed, because Paddle wants little preprocessing: no greyscale,
+autocontrast, threshold, page-segmentation mode or DPI hint, since it was trained
+on colour photographs and reads a region largely as given. They are validated
+when the config is read, so a misspelled option is an error at load time naming
+the file and the region — not a silent misread months later.
 
-### The defaults are aimed at a meter, not a document
+### Reading a region: what the options actually tune
 
-A region cut out of a game frame is one short line of large glyphs, a few hundred
-pixels wide, drawn over artwork and usually light on dark. So `OCR_PSM` defaults to
-7 (*a single text line*) rather than Tesseract's own 3 (*a whole page*), the crop is
-greyscaled, contrast-stretched and enlarged 3x before it is handed over, and the
-engine is told the image is 300 DPI instead of being left to guess from a small
-picture. Measured on this project's own captures: at native size the cash meter
-reads as nothing at all, and at 3x it reads `$842.94 $1.20 176`.
-
-Two things worth knowing when a reading is wrong:
-
-- **`char_whitelist` is a hint, not a rule.** Under the LSTM engine (`oem` 3)
-  Tesseract may still return a character outside it, and on this project's meters a
-  digits-only whitelist sometimes joins two values into one. Try it, keep it if it
-  helps that region.
-- **`include_crop` returns what the engine actually saw**, preprocessing and all,
-  as a data URI. That picture answers "is this a bad region or a bad option" in one
-  look, which reading the text again never does.
+- **`upscale`** enlarges the crop before the detector sees it. Unlike Tesseract,
+  Paddle's detector resizes internally, so the useful range is much narrower —
+  start at `1.0` and only raise it for a genuinely tiny region.
+- **`min_confidence`** is the noise floor: a recognised word below it does not
+  contribute to `text`/`value`/`values`, though it still appears in `words` so a
+  rejected reading is visible rather than silent.
+- **`include_crop` returns exactly what the engine saw**, as a data URI. That
+  picture answers "is this a bad region or a bad option" in one look, which
+  reading the text again never does.
 
 ### Tuning a region
 
@@ -1650,8 +1582,8 @@ Read the same frame from a capture run over and over, changing one option per
 request, then write the winner into the game config:
 
 ```
-POST /api/ocr/read  {"run_id": ..., "file_name": ..., "options": {"psm": 6}}
-POST /api/ocr/read  {"run_id": ..., "file_name": ..., "options": {"psm": 11}}
+POST /api/ocr/read  {"run_id": ..., "file_name": ..., "options": {"min_confidence": 0.6}}
+POST /api/ocr/read  {"run_id": ..., "file_name": ..., "options": {"upscale": 2.0}}
 ```
 
 A live read cannot be repeated — the screen has moved on — which is exactly why a
@@ -1659,11 +1591,14 @@ run's screenshots are the frames to tune against.
 
 ### What a reading says
 
-`text` is what was recognised; `value` is the first number in it and `values` is
-all of them, because a meter panel often holds credit, bet and win in one region.
-`confidence` is the engine's own mean, 0–100, and is the difference between *the
-meter says 842.94* and *the engine produced 842.94 out of a crop of noise*. `words`
-carries each word's box in crop pixels, for drawing an overlay.
+`text` is the words that cleared `min_confidence`, joined; `value` is the first
+number in it and `values` is all of them, because a meter panel often holds
+credit, bet and win in one region. `confidence` is the mean of the words behind
+`text`, 0–100 (Paddle's own 0–1 rescaled), and is the difference between *the
+meter says 842.94* and *the engine produced 842.94 out of a crop of noise*.
+`words` carries **every** word the detector found, rejected ones included, each
+with its box in crop pixels for drawing an overlay — the same "show what was
+read, even refused" rule the scatter/prize reader follows.
 
 One region failing does not fail the read: ask for four and the broken one comes
 back with `error` set beside the three that worked. A region name the game does not
@@ -2203,7 +2138,7 @@ cash meter and payline validations over the frames it took.
 
 ```
 POST /api/analyze-spin/start          spin once, and validate it
-                                      ?record=, ?architecture=, ?control=
+                                      ?record=, ?control=
 GET  /api/analyze-spin/status         the run in progress, or the last one
 POST /api/analyze-spin/cancel         ask the run in progress to stop
 GET  /api/analyze-spin/frames/{file}  one screenshot the run took
@@ -2360,7 +2295,7 @@ Five things about them:
   lands only once whatever call is in flight returns.
 
 - **The readings at the end cannot fail each other.** A machine with no
-  Tesseract still gets its reel reading and its payline check; one with no torch
+  PaddleOCR still gets its reel reading and its payline check; one with no torch
   still gets its meter arithmetic; one without the game installed still gets
   both. A validation that *runs* and reports `failed` is a completed step — only
   one that could not run at all fails. The single dependency is that `paylines`
@@ -2386,7 +2321,7 @@ That and the two file-serving routes are the only exceptions in this API.
 ### The cash meter validation is arithmetic, not a rule
 
 `roi.cash_meter` is read off each frame — which is
-[Reading the meter](#reading-the-meter-values), so it needs Tesseract — and each
+[Reading the meter](#reading-the-meter-values), so it needs PaddleOCR — and each
 check is stated as a relation between two of those readings, with the sum that
 decided it:
 
@@ -2629,16 +2564,11 @@ Setting it *blank* rather than leaving it out opts back into
 `CLASSIFIER_MIN_CONFIDENCE`, which is the escape hatch for grading a spin exactly
 as the page would.
 
-**Which network grades a spin is a per-run choice**, the same shape of choice
-`record` is: `POST /start?architecture=resnet34`, falling back to
-`ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE` and then to `CLASSIFIER_ARCHITECTURE`
-(ResNet34). Both networks stay trained at once and they do not read a
-split equally well, so running one spin through each and comparing is worth more
-than either alone -- which is why the dashboard offers it as a dropdown beside the
-spin button rather than burying it in `.env`. The name is resolved in `start()`
-before the game config is even read, so an unknown one is a **400 on the request**
-rather than a failed step twelve steps in, and `run.reels.architecture` records
-which checkpoint answered.
+**Every spin is graded by the one trained network.** There is no
+`architecture` request field and no `ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE`
+setting left to choose otherwise -- `run.reels.architecture` still reports
+which checkpoint answered (ResNet34, from the classify result), but it is no
+longer a choice a caller makes.
 
 There is deliberately **no fallback to cosine similarity** when the reading fails:
 a run measured by likeness and then priced as though it had been named is worse

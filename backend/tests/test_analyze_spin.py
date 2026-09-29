@@ -61,7 +61,6 @@ from app.schemas.paytable import (
     WinGeometryInfo,
 )
 from app.services import analyze_spin as spin_service
-from app.services import image_classifier as classifier_service
 from app.utils import denomination as denomination_util
 from app.utils import paylines as payline_config
 from tests.asserts import assert_failure, assert_success
@@ -744,7 +743,6 @@ def run_for(
         # Pricing is downstream of both presses, so which channel drove them
         # cannot reach it. The i-deck is simply the default.
         control=SpinControl.IDECK,
-        architecture="resnet34",
         bet_per_unit=bet_per_unit,
         record=False,
         steps={},
@@ -1198,56 +1196,6 @@ def test_a_blank_floor_opts_back_into_the_classifiers_own() -> None:
     )
 
 
-def test_the_architecture_setting_only_supplies_a_default(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Blank hands the choice back to the classifier's own default, which is what
-    lets the dashboard's dropdown open on EfficientNet-B0 without the visible
-    default and the configured one being two separate facts."""
-    monkeypatch.setattr(settings, "ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE", "")
-    assert settings.analyze_spin_classifier_architecture is None
-
-    monkeypatch.setattr(settings, "ANALYZE_SPIN_CLASSIFIER_ARCHITECTURE", " resnet34 ")
-    assert settings.analyze_spin_classifier_architecture == "resnet34"
-
-
-def test_a_request_naming_no_network_gets_the_configured_one() -> None:
-    """ResNet34 by default: it is the one that reads a real split better, and the
-    dashboard's dropdown opens on the same entry so the visible default and the
-    configured one cannot drift."""
-    assert settings.CLASSIFIER_ARCHITECTURE == "resnet34"
-    assert classifier_service.resolve_architecture(None) == "resnet34"
-
-
-def test_either_network_can_be_asked_for_by_name() -> None:
-    """Both stay trained at once, and grading a spin with each in turn is the
-    reason this is a per-run choice rather than a setting."""
-    for name in ("efficientnet_b0", "resnet34"):
-        assert classifier_service.resolve_architecture(name) == name
-
-
-async def test_an_unknown_network_is_refused_before_the_spin(
-    client: AsyncClient,
-) -> None:
-    """A 400 on the request, not a failed step twelve steps in.
-
-    Checked before the game config is even read, because a spin driven all the
-    way to its result and then graded by nothing is the worst way to find out
-    about a typo.
-    """
-    response = await client.post(f"{API}/start", params={"architecture": "mobilenet"})
-
-    assert response.status_code == 400
-    payload = response.json()
-    assert_failure(payload, code="BAD_REQUEST")
-    # The message names both networks, so the typo is fixable from the error.
-    assert "efficientnet_b0" in payload["message"]
-    assert "resnet34" in payload["message"]
-    # And nothing was started.
-    state = assert_success((await client.get(f"{API}/status")).json())
-    assert state["active"] is False
-
-
 # --- what a bet unit cost -------------------------------------------------
 
 
@@ -1272,7 +1220,6 @@ def driven_by(control: SpinControl) -> spin_service._ActiveRun:
         rules=(),
         started_at=datetime(2026, 9, 24, 9, 0, 0),
         control=control,
-        architecture="resnet34",
         record=False,
         steps={},
     )

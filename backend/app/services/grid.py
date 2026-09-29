@@ -311,12 +311,10 @@ def read_split(directory: Path) -> SplitOnDisk:
 
 
 # --- placing the grid on a frame that was never written -------------------
-# The split above is the written record of one screenshot. This is the same
-# geometry answered for a frame that is only ever in memory -- the frames of a
-# per-tile clip, which arrive from OBS several times a second and are cut up and
-# thrown away. It lives here rather than in the caller because *where a tile is*
-# is this module's question, and answering it twice is how the clips and the
-# split would come to disagree about which pixels are r1c1.
+# Same geometry as the split above, answered for a frame that only ever lives
+# in memory (a per-tile clip's frames). Lives here, not in the caller, because
+# *where a tile is* is this module's question -- answering it twice is how a
+# clip and a split would disagree about which pixels are r1c1.
 
 
 @dataclass(frozen=True)

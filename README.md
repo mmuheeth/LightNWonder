@@ -4,7 +4,7 @@ Monorepo scaffold: FastAPI backend, React + Vite frontend.
 
 | Part                     | Stack                                                                      | Port |
 | ------------------------ | -------------------------------------------------------------------------- | ---- |
-| [backend/](backend/)     | Python, FastAPI, LangChain, LangGraph, uvicorn, pydantic v2                 | 8001 |
+| [backend/](backend/)     | Python, FastAPI, uvicorn, pydantic v2                                       | 8001 |
 | [frontend/](frontend/)   | React 19, Vite, Tailwind v4, shadcn/ui, react-query, Zustand (plain JS)     | 3001 |
 
 Each side has its own README with the detail:
@@ -252,8 +252,8 @@ the settings.
 ## Reading text (OCR)
 
 Reads the game's meters off a frame — the regions the selected game declares in
-its `roi` block, turned into text and numbers by
-[Tesseract](https://github.com/UB-Mannheim/tesseract/wiki):
+its `roi` block, turned into text and numbers by PaddleOCR, the one OCR engine
+this project uses (also the orb/prize-figure and cyclic-message-caption reader):
 
 ```
 GET  /api/ocr/status     the engine, its version and languages
@@ -261,18 +261,17 @@ GET  /api/ocr/regions    what can be read, and the options each is read with
 POST /api/ocr/read       read regions off the screen now, or off a capture run
 ```
 
-Tesseract is an external program, so it is installed per machine
-(`winget install --id UB-Mannheim.TesseractOCR`) rather than pinned in
-`requirements.txt`. **Its installer does not put it on `PATH`**, so the backend
-looks where the installers actually put it and reports what it found; set
-`OCR_TESSERACT_CMD` only for an install somewhere else. Nothing fails without an
-engine — the service starts, health stays green, and only a read is refused.
+PaddleOCR is a library, not a program, so it installs with pip rather than a
+separate machine-level installer — but not from PyPI's default index on Windows:
+`pip install paddlepaddle -f https://www.paddlepaddle.org.cn/whl/windows.html`
+then `pip install paddleocr` (needs Python 3.13 or lower). Nothing fails without
+an engine — the service starts, health stays green, and only a read is refused.
 
 Every reading carries the engine's confidence and the exact options that produced
-it, because the same crop can read perfectly at one page-segmentation mode and
-come back as punctuation at another. Options layer: `OCR_*` in `.env`, then the
-game config's per-region `ocr` block, then a request's own overrides for one read
-— which, pointed at a screenshot a capture run already took, is how a region gets
+it, because the same crop can read cleanly at one confidence floor and pick up
+artwork noise at another. Options layer: `OCR_*` in `.env`, then the game
+config's per-region `ocr` block, then a request's own overrides for one read —
+which, pointed at a screenshot a capture run already took, is how a region gets
 tuned against a frame that does not move. See
 [backend/README.md](backend/README.md#reading-text-ocr) for the options, the
 tuning loop and the failure codes.
@@ -380,23 +379,18 @@ two-letter symbol code), then read back against the tiles the reel grid already
 wrote. Its own tab, `/image-classifier` — and, since it started grading spins,
 the reading [Analyze Spin](#analyze-spin) rests on rather than a page of its own.
 
-**Two engines, both kept at once.** ResNet34 (21.8M parameters, the default) and
-EfficientNet-B0 (5.3M) share every transform, so only the backbone differs — and
-each has its own checkpoint, so training one leaves the other alone. Train and
-classify each take an optional `architecture`, and the page has a picker on both
-cards. The point is comparison: two independently-fitted networks agreeing about
-a tile is worth more than one of them being confident. ResNet34 leads because it
-is the one that reads a real split better here — it names all fifteen tiles of the
-reference split correctly.
+**One engine.** ResNet34 (21.8M parameters) is the network fitted -- it reads a
+real split better than the EfficientNet-B0 (5.3M) that was tried and measured
+alongside it: it names all fifteen tiles of the reference split correctly, which
+is what decided it. There is no architecture to pick per request or per
+setting; `POST /train` and `POST /classify` take no such option.
 
 ```bash
 # what can be trained on, and what is wrong with it
 curl localhost:8001/api/image-classifier/dataset
 # fit a model -- minutes on CPU; returns as soon as it is under way
 curl -X POST localhost:8001/api/image-classifier/train -d '{}' -H 'Content-Type: application/json'
-# or the other engine
-curl -X POST localhost:8001/api/image-classifier/train -d '{"architecture": "resnet34"}' -H 'Content-Type: application/json'
-# follow it, and see which engines are trained
+# follow it, and see what it scored
 curl localhost:8001/api/image-classifier/status
 # name the tiles of the newest split
 curl -X POST localhost:8001/api/image-classifier/classify -d '{}' -H 'Content-Type: application/json'

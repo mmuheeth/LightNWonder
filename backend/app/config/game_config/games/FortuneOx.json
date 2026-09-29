@@ -109,5 +109,13 @@
       0.0694,
       0.9383
     ]
+  },
+  "gaf": {
+    "host": "127.0.0.1",
+    "port": 9090,
+    "game_type": "BallyStyle",
+    "gdk_version": "12",
+    "object_query_root": "app/config/game_config/gaf_objects/FortuneOxEGM",
+    "take_win_button": "TakeWinButton"
   }
 }

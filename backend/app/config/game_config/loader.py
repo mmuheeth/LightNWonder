@@ -10,8 +10,8 @@ from typing import Any
 from app.config.game_config.models import GameConfig, GameConfigError, freeze_mapping
 from app.utils import paylines as payline_config
 from app.utils.game_log import EventRule, LogRuleError, compile_rules
-from app.utils.ocr import OcrOptionsError
-from app.utils.ocr import parse_overrides as parse_ocr_overrides
+from app.utils.paddle_ocr import OcrOptionsError
+from app.utils.paddle_ocr import parse_overrides as parse_ocr_overrides
 
 __all__ = ["load_game_config"]
 

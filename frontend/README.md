@@ -68,7 +68,7 @@ src/
 │   ├── paylines/           checks a split's tiles against the patterns that pay
 │   ├── paytable/           the maths the running game loaded: symbols, reel
 │   │                   strips, combos, and the payline set in play
-│   ├── image-classifier/   trains ResNet34 or EfficientNet-B0 on the symbol
+│   ├── image-classifier/   trains ResNet34 on the symbol
 │   │                   artwork, then names the tiles of a split: the reels as
 │   │                   two matrices (codes and display names), the ringed
 │   │                   overlay, and a per-tile table -- or "unknown" below the
@@ -248,16 +248,11 @@ legible when they sit where they sat on the glass. That card is also the one
 thing on the page that is **not** a step of the sequence and must not become one
 -- nothing is graded by it, so its failures arrive on `run.errors`.
 
-`spin-control-card` asks for the two per-run choices in the order they matter,
-between the button and the run's own report: **Classifier** (which trained network
-names the tiles, ResNet34 or EfficientNet-B0) and then **Record video**. The first
-changes what the run *concludes* and the second only what it captures, which is
-why it sits first. Its option list is hardcoded rather than fetched from the
-image-classifier slice — the backend's own architecture type is the same closed
-pair and `/start` 400s an unknown name, and a feature has to delete in one
-directory. The first entry is both what the dropdown opens on and what the backend
-would pick for a request naming none, so the visible default and the configured
-one cannot drift.
+`spin-control-card` asks for one per-run choice, between the button and the
+run's own report: **Record video**. There used to be a second, a dropdown for
+which trained network names the tiles, back when the classifier kept both
+ResNet34 and EfficientNet-B0 trained at once; now that there is only ResNet34,
+that choice does not exist to make, and the card asks nothing about it.
 
 ### Two routes, one slice
 

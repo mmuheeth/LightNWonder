@@ -25,25 +25,19 @@ const ANALYZE_TIMEOUT_MS = 240_000;
 
 /**
  * Read the game's current screen.
- * @param {{fileName?: string, architecture?: string, includeImages?: boolean}} [options]
+ * @param {{fileName?: string, includeImages?: boolean}} [options]
  *   `fileName` reads a screenshot already on disk instead of capturing one.
- *   `architecture` picks which trained network names the tiles — omit for the
- *   backend's default.
  * @param {{signal?: AbortSignal}} [request] for a caller that has its own signal.
  *   `useAnalyzeScreen` passes none -- a react-query mutation has no signal to
  *   give -- so this is for a direct call or a test that wants to abort one.
  * @returns {Promise<object>} the reading: `source`, `reels`, `meter`, `errors`
  */
-export function analyzeScreen(
-  { fileName, architecture, includeImages = true } = {},
-  { signal } = {},
-) {
+export function analyzeScreen({ fileName, includeImages = true } = {}, { signal } = {}) {
   return apiRequest({
     method: "POST",
     url: `${EVALUATE_SCREEN_URL}/analyze`,
     data: {
       file_name: fileName ?? null,
-      architecture: architecture ?? null,
       include_images: includeImages,
     },
     timeout: ANALYZE_TIMEOUT_MS,

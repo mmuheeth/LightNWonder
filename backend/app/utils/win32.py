@@ -8,9 +8,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-# ``os.name`` rather than ``sys.platform``: mypy special-cases the latter, and
-# with ``warn_unreachable`` it would report the non-Windows paths below as dead
-# code when checked on a Windows checkout.
+# ``os.name`` rather than ``sys.platform``: mypy special-cases the latter and
+# would flag the non-Windows paths below as dead code on a Windows checkout.
 _IS_WINDOWS = os.name == "nt"
 
 # ``ctypes.WinDLL`` and ``ctypes.WINFUNCTYPE`` only exist on Windows, and this
@@ -25,11 +24,11 @@ WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 MK_LBUTTON = 0x0001
 
-# Unity reads real OS input (cursor position + SendInput), not the posted
-# window messages above -- those reach SDL's i-deck panel but land silently
-# nowhere on the game's own window. GA_ROOT resolves whatever HWND is under a
-# screen point up to its top-level window, for the "is the game really
-# topmost" check `inject_click` needs but `post_*` never did.
+# Unity reads real OS input (cursor + SendInput), not the posted window
+# messages above -- those reach the i-deck's SDL panel but do nothing on the
+# game's own window. GA_ROOT resolves the HWND under a point to its top-level
+# window, for the "is the game topmost" check `inject_click` needs (that
+# `post_*` never did).
 GA_ROOT = 2
 INPUT_MOUSE = 0
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -38,11 +37,10 @@ MOUSEEVENTF_LEFTUP = 0x0004
 ERROR_ACCESS_DENIED = 5
 
 # Integrity-level plumbing. UIPI silently drops input posted from a lower
-# integrity level to a higher one, which is the difference between a backend
-# started normally and one started elevated. Comparing the two levels detects
-# that before a single message is sent -- unlike probing with a real message,
-# which would either be filtered differently (WM_NULL is allowed through) or
-# leave a trace in the target's log.
+# integrity level to a higher one -- the difference between a normal and an
+# elevated backend. Comparing levels catches this before sending anything;
+# probing with a real message wouldn't (WM_NULL is let through, and anything
+# else leaves a trace in the target's log).
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TOKEN_QUERY = 0x0008
 TOKEN_INTEGRITY_LEVEL = 25
@@ -86,9 +84,9 @@ class _MouseInput(ctypes.Structure):
 
 
 class _Input(ctypes.Structure):
-    # SendInput's union covers keyboard/hardware input too, but this process
-    # only ever sends the mouse variant, so the union is spelled out as a
-    # single field rather than a real ctypes.Union.
+    # SendInput's union also covers keyboard/hardware input, but this process
+    # only ever sends mouse events, so it's spelled out as one field rather
+    # than a real ctypes.Union.
     _fields_ = (("type", ctypes.c_ulong), ("mi", _MouseInput))
 
 
@@ -360,8 +358,8 @@ def find_window(*, title: str, class_name: str | None = None) -> WindowInfo | No
             partial = info
         return _CONTINUE
 
-    # EnumWindows reports FALSE when the callback stopped it early, which is the
-    # success path here, so its return value is deliberately ignored.
+    # EnumWindows returns FALSE when the callback stopped it early -- the
+    # success path here -- so its return value is ignored.
     lib.EnumWindows(_proc_type()(visit), 0)
     return exact or partial
 

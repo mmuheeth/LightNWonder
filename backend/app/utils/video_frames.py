@@ -1,21 +1,10 @@
-"""Read a recorded clip back as still frames, one every so often.
-
-The counterpart of :mod:`app.utils.tile_video`, which writes video; this reads
-it, and is the second module in the codebase to import cv2 for that reason.
-
-Two decisions are load-bearing and neither is the obvious one:
-
-* **Frames are reached by decoding forward, never by seeking.**
-  ``cap.set(CAP_PROP_POS_FRAMES, n)`` looks like the direct route and is not:
-  it lands on the keyframe before ``n`` and decodes forward from there anyway,
-  so sampling a 90s clip re-decodes most of it once per sample. Walking the
-  stream once with ``grab()`` -- which advances without unpacking a frame --
-  and calling ``retrieve()`` only on the wanted ones is both faster and exact.
-* **The interval is honoured in whole frames, and the rate is read from the
-  file.** A clip records at whatever OBS achieved, so an interval is rounded to
-  a frame count once and each sample carries the timestamp it actually landed
-  on rather than the one that was asked for.
-"""
+"""Read a recorded clip back as still frames at a fixed interval. The counterpart of
+:mod:`app.utils.tile_video`, which writes video, and the second module here to import
+cv2 for that reason. Frames are reached by decoding forward with ``grab()``/
+``retrieve()``, never by seeking -- ``CAP_PROP_POS_FRAMES`` lands on the preceding
+keyframe and decodes forward anyway, so seeking re-decodes most of a 90s clip per
+sample. The interval is rounded to a frame count once, and the rate is read from the
+file rather than assumed."""
 
 from __future__ import annotations
 
@@ -104,11 +93,8 @@ def probe(path: Path) -> VideoInfo:
 
 
 def sample(path: Path, *, interval_seconds: float) -> Iterator[SampledFrame]:
-    """Yield one frame every ``interval_seconds``, starting with the first.
-
-    A generator rather than a list: a 90s clip at 0.5s is 180 full-size frames,
-    and the caller crops each one to a caption before doing anything with it.
-    """
+    """Yield one frame every ``interval_seconds``, starting with the first. A generator
+    rather than a list -- a 90s clip at 0.5s is 180 full-size frames."""
     if interval_seconds <= 0:
         raise VideoFrameError(
             f"A sampling interval has to be positive, not {interval_seconds}"

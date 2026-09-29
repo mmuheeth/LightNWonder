@@ -1,42 +1,42 @@
-"""Read what is printed on a symbol orb with PaddleOCR -- a prize figure, or the
-jackpot tier name an orb carries instead of one.
-
-Deliberately narrow: this is the reader for **what an orb says** and nothing
-else. Every other reading in the service -- meters, named screen regions, whole
-frames -- stays on Tesseract in :mod:`app.utils.ocr`, which is why that module is
-untouched by this one. Two engines are carried because the orb is the one crop
-Tesseract measurably cannot read: on this project's own tiles it returns *nothing*
-for ``dataset/SC/r1c4.png`` where Paddle reads ``160`` at 0.9998, and scores a
-correct ``50`` on ``dataset/SC/SC_50.png`` at confidence 0.0 against Paddle's
-0.9997.
-
-Unlike Tesseract this is a Python library, not a program, so there is no
-executable to find -- the "is it installed" question is an import, and the
-expensive part is building the model, which is why the engine is cached.
-"""
+"""Reads text with PaddleOCR: a prize figure or jackpot-tier name off a symbol
+orb, a caption line, a cash-meter cell, or an arbitrary named region -- the
+one OCR engine this project uses, since Tesseract measurably could not read
+an orb (it returned nothing on `SC/r1c4.png` where Paddle gets 160 @0.9998,
+and scored a correct `50` at 0.0 confidence vs Paddle's 0.9997) and every
+other reading moved here with it. A library, not a program: "installed" is an
+import, and building the model (not finding an executable) is the expensive
+part, hence cached."""
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import re
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from PIL import Image
-
-from app.utils.ocr import OcrError, OcrUnavailableError, parse_numbers
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import numpy as np
 
 __all__ = [
+    "OVERRIDE_KEYS",
+    "OcrError",
+    "OcrOptionsError",
+    "OcrUnavailableError",
     "PaddleLineOptions",
     "PaddleOptions",
     "PaddleResult",
     "PaddleWord",
     "available",
     "engine_version",
+    "parse_number",
+    "parse_numbers",
+    "parse_overrides",
     "prepare",
     "prepare_line",
     "read_image",
@@ -47,21 +47,92 @@ __all__ = [
 ]
 
 
+class OcrError(RuntimeError):
+    """The engine ran and could not produce a reading."""
+
+
+class OcrUnavailableError(OcrError):
+    """The engine is not installed where expected. Kept apart from
+    :class:`OcrError`: this is fixed by installing it, not by retrying."""
+
+
+class OcrOptionsError(ValueError):
+    """An option is out of range, or names something that is not an option."""
+
+
+# A run of digits with separators inside it, so "$1,234.56" is one number and
+# "$1.20 $176" is two. Whitespace deliberately ends a number: a meter region
+# often holds several values, and merging two is worse than splitting one.
+# Moved here from the deleted Tesseract wrapper it was born in -- parsing text
+# into numbers has never been engine-specific.
+_NUMBER = re.compile(r"[-+]?\d[\d.,]*")
+
+
+def parse_numbers(text: str) -> tuple[Decimal, ...]:
+    """Every number in ``text``, as exact decimals."""
+    numbers: list[Decimal] = []
+    for match in _NUMBER.finditer(text):
+        value = _to_decimal(match.group())
+        if value is not None:
+            numbers.append(value)
+    return tuple(numbers)
+
+
+def parse_number(text: str) -> Decimal | None:
+    """The first number in ``text``, or ``None`` if it has none."""
+    numbers = parse_numbers(text)
+    return numbers[0] if numbers else None
+
+
+def _to_decimal(token: str) -> Decimal | None:
+    """One matched number token as a decimal, or ``None`` if it is not one."""
+    cleaned = re.sub(r"\s+", "", token).rstrip(".,")
+    if not cleaned or not any(character.isdigit() for character in cleaned):
+        return None
+
+    sign = ""
+    if cleaned[0] in "+-":
+        sign, cleaned = cleaned[0], cleaned[1:]
+
+    last_dot = cleaned.rfind(".")
+    last_comma = cleaned.rfind(",")
+    if last_dot < 0 and last_comma < 0:
+        digits, fraction = cleaned, ""
+    else:
+        # Whichever separator comes last is the decimal point; everything before
+        # it is grouping, whatever it was written with.
+        cut = max(last_dot, last_comma)
+        digits, fraction = cleaned[:cut], cleaned[cut + 1 :]
+        # A lone separator with three digits after it is grouping, not a decimal
+        # point: "$1,234" is not a fraction of a cent.
+        if len(fraction) == 3 and (last_dot < 0 or last_comma < 0):
+            digits, fraction = cleaned, ""
+
+    digits = re.sub(r"[.,]", "", digits) or "0"
+    fraction = re.sub(r"[.,]", "", fraction)
+    if not digits.isdigit():
+        return None
+    try:
+        # A whole number stays whole: Decimal("1234"), not Decimal("1234.0").
+        return Decimal(f"{sign}{digits}.{fraction}" if fraction else f"{sign}{digits}")
+    except InvalidOperation:
+        return None
+
+
 @dataclass(frozen=True)
 class PaddleOptions:
-    """How one orb crop is preprocessed and read."""
+    """How one crop -- an orb, a meter cell, or a named region -- is
+    preprocessed and read with the detect-then-recognise engine
+    (:func:`read_image`)."""
 
     language: str = "en"
 
-    # **No upscaling, and this is the setting that decides how long a spin
-    # takes.** Tesseract needs ~30px glyphs, so the tile reader upscales 4x for
-    # it; Paddle's detector resizes internally and needs nothing of the sort.
-    # Measured over all 131 written scatter tiles, 1x reads 126 of them
-    # identically to 4x at 1.56s a tile against 10.07s -- 6.4x faster for the
-    # same figures. Of the 5 that differ, none is a prize: they are jackpot
-    # banner text bleeding into the crop ('MINOR 669', '$1,004.00', '10F'),
-    # which 4x reads *more* of. Raising this buys nothing and costs seconds per
-    # orb.
+    # **No upscaling -- this decides how long a spin takes.** Tesseract needs
+    # ~30px glyphs and upscales 4x for them; Paddle's detector resizes
+    # internally and needs none of that. Measured over all 131 written scatter
+    # tiles: 1x matches 4x on 126 of them at 1.56s/tile vs 10.07s (6.4x
+    # faster); the 5 that differ are jackpot banner text bleeding into the
+    # crop, none a prize. Raising this buys nothing and costs seconds per orb.
     upscale: float = 1.0
 
     # Below this, a recognised string is treated as noise off the artwork rather
@@ -69,11 +140,10 @@ class PaddleOptions:
     # junk without touching a genuine reading.
     min_confidence: float = 0.5
 
-    # A reading must be at least this many digits to be a prize. Same reasoning
-    # as `app.services.ocr.TILE_MIN_DIGITS`: a bare single digit is what a reader
-    # shown an orb with nothing on it answers with. It is required only of a
-    # reading carrying no currency mark -- see `_AMOUNT_MARKS`, which is what
-    # makes a one-digit `$5` a prize.
+    # Minimum digits for a reading to count as a prize -- same reasoning as
+    # `app.services.ocr.TILE_MIN_DIGITS`: a bare digit is what an empty orb
+    # answers with. Waived when a currency mark is present (see
+    # `_AMOUNT_MARKS`), which is what makes a one-digit `$5` a prize.
     min_digits: int = 2
 
     # Seconds one crop may take. Paddle runs in-process, so this bounds the
@@ -99,8 +169,98 @@ class PaddleOptions:
                 f"timeout_seconds must be greater than 0, got {self.timeout_seconds}"
             )
 
+    def merged(self, overrides: Any, *, where: str = "ocr") -> PaddleOptions:
+        """Return these options with a game config's or a request's
+        ``overrides`` applied over the top -- validated by :func:`parse_overrides`,
+        so a bad key or value is reported by name rather than surfacing as a
+        confusing dataclass-construction error."""
+        if not overrides:
+            return self
+        parsed = parse_overrides(overrides, where=where)
+        try:
+            return dataclasses.replace(self, **parsed)
+        except OcrError as exc:
+            raise OcrOptionsError(f"{where}: {exc}") from None
+
 
 DEFAULT_OPTIONS = PaddleOptions()
+
+# Every option a game config or a request may override for a named region.
+# `min_digits` and `timeout_seconds` stay out for the reason Tesseract's own
+# `OVERRIDE_KEYS` excluded its timeout: a property of the deployment, not of
+# the screen region being read. Narrower than `PaddleOptions`' own field list
+# on purpose -- a region has no digit-count floor to tune, since it isn't
+# read as a prize.
+OVERRIDE_KEYS: tuple[str, ...] = ("language", "upscale", "min_confidence")
+
+_OVERRIDE_TYPES: Mapping[str, tuple[type, ...]] = {
+    "language": (str,),
+    "upscale": (int, float),
+    "min_confidence": (int, float),
+}
+
+
+def parse_overrides(raw: Any, *, where: str = "ocr") -> dict[str, Any]:
+    """Narrow a decoded JSON object to a set of region-reading option overrides."""
+    if not isinstance(raw, Mapping):
+        raise OcrOptionsError(f"{where} must be a JSON object of OCR options")
+
+    parsed: dict[str, Any] = {}
+    for key, value in raw.items():
+        expected = _OVERRIDE_TYPES.get(key) if isinstance(key, str) else None
+        if expected is None:
+            known = ", ".join(OVERRIDE_KEYS)
+            raise OcrOptionsError(
+                f"{where}: {key!r} is not an OCR option (options are: {known})"
+            )
+        # `bool` is an `int`, and `true` as an upscale factor is a mistake.
+        if isinstance(value, bool) or not isinstance(value, expected):
+            names = " or ".join(kind.__name__ for kind in expected)
+            raise OcrOptionsError(f"{where}: {key!r} must be {names}, got {value!r}")
+        parsed[key] = value
+
+    # Ranges are the dataclass's to judge, so they are judged by building it.
+    try:
+        dataclasses.replace(DEFAULT_OPTIONS, **parsed)
+    except OcrError as exc:
+        raise OcrOptionsError(f"{where}: {exc}") from None
+    return parsed
+
+
+def _axis_box(raw: Any, *, scale: float = 1.0) -> tuple[int, int, int, int] | None:
+    """A raw Paddle box as ``(left, top, right, bottom)`` crop pixels.
+
+    Accepts either an axis-aligned box (3.x's ``rec_boxes``, one row per
+    detected line) or a four-point polygon (2.x's own box shape, kept for the
+    list-of-lines branch below) -- flattened and read as whichever length it
+    turns out to be, rather than trusted by caller. ``scale`` undoes
+    :func:`preprocess`'s upscale, the same way the deleted Tesseract reader's
+    ``_parse_tsv`` divided its own boxes by ``factor``, so a box is always in
+    the *original* crop's pixels regardless of what the engine was given.
+    """
+    try:
+        flat: list[float] = []
+        for item in raw:
+            if isinstance(item, (list, tuple)):
+                flat.extend(float(value) for value in item)
+            else:
+                flat.append(float(item))
+    except (TypeError, ValueError):
+        return None
+    if len(flat) == 4:
+        left, top, right, bottom = flat
+    elif len(flat) >= 8 and len(flat) % 2 == 0:
+        xs, ys = flat[0::2], flat[1::2]
+        left, top, right, bottom = min(xs), min(ys), max(xs), max(ys)
+    else:
+        return None
+    factor = scale if scale > 0 else 1.0
+    return (
+        round(left / factor),
+        round(top / factor),
+        round(right / factor),
+        round(bottom / factor),
+    )
 
 
 @dataclass(frozen=True)
@@ -110,6 +270,15 @@ class PaddleWord:
     text: str
     confidence: float
     """0-1, as Paddle reports it -- *not* Tesseract's 0-100."""
+
+    box: tuple[int, int, int, int] | None = None
+    """``(left, top, right, bottom)`` in crop pixels, from the detector's line
+    box (``rec_boxes``) -- one box per recognised *line*, not per word, since
+    that is the granularity Paddle's detector gives up without asking it for
+    ``return_word_box`` (a heuristic sub-division of the line box this project
+    has no use for). ``None`` on the recognise-only line path
+    (:func:`read_line`), which never runs the detector and so never has a box
+    to report."""
 
 
 @dataclass(frozen=True)
@@ -163,17 +332,11 @@ def reset() -> None:
 
 
 def _import_paddleocr() -> tuple[Any, str]:
-    """Import PaddleOCR, or explain that it is not installed.
-
-    **torch is imported first, on purpose.** torch and paddle each bundle their
-    own ``libiomp5md.dll`` (Intel OpenMP) and on Windows the first one loaded
-    wins the name. Paddle's copy is too old for torch, so importing paddle first
-    breaks the symbol classifier with a ``shm.dll`` load failure -- the classifier
-    being the very thing that decides a tile is an orb worth reading. Importing
-    torch first is harmless to paddle, so the order is fixed here rather than
-    left to whichever service happens to run first. Not an optional nicety: it is
-    why both engines can share one process at all.
-    """
+    """Import PaddleOCR, or explain it's missing. Torch is imported first on
+    purpose: torch and paddle both bundle `libiomp5md.dll`, and paddle's copy
+    is too old for torch, so importing paddle first breaks the symbol
+    classifier with a `shm.dll` load failure. Order is fixed here, not
+    incidental -- it's why both engines can share one process."""
     # No torch in this environment means no classifier, so no conflict to avoid.
     with contextlib.suppress(ImportError):
         import torch  # noqa: F401
@@ -208,17 +371,12 @@ def engine_version() -> str:
 
 
 def _build(options: PaddleOptions) -> Any:
-    """The recogniser, built once and kept.
-
-    ``enable_mkldnn=False`` is required, not tuning: with paddle 3.3.1's default
-    oneDNN path the detector dies on this machine with ``NotImplementedError:
-    ConvertPirAttribute2RuntimeAttribute not support``. The CPU kernels read the
-    same orbs correctly.
-
-    The three ``use_*`` document stages are off because an orb is a cropped game
-    tile, not a scanned page: there is no orientation to detect and no page to
-    unwarp, and each stage is another model to download and run.
-    """
+    """The recogniser, built once. `enable_mkldnn=False` is required, not
+    tuning: paddle 3.3.1's default oneDNN path crashes the detector here with
+    `NotImplementedError: ConvertPirAttribute2RuntimeAttribute not support`
+    (CPU kernels read the same orbs fine). The `use_*` document stages are off
+    because an orb is a cropped tile, not a scanned page needing
+    orientation/unwarping."""
     paddleocr, version = _import_paddleocr()
     try:
         engine = paddleocr.PaddleOCR(
@@ -246,20 +404,12 @@ def _cached_engine(options: PaddleOptions) -> Any:
 
 
 def prepare(options: PaddleOptions = DEFAULT_OPTIONS) -> str:
-    """Build the recogniser now, and report the version that will do the reading.
-
-    :func:`available` answers "is it installed", which is an import; this
-    answers "will it run", which is the model load. The two are worth keeping
-    apart for a caller reading *many* crops in a row: a build that fails inside
-    a per-crop loop is indistinguishable from a crop with no text on it, so one
-    broken install comes back as a hundred blank frames instead of one error.
-    Cheap to call again -- the engine is cached, so every read after the first
-    is this same object.
-
-    Raises the same two exceptions a read does:
-    :class:`app.utils.ocr.OcrUnavailableError` when Paddle is not installed and
-    :class:`app.utils.ocr.OcrError` when it is and will not start.
-    """
+    """Build the recogniser now and report its version. Unlike :func:`available`
+    (an import check), this does the actual model load -- worth doing up front
+    so a broken install isn't mistaken for a hundred blank crops in a per-tile
+    loop. Cheap after the first call since the engine is cached. Raises the
+    same two exceptions a read does: :class:`OcrUnavailableError` /
+    :class:`OcrError`."""
     _, version = _import_paddleocr()
     _cached_engine(options)
     return _version or version
@@ -272,21 +422,13 @@ def prepare(options: PaddleOptions = DEFAULT_OPTIONS) -> str:
 class PaddleLineOptions:
     """How one crop that is *known* to be a single line of text is read."""
 
-    # The recognition model, and **the setting that decides whether reading a
-    # clip fits in one request**. Measured on this machine against a
-    # caption-sized crop (194x37), reading the same string correctly each time:
-    #
-    #   PP-OCRv6_medium_rec (Paddle's default)  1.468 s/frame  @0.991
-    #   PP-OCRv4_mobile_rec                     0.166 s/frame  @0.979
-    #   PP-OCRv5_mobile_rec                     0.081 s/frame  @0.881
-    #   en_PP-OCRv5_mobile_rec                  0.064 s/frame  @0.974
-    #
-    # 23x between the ends of that list, which over the ~90 frames of a 90s
-    # clip is 132s against 6s -- the difference between a request that answers
-    # and one that times out. The English model is the pick because a caption
-    # is English words and it is both the fastest and, of the two mobile
-    # models, the more confident. A game that draws its strip in another
-    # language wants another model here, not another engine.
+    # The recognition model, and what decides whether reading a clip fits in
+    # one request. Measured on a 194x37 caption crop, reading the same string
+    # correctly each time: Paddle's default PP-OCRv6_medium_rec is 1.468
+    # s/frame @0.991 vs this one's 0.064 s/frame @0.974 -- 23x faster, which
+    # over a 90-frame/90s clip is ~6s against ~132s (a timeout). Picked as the
+    # fastest and most confident of the mobile models; a game drawing its
+    # strip in another language wants a different model here, not engine.
     model_name: str = "en_PP-OCRv5_mobile_rec"
 
     # Left at 1x for the reason the orb reader's is: Paddle resizes internally.
@@ -305,13 +447,10 @@ DEFAULT_LINE_OPTIONS = PaddleLineOptions()
 
 
 def _build_recognizer(options: PaddleLineOptions) -> Any:
-    """The recogniser, built once and kept.
-
-    No ``enable_mkldnn=False`` here, unlike :func:`_build`: that is required to
-    keep the *detector* from dying on this machine, and there is no detector on
-    this path. Paddle's own defaults (oneDNN, 10 of 12 threads) read a caption
-    correctly and are what the timings above were taken with.
-    """
+    """The recogniser, built once. No `enable_mkldnn=False` here unlike
+    :func:`_build` -- that's needed to stop the *detector* dying, and there's
+    no detector on this path. Paddle's oneDNN defaults read a caption fine and
+    are what the timings above were measured with."""
     paddleocr, _ = _import_paddleocr()
     try:
         return paddleocr.TextRecognition(model_name=options.model_name)
@@ -333,12 +472,9 @@ def _cached_recognizer(options: PaddleLineOptions) -> Any:
 
 
 def prepare_line(options: PaddleLineOptions = DEFAULT_LINE_OPTIONS) -> str:
-    """Build the recogniser now, and report the model that will read.
-
-    The recognise-only counterpart of :func:`prepare`, and there for the same
-    reason: a build that fails inside a per-crop loop is indistinguishable from
-    a crop with no text on it.
-    """
+    """Build the recogniser now and report the model that will read -- the
+    recognise-only counterpart of :func:`prepare`, for the same reason (a
+    failed build inside a loop otherwise looks like a blank crop)."""
     _import_paddleocr()
     _cached_recognizer(options)
     return options.model_name
@@ -362,20 +498,11 @@ def _line_words(pages: Any) -> tuple[PaddleWord, ...]:
 def read_line(
     image: Image.Image, *, options: PaddleLineOptions = DEFAULT_LINE_OPTIONS
 ) -> PaddleResult:
-    """Read a crop that is already cut down to one line of text.
-
-    Skips detection, which is not an optimisation so much as the removal of a
-    step that had nothing to do: the caller cropped a named region whose whole
-    content is the caption, so asking Paddle to *find* text inside it is asking
-    it to rediscover the rectangle it was handed. The same reasoning puts
-    Tesseract on ``psm 7`` ("a single text line") for these crops. Detection
-    still earns its place on an orb, where the figure sits somewhere inside a
-    tile that is mostly artwork.
-
-    Returns the same :class:`PaddleResult` a detected read does, with the whole
-    line as one "word", so a caller handles either the same way. Raises the
-    same two exceptions.
-    """
+    """Reads a crop already cut to one line of text, skipping detection since
+    the caller cropped exactly the caption (same reason these crops use
+    Tesseract `psm 7`). Detection still matters for an orb, where a figure
+    sits amid artwork. Returns the same :class:`PaddleResult` shape as a
+    detected read, whole line as one "word"; raises the same two exceptions."""
     prepared = image if image.mode == "RGB" else image.convert("RGB")
     if options.upscale != 1.0:
         width = max(1, round(prepared.width * options.upscale))
@@ -400,14 +527,11 @@ def read_line(
 def preprocess(
     image: Image.Image, options: PaddleOptions = DEFAULT_OPTIONS
 ) -> Image.Image:
-    """Return the copy of ``image`` that will be handed to the engine.
-
-    Far less than Tesseract's preprocessing: no greyscale, no autocontrast, no
-    thresholding. Paddle's recogniser was trained on colour photographs of text
-    and reads gold-on-light digits as they are -- the flattening that Tesseract
-    needs is what loses them. Upscaling is kept, because the detector still needs
-    a region big enough to find.
-    """
+    """Prepares an image for the engine -- far lighter than Tesseract's: no
+    greyscale/autocontrast/threshold, since Paddle trained on colour photos and
+    reads gold-on-light digits as-is (the flattening Tesseract needs is what
+    loses them). Upscaling stays, since the detector still needs a
+    big-enough region."""
     prepared = image if image.mode == "RGB" else image.convert("RGB")
     if options.upscale != 1.0:
         width = max(1, round(prepared.width * options.upscale))
@@ -429,22 +553,28 @@ def _as_array(image: Image.Image) -> np.ndarray[Any, Any]:
     return numpy.asarray(image)[:, :, ::-1]
 
 
-def _words(pages: Any) -> tuple[PaddleWord, ...]:
-    """The recognised strings out of whatever shape this Paddle returned.
-
-    Paddle 3.x yields dicts of parallel ``rec_texts``/``rec_scores`` lists; 2.x
-    yielded ``[[box, (text, score)], ...]``. Both are read so an environment
-    pinned to the older release is not a silent no-reading.
-    """
+def _words(pages: Any, *, scale: float = 1.0) -> tuple[PaddleWord, ...]:
+    """Extracts recognised strings from whatever shape Paddle returned -- 3.x
+    gives parallel `rec_texts`/`rec_scores`/`rec_boxes` dicts, 2.x gives
+    `[[box, (text, score)], ...]`; both are read so an env pinned to the older
+    release isn't a silent no-reading. ``scale`` is the preprocessing upscale
+    a box needs undone to land back in the original crop's pixels -- see
+    :func:`_axis_box`."""
     words: list[PaddleWord] = []
     for page in pages or ():
         if isinstance(page, dict):
             texts = page.get("rec_texts") or ()
             scores = page.get("rec_scores") or ()
-            for text, score in zip(texts, scores, strict=False):
+            boxes = page.get("rec_boxes")
+            for index, (text, score) in enumerate(zip(texts, scores, strict=False)):
                 cleaned = str(text).strip()
-                if cleaned:
-                    words.append(PaddleWord(text=cleaned, confidence=float(score)))
+                if not cleaned:
+                    continue
+                raw_box = (
+                    boxes[index] if boxes is not None and index < len(boxes) else None
+                )
+                box = _axis_box(raw_box, scale=scale) if raw_box is not None else None
+                words.append(PaddleWord(text=cleaned, confidence=float(score), box=box))
             continue
         for line in page or ():
             # [box, (text, score)] -- anything else is not a line we know.
@@ -455,7 +585,10 @@ def _words(pages: Any) -> tuple[PaddleWord, ...]:
                 continue
             cleaned = str(payload[0]).strip()
             if cleaned:
-                words.append(PaddleWord(text=cleaned, confidence=float(payload[1])))
+                box = _axis_box(line[0], scale=scale)
+                words.append(
+                    PaddleWord(text=cleaned, confidence=float(payload[1]), box=box)
+                )
     return tuple(words)
 
 
@@ -477,17 +610,14 @@ def _predict(engine: Any, array: np.ndarray[Any, Any]) -> Any:
 def read_image(
     image: Image.Image, *, options: PaddleOptions = DEFAULT_OPTIONS
 ) -> PaddleResult:
-    """Read the number on one orb crop.
-
-    Raises :class:`app.utils.ocr.OcrUnavailableError` when Paddle is not
-    installed and :class:`app.utils.ocr.OcrError` when it ran and could not
-    produce a reading -- the same two exceptions the Tesseract reader raises, so
-    a caller handles one pair either way.
-    """
+    """Reads every line of text Paddle's detector finds in a crop -- an orb's
+    figure, or (with the detector's own boxes reported on each
+    :class:`PaddleWord`) a named region of arbitrary text. Raises
+    :class:`OcrUnavailableError` / :class:`OcrError`."""
     prepared = preprocess(image, options)
     engine = _cached_engine(options)
     pages = _predict(engine, _as_array(prepared))
-    words = _words(pages)
+    words = _words(pages, scale=options.upscale)
     return PaddleResult(
         text=" ".join(word.text for word in words),
         words=words,
@@ -499,15 +629,11 @@ def read_image(
 def read_number(
     image: Image.Image, *, options: PaddleOptions = DEFAULT_OPTIONS
 ) -> tuple[Decimal | None, PaddleResult]:
-    """The prize figure on one orb, as ``(value, result)``.
-
-    ``value`` is ``None`` for an orb carrying no figure, which is the ordinary
-    answer for a feature scatter and not an error -- Paddle returns no text at
-    all for those, where Tesseract's ``psm 8`` would invent a digit. The full
-    result comes back either way so a rejected reading stays diagnosable.
-
-    A candidate must clear both ``min_confidence`` and ``min_digits`` to count.
-    """
+    """Prize figure on one orb, as `(value, result)`. `value` is `None` for a
+    figure-less orb (ordinary for a scatter, not an error) -- Paddle returns
+    no text there where Tesseract's `psm 8` would invent a digit. Must clear
+    both `min_confidence` and `min_digits` to count; the full result stays
+    diagnosable either way."""
     value, _, result = read_prize(image, options=options)
     return value, result
 
@@ -517,17 +643,13 @@ def read_number(
 # the punctuation Paddle picks out of the filigree.
 _STRIPPED = " \t\r\n$€£¥.,:;!|/\\-_'\"()[]{}*"
 
-# Marks that make a *one-digit* reading a figure. `min_digits` exists because a
-# reader shown an orb carrying no number answers with a scrap off the artwork,
-# and every such scrap measured was a bare single digit -- but the filigree does
-# not draw a currency sign, so a reading that has one is evidence of an amount
-# and not of noise. An orb drawn `$5` is a $5 prize, and refusing it for having
-# one digit drops a figure Paddle read at full confidence.
-#
-# Currency marks only, deliberately: a decimal point is *not* on this list. A
-# figure drawn with one already clears `min_digits` on its own digits (`5.00` is
-# three), so admitting `.` would buy nothing and would promote a lone digit
-# beside a speck of filigree to a prize.
+# Marks that make a *one-digit* reading a figure. `min_digits` exists because
+# a figure-less orb's stray reading was, every time measured, a bare single
+# digit -- but the filigree never draws a currency sign, so one in the text is
+# evidence of an amount, not noise (`$5` is a real $5 prize, and refusing it
+# would drop a figure read at full confidence). Currency marks only,
+# deliberately: a decimal point isn't included, since a figure drawn with one
+# already clears `min_digits` on its own digits (`5.00` is three).
 _AMOUNT_MARKS = "$€£¥"
 
 
@@ -540,29 +662,13 @@ def _is_amount(text: str) -> bool:
 def read_prize(
     image: Image.Image, *, options: PaddleOptions = DEFAULT_OPTIONS
 ) -> tuple[Decimal | None, str | None, PaddleResult]:
-    """What one orb says, as ``(value, label, result)``.
-
-    An orb carries **either** a prize figure or a jackpot tier name, and both are
-    real readings:
-
-    * digits (``150``, ``$1,004.00``) come back as ``value``, ``label`` null;
-    * a word (``MAJOR``, ``MINI``, ``GRAND`` -- whatever the game prints) comes
-      back as ``label``, ``value`` null;
-    * an orb drawn with neither, which is the ordinary case for a feature
-      scatter, comes back as both null and no error.
-
-    **No list of tier names is hardcoded**, deliberately. Which words a game
-    prints on its jackpot orbs is the game's business, and a list here would
-    silently drop the first tier a new game names differently. The rule is only
-    "digits are a figure, letters are a label", so an orb saying ``SUPER MEGA``
-    reads as ``SUPER MEGA`` without this module being taught about it.
-
-    A digit reading must clear ``min_digits`` *unless* it carries a currency mark
-    (see :data:`_AMOUNT_MARKS`), which is what lets a one-digit ``$5`` through;
-    both must clear ``min_confidence``. Numbers are looked for across every word
-    before any word is accepted as a label, so ``MINOR 669`` reads as the figure
-    669 rather than stopping at the tier beside it.
-    """
+    """What one orb says, as `(value, label, result)`. Digits -> `value`; a
+    word (`MAJOR`, `GRAND`, ...) -> `label`; neither present -> both null, no
+    error. No tier-name list is hardcoded, deliberately -- any word reads as a
+    label, so a new game's own wording just works. Numbers are checked across
+    every word before a label is accepted, so `MINOR 669` reads as 669. A
+    digit reading must clear `min_digits` unless it carries a currency mark
+    (`_AMOUNT_MARKS`); everything must clear `min_confidence`."""
     result = read_image(image, options=options)
     believable = [
         word for word in result.words if word.confidence >= options.min_confidence

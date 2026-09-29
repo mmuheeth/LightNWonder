@@ -6,12 +6,10 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable, Mapping
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
-from app.config.ocr import candidate_executables
 from app.config.runtime import settings
 from app.core.logging import get_logger
 from app.schemas.meter import (
@@ -20,7 +18,7 @@ from app.schemas.meter import (
     MeterUnmapped,
     MeterValues,
 )
-from app.utils import meter, ocr
+from app.utils import meter, meter_paddle, paddle_ocr
 
 logger = get_logger("meter")
 
@@ -36,20 +34,6 @@ _bands: dict[tuple[str, int, int], meter.Band] = {}
 def reset() -> None:
     """Drop the fitted bands. Tests, and after a game config change."""
     _bands.clear()
-
-
-def _executable() -> Path:
-    """The engine to read with; raises ``meter.MeterError`` if OCR is off or Tesseract wasn't found."""
-    if not settings.OCR_ENABLED:
-        raise meter.MeterError("OCR is disabled; set OCR_ENABLED=true to turn it on")
-    executable = settings.ocr_tesseract_cmd
-    if executable is None or not executable.is_file():
-        looked = ", ".join(str(path) for path in candidate_executables())
-        raise meter.MeterError(
-            "No Tesseract executable was found. Install Tesseract OCR or set "
-            f"OCR_TESSERACT_CMD to where it is. Looked in: {looked or 'PATH'}"
-        )
-    return executable
 
 
 def _classify(fields: dict[str, meter.MeterField]) -> tuple[MeterMode, str | None]:
@@ -129,25 +113,43 @@ def _ordinal(profile: Mapping[str, Any]) -> bool:
     return bool(profile.get("ordinal", False))
 
 
+def _paddle_options() -> paddle_ocr.PaddleOptions:
+    """The options a meter strip is read with, straight out of the environment."""
+    return paddle_ocr.PaddleOptions(
+        language=settings.OCR_METER_PADDLE_LANGUAGE,
+        upscale=settings.OCR_METER_PADDLE_UPSCALE,
+    )
+
+
 def read(
     strip: Image.Image,
     *,
     game: str,
     profile: Mapping[str, Any] | None = None,
 ) -> MeterValues:
-    """Read the five values off a cash-meter crop. Never raises — a declared band
-    in ``profile`` wins; otherwise one is fitted and cached per (game, size)."""
+    """Read the five values off a cash-meter crop with PaddleOCR. Never raises —
+    a declared band in ``profile`` wins; otherwise one is fitted and cached per
+    (game, size)."""
     started = time.perf_counter()
     block: Mapping[str, Any] = profile or {}
     windows = _declared_windows(block)
     ordinal = _ordinal(block)
     try:
-        executable = _executable()
+        if not settings.OCR_ENABLED:
+            raise meter.MeterError(
+                "OCR is disabled; set OCR_ENABLED=true to turn it on"
+            )
+        if not paddle_ocr.available():
+            raise meter.MeterError(
+                "PaddleOCR is not installed, so the cash meter cannot be read. "
+                "Install paddleocr (it needs Python 3.13 or lower)"
+            )
+        options = _paddle_options()
         key = (game, strip.width, strip.height)
         band = _declared_band(block, strip.height) or _bands.get(key)
         if band is None:
-            band, scan = meter.fit_band(
-                strip, executable=executable, windows=windows, ordinal=ordinal
+            band, scan = meter_paddle.fit_band(
+                strip, options=options, windows=windows, ordinal=ordinal
             )
             _bands[key] = band
             logger.info(
@@ -158,81 +160,20 @@ def read(
                 strip.height,
             )
         else:
-            scan = meter.extract(
-                strip,
-                executable=executable,
-                band=band,
-                windows=windows,
-                ordinal=ordinal,
-            )
-    except (meter.MeterError, ocr.OcrError) as exc:
-        return MeterValues(
-            mode=MeterMode.UNKNOWN,
-            error=str(exc),
-            duration_ms=_elapsed_ms(started),
-        )
-
-    return _assemble(scan, game=game, started=started, engine="tesseract")
-
-
-def read_paddle(
-    strip: Image.Image,
-    *,
-    game: str,
-    profile: Mapping[str, Any] | None = None,
-) -> MeterValues:
-    """Read the five values off a cash-meter crop with PaddleOCR instead of
-    Tesseract. Same contract as :func:`read` -- never raises, a declared band in
-    ``profile`` wins, and the reading comes back in the same ``MeterValues``.
-
-    Used by both Evaluate Screen and Analyze Spin's meter validations.
-
-    The fitted band is cached **separately** from :func:`read`'s, under its own
-    key: which rows read best is a judgement the engine makes, so a band fitted
-    by one reader is not a fact the other one may reuse.
-    """
-    started = time.perf_counter()
-    block: Mapping[str, Any] = profile or {}
-    windows = _declared_windows(block)
-    ordinal = _ordinal(block)
-    try:
-        if not paddle_ocr.available():
-            raise meter.MeterError(
-                "PaddleOCR is not installed, so the cash meter cannot be read "
-                "with it. Install paddleocr (it needs Python 3.13 or lower)"
-            )
-        options = _paddle_options()
-        key = (game, strip.width, strip.height)
-        band = _declared_band(block, strip.height) or _paddle_bands.get(key)
-        if band is None:
-            band, scan = meter_paddle.fit_band(
-                strip, options=options, windows=windows, ordinal=ordinal
-            )
-            _paddle_bands[key] = band
-            logger.info(
-                "Fitted meter band %s for %s at %dx%d with PaddleOCR",
-                band,
-                game,
-                strip.width,
-                strip.height,
-            )
-        else:
             scan = meter_paddle.extract(
                 strip, band=band, options=options, windows=windows, ordinal=ordinal
             )
-    except (meter.MeterError, ocr.OcrError) as exc:
+    except (meter.MeterError, paddle_ocr.OcrError) as exc:
         return MeterValues(
             mode=MeterMode.UNKNOWN,
             error=str(exc),
             duration_ms=_elapsed_ms(started),
         )
 
-    return _assemble(scan, game=game, started=started, engine="PaddleOCR")
+    return _assemble(scan, game=game, started=started)
 
 
-def _assemble(
-    scan: meter.MeterScan, *, game: str, started: float, engine: str
-) -> MeterValues:
+def _assemble(scan: meter.MeterScan, *, game: str, started: float) -> MeterValues:
     """One scan as the API reports it, whichever engine produced it. Shared so the
     two readers cannot disagree about what a scan *means* -- only about how the
     digits were recognised."""

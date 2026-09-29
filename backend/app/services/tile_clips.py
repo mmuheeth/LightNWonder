@@ -120,7 +120,8 @@ async def record(
         try:
             image = await _grab(source_name)
             if placement is None:
-                # Once, off the first frame: see the module docstring.
+                # Computed once, off the first frame: letterbox detection scans
+                # the whole picture and the window doesn't move mid-spin.
                 placement = await asyncio.to_thread(grid_service.place_on, image)
                 recorder = tile_video.TileRecorder(_targets(placement))
             if recorder is None:  # pragma: no cover - built with the placement

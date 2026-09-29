@@ -139,15 +139,10 @@ class LetterboxOptions:
 
 
 def letterbox_options(config: GameConfig | None = None) -> LetterboxOptions:
-    """Resolve the ``FRAME_LETTERBOX_*`` settings against one game's ``letterbox``
-    block, which patches only the keys it names.
-
-    Per-game because trimming is only as good as the game's own edges: a game
-    that draws art out to the window edge in some frames and not others moves
-    its content box between captures, and every region measured against one box
-    misses against the next. ``config`` is optional so a caller that has not
-    already loaded the active game does not have to; pass it when you have it.
-    """
+    """Resolve ``FRAME_LETTERBOX_*`` against one game's ``letterbox`` block, which
+    patches only the keys it names. Per-game because trimming is only as good as
+    the game's own edges -- inconsistent art bleed moves the content box between
+    captures. ``config`` is optional; pass it when already loaded."""
     block = (config if config is not None else _active_config()[1]).letterbox
     return LetterboxOptions(
         trim=bool(block.get("trim", settings.FRAME_LETTERBOX_TRIM)),

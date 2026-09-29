@@ -248,9 +248,8 @@ async def _inject_click(hwnd: int, x: int, y: int, hold_seconds: float) -> bool:
     try:
         await asyncio.sleep(_CURSOR_SETTLE_SECONDS)
 
-        # Injected input lands on whatever is topmost under the cursor, not
-        # at this hwnd -- firing blind risks clicking whatever is on top of
-        # the game instead (a File Explorer window, say).
+        # Injected input lands on whatever is topmost under the cursor, not at
+        # this hwnd -- firing blind risks clicking whatever covers the game.
         topmost = win32.window_at(screen_x, screen_y)
         if topmost != hwnd:
             raise GameWindowNotFoundError(
@@ -430,11 +429,10 @@ async def click(
         if tail is not None:
             confirmation, evidence, touched = await _watch_log(tail, expected, offset)
 
-            # An unfocused window can swallow the first injected click -- one
-            # retry. `_inject_click` already brings the window to the front
-            # on every attempt, so the retry gains nothing extra there; it
-            # exists for a click that failed because the game briefly wasn't
-            # topmost yet when the first one fired.
+            # An unfocused window can swallow the first injected click, hence one
+            # retry -- `_inject_click` already refocuses every attempt, so this
+            # exists for a click that missed only because the game wasn't yet
+            # topmost when it fired.
             if confirmation is None and settings.GAME_INPUT_FOCUS_ON_RETRY:
                 logger.info("Click on %r went unconfirmed; retrying focused", name)
                 refocused = True
